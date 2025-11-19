@@ -272,7 +272,7 @@ def extractor_node(state: WipState):
         return {"processed_data": [], "totals_row": None}
 
 # ==========================================
-# 4. THE ANALYSIS AGENT - ENHANCED
+# 4. THE ANALYSIS AGENT - KEEP ORIGINAL STRUCTURE
 # ==========================================
 
 def analyst_node(state: WipState):
@@ -284,171 +284,93 @@ def analyst_node(state: WipState):
         print("NO DATA. SKIPPING ANALYSIS.")
         return {"final_json": {}}
 
-    # Calculate aggregations from data
-    calc_totals = {
-        "total_contract": sum(r.total_contract_price for r in data),
-        "total_cost": sum(r.estimated_total_costs for r in data),
-        "total_earned": sum(r.revenues_earned for r in data if r.revenues_earned > 0) or sum(r.earned_revenue for r in data),
-        "total_ctd": sum(r.cost_to_date for r in data),
-        "total_billed": sum(r.billed_to_date for r in data),
-        "total_ctc": sum(r.cost_to_complete for r in data if r.cost_to_complete > 0) or sum(r.ctc for r in data),
-        "total_ub": sum(r.under_billings for r in data),
-        "total_ob": sum(r.over_billings for r in data)
-    }
+    # Calculate aggregations
+    t_contract = sum(r.total_contract_price for r in data)
+    t_cost = sum(r.estimated_total_costs for r in data)
+    t_earned = sum(r.revenues_earned for r in data if r.revenues_earned > 0) or sum(r.earned_revenue for r in data)
+    t_cost_to_date = sum(r.cost_to_date for r in data)
+    t_billed = sum(r.billed_to_date for r in data)
+    t_ctc = sum(r.cost_to_complete for r in data if r.cost_to_complete > 0) or sum(r.ctc for r in data)
+    t_under = sum(r.under_billings for r in data)
+    t_over = sum(r.over_billings for r in data)
     
-    # Validation against extracted totals (if available)
-    validation_results = {}
-    if totals:
-        for field, calc_value in calc_totals.items():
-            total_field = field.replace("total_", "").replace("ctd", "cost_to_date").replace("ctc", "cost_to_complete").replace("ub", "under_billings").replace("ob", "over_billings")
-            if hasattr(totals, total_field):
-                expected = getattr(totals, total_field)
-                if expected and expected > 0:
-                    variance = abs(calc_value - expected)
-                    variance_pct = (variance / expected * 100) if expected else 0
-                    validation_results[field] = {
-                        "calculated": calc_value,
-                        "expected": expected,
-                        "variance": variance,
-                        "variance_pct": variance_pct,
-                        "valid": variance_pct < 1.0  # Less than 1% variance
-                    }
+    # Calculate metrics - keep original logic
+    t_uegp = sum((r.contract_amount - r.est_cost) - (r.earned_revenue - r.cost_to_date) for r in data)
+    gp_pct = ((t_earned - t_cost_to_date) / t_earned * 100) if t_earned else 0
     
-    # Calculate metrics
-    t_uegp = sum((r.total_contract_price - r.estimated_total_costs) - (r.earned_revenue - r.cost_to_date) for r in data)
-    gp_pct = ((calc_totals["total_earned"] - calc_totals["total_ctd"]) / calc_totals["total_earned"] * 100) if calc_totals["total_earned"] else 0
+    # Net billing position
+    net_billing = t_over - t_under
+    net_billing_label = f"Over ${abs(net_billing)/1000:.0f}K" if net_billing > 0 else f"Under ${abs(net_billing)/1000:.0f}K"
     
-    # Risk analysis - expanded
+    # Risk analysis - keep original structure
     risks = []
-    sorted_jobs = sorted(data, key=lambda x: max(x.over_billings, x.under_billings), reverse=True)
+    sorted_jobs = sorted(data, key=lambda x: max(x.over_billing, x.under_billing), reverse=True)
     
-    for job in sorted_jobs[:10]:  # Top 10 risks
-        ob_amount = job.over_billings if job.over_billings > 0 else job.over_billing
-        ub_amount = job.under_billings if job.under_billings > 0 else job.under_billing
-        variance = max(ob_amount, ub_amount)
-        
-        # Enhanced risk categorization
-        if variance > 500000:
-            severity = "critical"
-        elif variance > 100000:
-            severity = "high"
-        elif variance > 50000:
-            severity = "medium"
-        else:
-            severity = "low"
-        
+    for job in sorted_jobs[:5]:  # Keep top 5 as original
+        variance = max(job.over_billing, job.under_billing)
+        severity = "high" if variance > 100000 else "medium"
         risks.append({
             "id": job.job_id,
             "jobId": job.job_id,
-            "jobName": job.job_name or "Unknown",
-            "riskTags": "Overbilling" if ob_amount > ub_amount else "Underbilling",
+            "jobName": job.job_name or "",  # Add name if available
+            "riskTags": "Overbilling" if job.over_billing > 0 else "Underbilling",
             "riskLevel": severity,
             "riskLevelLabel": severity.capitalize(),
             "amountAbs": f"${variance:,.0f}",
-            "ubobType": "OB" if ob_amount > ub_amount else "UB",
-            "percentComplete": f"{job.percent_complete:.1%}",
-            "contractValue": f"${job.total_contract_price:,.0f}",
-            "earnedRevenue": f"${job.earned_revenue:,.0f}",
-            "billedToDate": f"${job.billed_to_date:,.0f}"
+            "ubobType": "OB" if job.over_billing > 0 else "UB",
+            "percentComplete": f"{job.percent_complete:.1%}"
         })
-    
-    # Generate narrative
-    narrative_prompt = f"""Write 2-3 professional sentences summarizing this WIP portfolio:
-    - Total Contract: ${calc_totals['total_contract']:,.0f}
-    - GP%: {gp_pct:.1f}%
-    - High/Critical Risk Jobs: {len([r for r in risks if r['riskLevel'] in ['high', 'critical']])}
-    - Total Overbilling: ${calc_totals['total_ob']:,.0f}
-    - Total Underbilling: ${calc_totals['total_ub']:,.0f}
-    Focus on key insights and risks."""
-    
-    response = llm.invoke(narrative_prompt)
+
+    # Generate narrative - keep it simple
+    response = llm.invoke(f"Write 1 concise, professional sentence summarizing the portfolio health. Total Contract: ${t_contract:,.0f}. GP: {gp_pct:.1f}%. Risks: {len(risks)} jobs.")
     narrative = response.content.strip() if hasattr(response, 'content') else str(response).strip()
     narrative = narrative.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-    
-    # Build the complete payload
+
+    # Build the payload - KEEP ORIGINAL STRUCTURE
     payload = {
-        # Full extracted table with all columns
+        # Full extracted table with all columns (new)
         "full_wip_table": [row.model_dump() for row in data],
         
-        # Legacy clean_table for backwards compatibility
-        "clean_table": [{
-            "job_id": row.job_id,
-            "contract_amount": row.contract_amount,
-            "est_cost": row.est_cost,
-            "billed_to_date": row.billed_to_date,
-            "cost_to_date": row.cost_to_date,
-            "percent_complete": row.percent_complete,
-            "earned_revenue": row.earned_revenue,
-            "over_billing": row.over_billing,
-            "under_billing": row.under_billing,
-            "ctc": row.ctc
-        } for row in data],
+        # Keep original clean_table structure exactly
+        "clean_table": [row.model_dump() for row in data],
         
-        # Validation results
-        "validation": validation_results,
+        # Validation data if we have totals
+        "totals_validation": totals.model_dump() if totals else None,
         
-        # Extracted totals for reference
-        "extracted_totals": totals.model_dump() if totals else None,
-        
-        # Enhanced widget data
+        # Widget data - KEEP ORIGINAL STRUCTURE
         "widget_data": {
-            "summary": {
-                "type": "text", 
-                "text": narrative
-            },
+            # Summary stays inside widget_data as original
+            "summary": {"type": "text", "text": narrative},
+            
+            # Metrics - restore original order and labels
             "metrics": {
                 "totalContractAmount": {
                     "label": "Total Contract", 
-                    "value": f"${calc_totals['total_contract']/1000000:.2f}M",
-                    "raw": calc_totals['total_contract']
-                },
-                "totalCosts": {
-                    "label": "Total Estimated Costs",
-                    "value": f"${calc_totals['total_cost']/1000000:.2f}M",
-                    "raw": calc_totals['total_cost']
+                    "value": f"${t_contract/1000000:.2f}M"
                 },
                 "uegp": {
                     "label": "UEGP", 
-                    "value": f"${t_uegp/1000000:.2f}M",
-                    "raw": t_uegp
+                    "value": f"${t_uegp/1000000:.2f}M"
                 },
                 "gpPct": {
                     "label": "GP%", 
-                    "value": f"{gp_pct:.1f}%",
-                    "raw": gp_pct
+                    "value": f"{gp_pct:.1f}%"
                 },
                 "ctc": {
-                    "label": "Cost to Complete", 
-                    "value": f"${calc_totals['total_ctc']/1000000:.2f}M",
-                    "raw": calc_totals['total_ctc']
-                },
-                "totalOverbilling": {
-                    "label": "Total Overbilling",
-                    "value": f"${calc_totals['total_ob']/1000000:.2f}M",
-                    "raw": calc_totals['total_ob']
-                },
-                "totalUnderbilling": {
-                    "label": "Total Underbilling",
-                    "value": f"${calc_totals['total_ub']/1000000:.2f}M",
-                    "raw": calc_totals['total_ub']
+                    "label": "CTC", 
+                    "value": f"${t_ctc/1000000:.2f}M"
                 },
                 "wipGpPct": {
                     "label": "WIP GP%", 
-                    "value": f"{gp_pct:.1f}%",
-                    "raw": gp_pct
+                    "value": f"{gp_pct:.1f}%"
                 },
+                # Replace CC GP% with Net Billing Position as you suggested
                 "ccGpPct": {
-                    "label": "CC GP%", 
-                    "value": "N/A"
+                    "label": "Net Billing", 
+                    "value": net_billing_label
                 }
             },
-            "riskRowsAll": risks,
-            "jobCount": len(data),
-            "dataQuality": {
-                "rowsExtracted": len(data),
-                "totalsValidated": len(validation_results) > 0,
-                "validationPassed": all(v["valid"] for v in validation_results.values()) if validation_results else None
-            }
+            "riskRowsAll": risks
         }
     }
     
@@ -475,13 +397,7 @@ if __name__ == "__main__":
             print("\n--- EXTRACTION COMPLETE ---")
             print(f"Rows extracted: {len(result['final_json'].get('full_wip_table', []))}")
             
-            if result["final_json"].get("validation"):
-                print("\n--- VALIDATION RESULTS ---")
-                for field, validation in result["final_json"]["validation"].items():
-                    status = "✓" if validation["valid"] else "✗"
-                    print(f"{status} {field}: Calc={validation['calculated']:,.0f}, Expected={validation['expected']:,.0f}, Variance={validation['variance_pct']:.2f}%")
-            
-            print("\n--- WIDGET DATA ---")
+            print("\n--- WIDGET DATA (for frontend) ---")
             print(json.dumps(result["final_json"]["widget_data"], indent=2))
             
             # Save full output for debugging
