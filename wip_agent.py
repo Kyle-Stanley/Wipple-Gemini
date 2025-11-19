@@ -16,7 +16,7 @@ if "GOOGLE_API_KEY" not in os.environ:
 
 # Initialize the NEW 2025 Client for native PDF reading
 client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-MODEL_NAME = "gemini-3-pro-preview"
+MODEL_NAME = "gemini-2.0-flash-exp"  # or "gemini-1.5-pro" if you prefer
 
 llm = ChatGoogleGenerativeAI(
     model=MODEL_NAME,
@@ -37,24 +37,29 @@ class RawWipRow(BaseModel):
 class CalculatedWipRow(RawWipRow):
     """The Python Logic Engine."""
     @computed_field
+    @property
     def percent_complete(self) -> float:
         return round(self.cost_to_date / self.est_cost, 4) if self.est_cost else 0.0
 
     @computed_field
+    @property
     def earned_revenue(self) -> float:
         return round(self.contract_amount * self.percent_complete, 2)
 
     @computed_field
+    @property
     def over_billing(self) -> float:
         val = self.billed_to_date - self.earned_revenue
         return round(val, 2) if val > 0 else 0.0
 
     @computed_field
+    @property
     def under_billing(self) -> float:
         val = self.earned_revenue - self.billed_to_date
         return round(val, 2) if val > 0 else 0.0
     
     @computed_field
+    @property
     def ctc(self) -> float:
         return round(self.est_cost - self.cost_to_date, 2)
 
@@ -71,7 +76,7 @@ class WipState(BaseModel):
 # ==========================================
 
 def extractor_node(state: WipState):
-    print(f"\n--- GEMINI 3 PRO IS READING (NATIVE SDK): {state.file_path} ---")
+    print(f"\n--- GEMINI IS READING (NATIVE SDK): {state.file_path} ---")
     
     try:
         with open(state.file_path, "rb") as f:
@@ -79,17 +84,20 @@ def extractor_node(state: WipState):
     except FileNotFoundError:
         return {"processed_data": []}
 
-    # Setup NATIVE Model for structured output
-    native_model = genai.GenerativeModel(
-        MODEL_NAME,
-        generation_config={
-            "response_mime_type": "application/json",
-            "response_schema": WipExtractionResult
-        }
-    )
-
     prompt = """
-    Extract the WIP Schedule table.
+    Extract the WIP Schedule table and return as JSON matching this schema:
+    {
+        "rows": [
+            {
+                "job_id": "string",
+                "contract_amount": number,
+                "est_cost": number, 
+                "billed_to_date": number,
+                "cost_to_date": number
+            }
+        ]
+    }
+    
     MAPPING:
     - Map 'Total Contract', 'Rev Contract' -> contract_amount
     - Map 'Est Cost', 'Total Cost' -> est_cost
@@ -99,10 +107,11 @@ def extractor_node(state: WipState):
     RULES:
     - Ignore 'Total' rows.
     - Convert (Negative Numbers) to -123.45.
+    - Return ONLY valid JSON, no markdown or explanations.
     """
 
     try:
-        # Pass the PDF directly to Gemini 3 as bytes
+        # Use the client to generate content directly
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[
@@ -111,7 +120,7 @@ def extractor_node(state: WipState):
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=WipExtractionResult
+                response_schema=WipExtractionResult.model_json_schema()
             )
         )
         
@@ -163,16 +172,19 @@ def analyst_node(state: WipState):
         })
 
     # Narrative Generation
-    # This LLM call produces a complex object with the text and metadata.
-    # We must access the .content property to get the string, and then clean it.
-    response = llm.invoke(f"Write 1 concise, professional sentence summarizing the portfolio health. Total Contract: ${t_contract}. GP: {gp_pct:.1f}%. Risks: {len(risks)} jobs.").content
+    response = llm.invoke(f"Write 1 concise, professional sentence summarizing the portfolio health. Total Contract: ${t_contract:,.0f}. GP: {gp_pct:.1f}%. Risks: {len(risks)} jobs.")
     
-    narrative = response.strip().replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+    # Extract the actual text content from the response
+    if hasattr(response, 'content'):
+        narrative = response.content.strip()
+    else:
+        narrative = str(response).strip()
+    
+    narrative = narrative.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
 
     payload = {
         "clean_table": [row.model_dump() for row in data],
         "widget_data": {
-            # We wrap the cleaned string in the desired object structure for the frontend
             "summary": {"type": "text", "text": narrative},
             "metrics": {
                 "totalContractAmount": {"label": "Total Contract", "value": f"${t_contract/1000000:.2f}M"},
