@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wipple Financial Agent</title>
+    <title>Wipple</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     
@@ -149,6 +149,61 @@
         .collapse-icon { transition: transform 0.3s; }
         .collapse-icon.collapsed { transform: rotate(-90deg); }
     </style>
+    <!-- Firebase Libraries -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Globals for use in non-module scripts
+        window.firebaseApp = null;
+        window.db = null;
+        window.auth = null;
+        window.userId = null;
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
+
+        // --- FIREBASE INIT ---
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        
+        if (firebaseConfig) {
+            const app = initializeApp(firebaseConfig);
+            window.firebaseApp = app;
+            window.db = getFirestore(app);
+            window.auth = getAuth(app);
+
+            // Auth Logic
+            const initAuth = async () => {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(window.auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(window.auth);
+                    }
+                    window.userId = window.auth.currentUser.uid;
+                    console.log("Authenticated as:", window.userId);
+                } catch (error) {
+                    console.error("Auth Failed:", error);
+                }
+            };
+            initAuth();
+        }
+
+        // Make save function global
+        window.saveAnalysis = async (data) => {
+            if (!window.db || !window.userId) return;
+            try {
+                // Path: /artifacts/{appId}/users/{userId}/wip_analyses/{autoId}
+                const colRef = collection(window.db, 'artifacts', window.appId, 'users', window.userId, 'wip_analyses');
+                await addDoc(colRef, {
+                    timestamp: new Date(),
+                    data: data
+                });
+                console.log("Analysis saved to Firestore");
+            } catch (e) {
+                console.error("Save failed:", e);
+            }
+        };
+    </script>
 </head>
 <body class="min-h-screen overflow-y-auto pb-32">
     
@@ -183,7 +238,7 @@
     </div>
 
 <script>
-    const API_ENDPOINT = "https://wipple-gemini-production.up.railway.app/analyze-wip-stream";
+    const API_ENDPOINT = "wipple-gemini-production.up.railway.app";
     
     const messagesWindow = document.getElementById('messages-window');
     const fileInput = document.getElementById('file-input');
@@ -269,7 +324,15 @@
                         } else if (line.startsWith('event: result')) {
                             removeLoading();
                             const data = JSON.parse(line.split('data: ')[1]);
+                            
+                            // Render
                             renderResults(data);
+                            
+                            // SAVE TO FIREBASE
+                            if(window.saveAnalysis) {
+                                window.saveAnalysis(data);
+                            }
+
                         } else if (line.startsWith('event: error')) {
                             removeLoading();
                             addMessage("Error processing file.", 'error');

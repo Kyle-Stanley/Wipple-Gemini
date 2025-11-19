@@ -1,0 +1,8 @@
+{
+  "projects": {
+    "default": "wipple-ai",
+    "prod": "wipple-ai"
+  },
+  "targets": {},
+  "etags": {}
+}
