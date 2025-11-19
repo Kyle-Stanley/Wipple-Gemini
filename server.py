@@ -15,7 +15,15 @@ app = FastAPI()
 # Allow your frontend (wipple.ai) to talk to this
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all for testing
+    # CRITICAL: Add your actual domains here to fix the "Stuck" issue
+    allow_origins=[
+        "https://wipple.ai", 
+        "https://www.wipple.ai", 
+        "https://wipple-ai.web.app",
+        "http://localhost:8000",
+        "*" # Keep * for testing if you want, but specific domains are safer for prod
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
