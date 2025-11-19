@@ -63,6 +63,12 @@ class CalculatedWipRow(FullWipRow):
             val = self.cost_to_date / self.estimated_total_costs
             return min(val, 1.0)
         return 0.0
+        
+    @computed_field
+    @property
+    def uegp(self) -> float:
+        # Unearned Gross Profit = Est GP - GP to Date
+        return self.estimated_gross_profit - self.gross_profit_to_date
 
 class WipState(BaseModel):
     file_path: str
@@ -166,22 +172,23 @@ def analyst_node(state: WipState):
 
     # --- 2. KPIs ---
     
-    # UEGP = Unearned Gross Profit
+    # UEGP
     t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
     
     # GP %
     gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
     
-    # Net UB / OB: Sum(Abs(Over)) - Sum(Abs(Under))
-    # We use abs() to be robust against OCR reading them as negatives
-    total_over_abs = sum(abs(r.over_billings) for r in rows)
-    total_under_abs = sum(abs(r.under_billings) for r in rows)
-    net_ub_ob = total_over_abs - total_under_abs
+    # Net UB / OB Logic: (Total Billed - Total Earned)
+    # If Billed > Earned, you are in a Net Overbilled (Liability) position.
+    # If Billed < Earned, you are in a Net Underbilled (Asset) position.
+    # This is the mathematical truth of the portfolio.
+    net_ub_ob = calc.billed_to_date - calc.revenues_earned
     
     net_ub_ob_label = f"Over ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Under ${abs(net_ub_ob)/1000:.0f}k"
 
-    # --- 3. VALIDATIONS ---
+    # --- 3. VALIDATIONS (Descriptive Messages Restored) ---
     struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
+    struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
     
     # Formulaic check
     formula_failures = 0
@@ -189,14 +196,17 @@ def analyst_node(state: WipState):
         if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 1.0:
             formula_failures += 1
     formula_pass = formula_failures == 0
+    formula_msg = "All formulas balance" if formula_pass else f"{formula_failures} row errors"
 
     # Totals check
     totals_pass = False
-    totals_msg = "Fail"
+    totals_msg = "No Totals Row"
     if extracted_totals:
         if abs(calc.revenues_earned - extracted_totals.revenues_earned) < 5.0:
             totals_pass = True
-            totals_msg = "Pass"
+            totals_msg = "Sum matches Report Total"
+        else:
+            totals_msg = f"Sum Mismatch (${abs(calc.revenues_earned - extracted_totals.revenues_earned):,.0f})"
 
     # --- 4. PORTFOLIO NARRATIVE ---
     loss_jobs = sum(1 for r in rows if r.estimated_gross_profit < 0)
@@ -244,8 +254,8 @@ def analyst_node(state: WipState):
         "widget_data": {
             "summary": {"text": summary_text},
             "validations": {
-                "structural": {"passed": struct_pass, "message": "Pass" if struct_pass else "Fail"},
-                "formulaic": {"passed": formula_pass, "message": "Pass" if formula_pass else "Fail"},
+                "structural": {"passed": struct_pass, "message": struct_msg},
+                "formulaic": {"passed": formula_pass, "message": formula_msg},
                 "totals": {"passed": totals_pass, "message": totals_msg}
             },
             "metrics": {
