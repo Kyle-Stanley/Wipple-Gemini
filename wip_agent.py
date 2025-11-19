@@ -89,51 +89,17 @@ def extractor_node(state: WipState):
     )
 
     prompt = """
-Extract the WIP Schedule table from the PDF.
-
-You MUST return every job row and the TOTAL row exactly as they appear,
-mapping them into the following fields:
-
-- job_id
-- job_name
-- total_contract_price
-- estimated_total_costs
-- estimated_gross_profit
-- revenues_earned
-- cost_to_date
-- gross_profit_to_date
-- billed_to_date
-- cost_to_complete
-- under_billings
-- over_billings
-
-MAPPING RULES:
-- Map “Job”, “Job #”, “Project No” → job_id
-- Map Job Description / Project Name → job_name
-- Map “Revised Contract”, “Contract Price”, “Total Contract” → total_contract_price
-- Map “Est. Cost”, “Estimated Costs at Completion”, “Est Total Costs” → estimated_total_costs
-- Map “Gross Profit”, “Est GP” → estimated_gross_profit
-- Map “Earned Revenue”, “Revenues Earned”, “Earned to Date” → revenues_earned
-- Map “Cost to Date”, “JTD Cost” → cost_to_date
-- Map “Gross Profit To Date”, “GP to Date” → gross_profit_to_date
-- Map “Billings to Date”, “Billed to Date”, “Total Billings” → billed_to_date
-- Map “Cost to Complete”, “CTC” → cost_to_complete
-- Map “Under Billings” → under_billings
-- Map “Over Billings” → over_billings
-
-ADDITIONAL RULES:
-- Return the TOTAL row in a separate object called "totals".
-- Ignore any rows labeled “Totals” when building job rows.
-- Convert currency strings (“(1,234)”, “$1,234.00”) into plain numbers.
-- If a column does not exist in the PDF, return null for that field.
-
-OUTPUT FORMAT:
-Produce a JSON object with:
-{
-  "rows": [...],
-  "totals": { ... }
-}
-"""
+    Extract the WIP Schedule table.
+    MAPPING:
+    - Map 'Total Contract', 'Rev Contract' -> contract_amount
+    - Map 'Est Cost', 'Total Cost' -> est_cost
+    - Map 'Billed', 'Total Billings' -> billed_to_date
+    - Map 'Cost to Date', 'JTD Cost' -> cost_to_date
+    
+    RULES:
+    - Ignore 'Total' rows.
+    - Convert (Negative Numbers) to -123.45.
+    """
 
     try:
         # Pass the PDF directly to Gemini 3 as bytes
