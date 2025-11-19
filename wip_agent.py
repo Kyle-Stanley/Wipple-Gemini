@@ -54,6 +54,9 @@ class WipTotals(BaseModel):
     cost_to_complete: float = 0.0
     under_billings: float = 0.0
     over_billings: float = 0.0
+    
+    # Add computed fields for the totals row export
+    uegp: float = 0.0 
 
 class CalculatedWipRow(FullWipRow):
     @computed_field
@@ -159,6 +162,7 @@ def analyst_node(state: WipState):
     # --- 1. AGGREGATES & RECALCULATION ---
     calc = WipTotals()
     
+    calculated_net_variance_sum = 0.0
     billing_logic_errors = []
     basic_math_errors = []
     
@@ -174,40 +178,52 @@ def analyst_node(state: WipState):
         calc.cost_to_complete += r.cost_to_complete
         calc.under_billings += r.under_billings
         calc.over_billings += r.over_billings
+        calc.uegp += r.uegp # Accumulate UEGP for totals row
         
-        # --- FORMULAIC VALIDATION (Consistent-ish) ---
-        # Check 1: UB/OB consistency
-        # Reported Net = Over (Positive) - Under (Positive ABS)
-        # Calculated Net = Billed - Earned
+        # --- User's Logic for Net UB/OB ---
+        poc = 0.0
+        if r.estimated_total_costs and r.estimated_total_costs != 0:
+            poc = r.cost_to_date / r.estimated_total_costs
         
-        # Since user confirmed Reported Columns are ABS values:
-        reported_net_signed = abs(r.over_billings) - abs(r.under_billings)
-        calculated_net_signed = r.billed_to_date - r.revenues_earned
+        expected_revenue = poc * r.total_contract_price
         
-        # Compare absolute difference to handle sign flips
-        if abs(abs(reported_net_signed) - abs(calculated_net_signed)) > 100.0:
+        # Calculated Variance (Mathematical Truth)
+        # Billed - Expected
+        row_variance = r.billed_to_date - expected_revenue
+        calculated_net_variance_sum += row_variance
+        
+        # --- VALIDATION A: Cone of Silence (Billing Logic) ---
+        # 1. Get Absolute Magnitude of Reported Variance
+        reported_abs = abs(r.over_billings) + abs(r.under_billings)
+        
+        # 2. Get Absolute Magnitude of Calculated Variance
+        calculated_abs = abs(row_variance)
+        
+        # 3. Tolerance based on POC
+        tolerance_pct = max(0.05, 1.0 - min(poc, 1.0))
+        allowed_delta = max(1000.0, calculated_abs * tolerance_pct)
+        
+        # 4. Check Difference
+        diff = abs(reported_abs - calculated_abs)
+        
+        if diff > allowed_delta: 
              billing_logic_errors.append({
                  "id": r.job_id, 
-                 "msg": f"Net UB/OB Mismatch: PDF ${abs(reported_net_signed):,.0f} vs Calc ${abs(calculated_net_signed):,.0f}"
+                 "msg": f"Var Mismatch ${diff:,.0f} (Allowed ${allowed_delta:,.0f} @ {poc*100:.0f}% POC)"
              })
              
-        # Check 2: Basic Math (Contract - Cost = GP)
+        # --- VALIDATION B: Basic Math ---
         if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 5.0:
             basic_math_errors.append({
                 "id": r.job_id,
-                "msg": f"Contract - Est Cost != Est GP"
+                "msg": f"Contract - Cost != GP"
             })
 
     # --- 2. KPIs ---
     t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
     gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
     
-    # Net UB / OB KPI: Total Over - Total Under (using Extracted values)
-    # We use the reported values as the "truth" for the KPI summary if validation passes reasonably well
-    total_over_abs = sum(abs(r.over_billings) for r in rows)
-    total_under_abs = sum(abs(r.under_billings) for r in rows)
-    net_ub_ob = total_over_abs - total_under_abs
-    
+    net_ub_ob = calculated_net_variance_sum
     net_ub_ob_label = f"Over ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Under ${abs(net_ub_ob)/1000:.0f}k"
 
     # --- 3. VALIDATIONS ---
@@ -242,8 +258,12 @@ def analyst_node(state: WipState):
     # --- 4. PORTFOLIO NARRATIVE ---
     loss_jobs = sum(1 for r in rows if r.estimated_gross_profit < 0)
     
-    # Count underbilled based on Reported
-    ub_jobs_count = sum(1 for r in rows if r.under_billings > r.over_billings)
+    ub_jobs_count = 0
+    for r in rows:
+        poc = (r.cost_to_date / r.estimated_total_costs) if r.estimated_total_costs else 0
+        expected = poc * r.total_contract_price
+        if r.billed_to_date < expected:
+             ub_jobs_count += 1    
     ub_pct = (ub_jobs_count / len(rows) * 100) if rows else 0
     
     if loss_jobs == 0:
@@ -261,45 +281,21 @@ def analyst_node(state: WipState):
         f"Overall Net UB / OB position is {net_ub_ob_label}."
     )
 
-    # --- 5. RISK ANALYSIS (Cone of Silence) ---
+    # --- 5. RISK ANALYSIS ---
     risks = []
     rows_with_variance = []
-    
     for r in rows:
-        # 1. Calculate POC (Performance)
-        poc = 0.0
-        if r.estimated_total_costs and r.estimated_total_costs != 0:
-            poc = r.cost_to_date / r.estimated_total_costs
-            
-        # 2. Calculate Theoretical Variance (How far off billings are from POC)
-        # Theoretical Revenue = POC * Contract
-        # Variance = Billed - Theoretical Revenue
-        expected_revenue = poc * r.total_contract_price
-        variance = r.billed_to_date - expected_revenue
+        poc = (r.cost_to_date / r.estimated_total_costs) if r.estimated_total_costs else 0
+        expected = poc * r.total_contract_price
+        variance = r.billed_to_date - expected
+        rows_with_variance.append((r, variance))
         
-        # 3. The "Cone of Silence"
-        # As POC approaches 100%, the Allowed Variance shrinks.
-        # If 90% done, allowed variance is 10% of Contract.
-        # If 50% done, allowed variance is 50% of Contract.
-        # Formula: Allowed = Contract * (1.0 - POC)
-        
-        # We use (1.0 - POC) as the "Remaining Work Factor"
-        # Adding a small 2.5% buffer for closeout noise
-        allowable_variance = r.total_contract_price * max(0.025, (1.0 - min(poc, 1.0)))
-        
-        # If actual variance is OUTSIDE the cone, flag it.
-        if abs(variance) > allowable_variance and abs(variance) > 5000: # $5k min floor
-             rows_with_variance.append((r, variance, allowable_variance))
-        
-    # Sort risks by magnitude of variance
     sorted_rows = sorted(rows_with_variance, key=lambda x: abs(x[1]), reverse=True)
     
-    for row, variance, limit in sorted_rows[:5]:
+    for row, variance in sorted_rows[:5]:
         is_ob = variance > 0
         val = abs(variance)
-        
-        severity = "high" if val > (limit * 1.5) else "medium"
-        
+        severity = "high" if val > 100000 else "medium"
         risks.append({
             "jobId": row.job_id,
             "jobName": row.job_name,
@@ -309,11 +305,12 @@ def analyst_node(state: WipState):
             "amountAbs": f"${val:,.0f}",
             "ubobType": "OB" if is_ob else "UB",
             "percentComplete": f"{row.percent_complete:.1%}",
-            "analysis": f"Variance of ${val:,.0f} exceeds the ${(limit/1000):.0f}k threshold for this stage."
+            "analysis": f"{'Billings exceed' if is_ob else 'Revenue exceeds'} progress by ${val:,.0f}."
         })
 
     payload = {
         "clean_table": [r.model_dump() for r in rows],
+        "calculated_totals": calc.model_dump(), # PASSED FOR CSV
         "widget_data": {
             "summary": {"text": summary_text},
             "validations": {

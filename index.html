@@ -19,7 +19,16 @@
 
         /* MESSAGE STYLING */
         .messages-container { max-width: 768px; margin: 0 auto; }
-        .user-message { background-color: #2f2f2f; color: #ececec; border-radius: 18px; padding: 10px 16px; max-width: 85%; margin-left: auto; }
+        /* Updated: Added width: fit-content to shrink-wrap the text */
+        .user-message { 
+            background-color: #2f2f2f; 
+            color: #ececec; 
+            border-radius: 18px; 
+            padding: 10px 16px; 
+            max-width: 85%; 
+            margin-left: auto; 
+            width: fit-content; /* <--- THIS FIXES THE WIDTH ISSUE */
+        }
         .ai-message { color: #ececec; max-width: 100%; line-height: 1.6; }
         .agent-status { color: #8e8ea0; font-size: 0.875rem; margin: 8px 0; }
         
@@ -94,7 +103,8 @@
         .risk-level { padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; width: fit-content; }
         .risk-high { background-color: rgba(239, 68, 68, 0.2); color: #ef4444; }
         .risk-medium { background-color: rgba(251, 191, 36, 0.2); color: #fbbf24; }
-        .variance-ob { color: #10b981; } .variance-ub { color: #ef4444; }
+        .variance-ob { color: #4ade80; } /* Green for Over */
+        .variance-ub { color: #ef4444; } /* Red for Under */
 
         /* WIP SUMMARY */
         .wip-summary { background-color: rgba(0, 191, 255, 0.05); border-left: 3px solid #00BFFF; padding: 16px; border-radius: 6px; margin-bottom: 20px; }
@@ -167,6 +177,7 @@
     let isProcessing = false;
     let currentLoadingDiv = null;
     let lastTableData = [];
+    let lastCalculatedTotals = null;
 
     const agentStatusMessages = [
         "OCR Agent is scanning the document now...",
@@ -296,6 +307,7 @@
         const wd = data.widget_data;
         const m = wd.metrics;
         lastTableData = data.clean_table;
+        lastCalculatedTotals = data.calculated_totals;
 
         // 1. Validation Widget
         const valDiv = document.createElement('div');
@@ -431,7 +443,7 @@
                         <div>
                             <h4 class="text-sm font-semibold text-gray-400 mb-3">Top Risks</h4>
                             <div class="risk-table">
-                                <div class="risk-header"><div>Job</div><div>Risk Type</div><div>Level</div><div class="text-right">Variance</div></div>
+                                <div class="risk-header"><div>Job</div><div>Risk Type</div><div>Level</div><div class="text-right"><span class="text-red-400">Under</span> / <span class="text-green-400">Over</span> Billings</div></div>
                                 ${riskRows}
                             </div>
                         </div>
@@ -504,8 +516,15 @@
     function downloadCSV(e) {
         e.stopPropagation(); 
         if (!lastTableData || !lastTableData.length) return;
-        const headers = Object.keys(lastTableData[0]);
+        
+        const headers = [
+            "job_id", "job_name", "total_contract_price", "estimated_total_costs", "estimated_gross_profit",
+            "billed_to_date", "cost_to_date", "under_billings", "over_billings", "uegp", "cost_to_complete"
+        ];
+        
         const csvRows = [headers.join(',')];
+        
+        // Rows
         for (const row of lastTableData) {
             const values = headers.map(header => {
                 const val = row[header];
@@ -513,6 +532,18 @@
             });
             csvRows.push(values.join(','));
         }
+        
+        // TOTALS ROW
+        if (lastCalculatedTotals) {
+            const totalValues = headers.map(header => {
+                if (header === 'job_id') return '"TOTALS"';
+                if (header === 'job_name') return '""';
+                const val = lastCalculatedTotals[header] || 0;
+                return `"${val}"`;
+            });
+            csvRows.push(totalValues.join(','));
+        }
+        
         const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
