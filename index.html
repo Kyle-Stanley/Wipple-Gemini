@@ -22,18 +22,21 @@
         .user-message { background-color: #2f2f2f; color: #ececec; border-radius: 18px; padding: 10px 16px; max-width: 85%; margin-left: auto; }
         .ai-message { color: #ececec; max-width: 100%; line-height: 1.6; }
         .agent-status { color: #8e8ea0; font-size: 0.875rem; margin: 8px 0; }
+        
+        /* ANIMATED DOTS */
+        .typing-dots span {
+            display: inline-block; width: 6px; height: 6px; border-radius: 50%; background-color: #8e8ea0;
+            margin: 0 2px; animation: blink 1.4s infinite both;
+        }
+        .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes blink { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }
 
-        /* WIDGET CARD */
+        /* WIDGETS */
         .widget-card { background: linear-gradient(180deg, #262626 0%, #212121 100%); border: 1px solid #3e3e4e; border-radius: 12px; margin: 16px 0; overflow: hidden;}
         .widget-header { padding: 12px 16px; border-bottom: 1px solid #3e3e4e; display: flex; justify-content: space-between; align-items: center; cursor: pointer; color: #ececec; }
         .widget-header:hover { background-color: rgba(255, 255, 255, 0.03); }
-        
-        /* ANIMATION FIX: We use JS to set specific height, CSS handles transition */
-        .widget-content {
-            transition: height 0.3s ease-out, padding 0.3s ease;
-            overflow: hidden;
-            height: auto; /* Default state */
-        }
+        .widget-content { transition: height 0.3s ease-out; overflow: hidden; height: auto; }
 
         /* KPI GRID */
         .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
@@ -41,55 +44,51 @@
         .kpi-label { font-size: 0.75rem; color: #8e8ea0; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
         .kpi-value { font-size: 1.25rem; font-weight: 600; color: #ececec; }
 
-        /* VALIDATION WIDGET STYLES */
+        /* VALIDATION */
         .validation-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #3e3e4e; }
         .validation-row:last-child { border-bottom: none; }
-        .val-status { display: flex; align-items: center; font-size: 0.9rem; font-weight: 600; }
-        .val-pass { color: #10b981; }
-        .val-fail { color: #ef4444; }
-        .val-icon { margin-right: 8px; }
+        .val-pass { color: #10b981; } .val-fail { color: #ef4444; }
 
-        /* RISK TABLE */
-        .risk-table { width: 100%; font-size: 0.875rem; }
-        .risk-row { display: grid; grid-template-columns: 1.5fr 1.5fr 1fr 1fr; padding: 10px 0; border-bottom: 1px solid rgba(62, 62, 78, 0.3); color: #ececec; align-items: center;}
+        /* RISKS */
+        .risk-row { display: grid; grid-template-columns: 1.5fr 1.5fr 1fr 1fr; padding: 10px 0; border-bottom: 1px solid rgba(62, 62, 78, 0.3); color: #ececec; align-items: center; cursor: pointer; }
+        .risk-row:hover { background-color: rgba(255,255,255,0.03); }
         .risk-header { display: grid; grid-template-columns: 1.5fr 1.5fr 1fr 1fr; padding: 8px 0; border-bottom: 1px solid #3e3e4e; color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; }
+        .risk-details { background-color: rgba(0,0,0,0.2); padding: 0 16px; max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out, padding 0.3s ease; color: #a0a0a0; font-size: 0.875rem; }
+        .risk-details.expanded { max-height: 300px; padding: 12px 16px; }
         
         .risk-level { padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; width: fit-content; }
         .risk-high { background-color: rgba(239, 68, 68, 0.2); color: #ef4444; }
         .risk-medium { background-color: rgba(251, 191, 36, 0.2); color: #fbbf24; }
-        .variance-ob { color: #10b981; }
-        .variance-ub { color: #ef4444; }
+        .variance-ob { color: #10b981; } .variance-ub { color: #ef4444; }
 
         /* WIP SUMMARY */
         .wip-summary { background-color: rgba(0, 191, 255, 0.05); border-left: 3px solid #00BFFF; padding: 16px; border-radius: 6px; margin-bottom: 20px; }
         .wip-summary h4 { color: #00BFFF; font-size: 0.875rem; font-weight: 600; text-transform: uppercase; margin-bottom: 8px; }
         .wip-summary p { color: #d0d0d0; line-height: 1.6; font-size: 0.95rem; }
 
-        /* INPUT & UI */
-        .input-container { background-color: #2f2f2f; border: 1.5px solid #565869; border-radius: 24px; }
-        #chat-input { background: transparent; border: none; outline: none; color: #ececec; padding: 12px 16px; width: 100%; }
-        .icon-button { color: #8e8ea0; padding: 8px; border-radius: 50%; }
-        .icon-button:hover:not(:disabled) { background-color: rgba(255,255,255,0.1); color: white; }
-        
-        /* ANIMATIONS */
-        .typing-animation { animation: fadeIn 0.4s ease-out forwards; opacity: 0; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .collapse-icon { transition: transform 0.3s; }
-        .collapse-icon.collapsed { transform: rotate(-90deg); }
-        .welcome-message { text-align: center; color: #00BFFF; margin-bottom: 14px; transition: all 0.3s; }
-        .welcome-message.hidden { opacity: 0; height: 0; margin: 0; overflow: hidden; }
-        
         /* DATA TABLE */
         .data-table { width: 100%; border-collapse: collapse; }
         .data-table th { background: #2a2a2a; padding: 10px; text-align: left; color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; position: sticky; top: 0; }
         .data-table td { padding: 10px; border-bottom: 1px solid #333; font-size: 0.85rem; color: #ececec; }
         .text-right { text-align: right; }
+
+        /* INPUT UI */
+        .input-container { background-color: #2f2f2f; border: 1.5px solid #565869; border-radius: 24px; }
+        #chat-input { background: transparent; border: none; outline: none; color: #ececec; padding: 12px 16px; width: 100%; }
+        .icon-button { color: #8e8ea0; padding: 8px; border-radius: 50%; }
+        .icon-button:hover:not(:disabled) { background-color: rgba(255,255,255,0.1); color: white; }
+        
+        .welcome-message { text-align: center; color: #00BFFF; margin-bottom: 14px; transition: all 0.3s; }
+        .welcome-message.hidden { opacity: 0; height: 0; margin: 0; overflow: hidden; }
+        .collapse-icon { transition: transform 0.3s; }
+        .collapse-icon.collapsed { transform: rotate(-90deg); }
     </style>
 </head>
 <body class="min-h-screen overflow-y-auto pb-32">
     
     <header class="h-16 flex items-center px-6 sticky top-0 z-30 bg-[#212121]">
-        <div class="text-xl font-semibold text-white">Wipple Financial Agent</div>
+        <img src="logo2_bw.png" alt="Wipple" class="h-14" onerror="this.style.display='none'">
+        <div class="text-xl font-semibold text-white ml-2">Wipple Financial Agent</div>
     </header>
 
     <div id="messages-window" class="messages-container p-6"></div>
@@ -113,8 +112,7 @@
     </div>
 
 <script>
-    const API_ENDPOINT = "https://wipple-gemini-production.up.railway.app/analyze-wip-stream"; // Replace with your local if testing
-    // const API_ENDPOINT = "http://localhost:8000/analyze-wip-stream";
+    const API_ENDPOINT = "https://wipple-gemini-production.up.railway.app/analyze-wip-stream";
     
     const messagesWindow = document.getElementById('messages-window');
     const fileInput = document.getElementById('file-input');
@@ -125,19 +123,17 @@
 
     let uploadedFile = null;
     let isProcessing = false;
+    let currentLoadingDiv = null;
 
     // Helper to format currency
     const fmt = (num) => {
         if(num === undefined || num === null) return '$0';
-        // Check if string contains M or k already
         if(typeof num === 'string' && (num.includes('M') || num.includes('k') || num.includes('$'))) return num;
         return '$' + Math.round(Number(num)).toLocaleString();
     };
 
     window.onload = () => { uploadButton.disabled = false; chatInput.disabled = false; };
-
     uploadButton.addEventListener('click', () => !isProcessing && fileInput.click());
-    
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length) {
             uploadedFile = e.target.files[0];
@@ -145,7 +141,6 @@
             sendButton.disabled = false;
         }
     });
-
     sendButton.addEventListener('click', handleSend);
 
     function handleSend() {
@@ -155,7 +150,9 @@
         sendButton.disabled = true;
         
         addMessage(`Uploaded ${uploadedFile.name}`, 'user');
-        addMessage("Parsing document structure and extracting financial data...", 'agent-status', true);
+        // Initial Status
+        addMessage("Parsing document structure...", 'agent-status');
+        showLoading();
 
         const formData = new FormData();
         formData.append('file', uploadedFile);
@@ -170,10 +167,8 @@
                 reader.read().then(({done, value}) => {
                     if (done) {
                         isProcessing = false;
-                        fileInput.value = ''; 
-                        uploadedFile = null;
-                        chatInput.value = '';
-                        chatInput.placeholder = "Analysis complete.";
+                        removeLoading();
+                        resetUI();
                         return;
                     }
                     buffer += decoder.decode(value, { stream: true });
@@ -182,12 +177,15 @@
 
                     lines.forEach(line => {
                         if (line.startsWith('event: status')) {
-                            const text = line.split('data: ')[1];
-                            updateStatus(text);
+                            removeLoading();
+                            addMessage(line.split('data: ')[1], 'agent-status');
+                            showLoading();
                         } else if (line.startsWith('event: result')) {
+                            removeLoading();
                             const data = JSON.parse(line.split('data: ')[1]);
                             renderResults(data);
                         } else if (line.startsWith('event: error')) {
+                            removeLoading();
                             addMessage("Error processing file.", 'error');
                         }
                     });
@@ -198,82 +196,80 @@
         });
     }
 
-    function addMessage(text, type, animate = false) {
+    function addMessage(text, type) {
         const div = document.createElement('div');
-        div.className = 'mb-6';
-        const anim = animate ? 'typing-animation' : '';
+        div.className = 'mb-4 fade-in';
         
         if (type === 'user') {
-            div.innerHTML = `<div class="user-message ${anim}">${text}</div>`;
+            div.innerHTML = `<div class="user-message">${text}</div>`;
         } else if (type === 'agent-status') {
-            // Remove old status if exists
-            const old = document.querySelector('.latest-status');
-            if(old) old.classList.remove('latest-status');
-            div.innerHTML = `<div class="agent-status latest-status ${anim}">${text}</div>`;
+            div.innerHTML = `<div class="agent-status">${text}</div>`;
         } else {
-            div.innerHTML = `<div class="ai-message ${anim}">${text}</div>`;
+            div.innerHTML = `<div class="ai-message">${text}</div>`;
         }
         messagesWindow.appendChild(div);
         messagesWindow.scrollTop = messagesWindow.scrollHeight;
     }
 
-    function updateStatus(text) {
-        const lastStatus = document.querySelector('.latest-status');
-        if (lastStatus) {
-            lastStatus.innerText = text;
-        } else {
-            addMessage(text, 'agent-status', true);
+    function showLoading() {
+        if (currentLoadingDiv) return;
+        currentLoadingDiv = document.createElement('div');
+        currentLoadingDiv.className = 'agent-status mb-4';
+        currentLoadingDiv.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+        messagesWindow.appendChild(currentLoadingDiv);
+        messagesWindow.scrollTop = messagesWindow.scrollHeight;
+    }
+
+    function removeLoading() {
+        if (currentLoadingDiv) {
+            currentLoadingDiv.remove();
+            currentLoadingDiv = null;
         }
+    }
+
+    function resetUI() {
+        fileInput.value = ''; 
+        uploadedFile = null;
+        chatInput.value = '';
+        chatInput.placeholder = "Analysis complete.";
+        uploadButton.disabled = false;
+        chatInput.disabled = false;
     }
 
     function renderResults(data) {
         const wd = data.widget_data;
+        const m = wd.metrics;
 
         // 1. Validation Widget
         const valDiv = document.createElement('div');
-        valDiv.className = 'typing-animation delay-100';
         valDiv.innerHTML = renderValidationWidget(wd.validations);
         messagesWindow.appendChild(valDiv);
 
         // 2. Dashboard Widget
         const dashDiv = document.createElement('div');
-        dashDiv.className = 'typing-animation delay-200';
-        dashDiv.innerHTML = renderDashboardWidget(wd);
+        dashDiv.innerHTML = renderDashboardWidget(wd, m);
         messagesWindow.appendChild(dashDiv);
 
         // 3. Full Table Widget
         const tableDiv = document.createElement('div');
-        tableDiv.className = 'typing-animation delay-300';
         tableDiv.innerHTML = renderTableWidget(data.clean_table);
         messagesWindow.appendChild(tableDiv);
-
-        messagesWindow.scrollTop = messagesWindow.scrollHeight;
         
-        // Init collapsible logic
         setupCollapsibles();
     }
 
-    // --- WIDGET RENDERERS ---
-
     function renderValidationWidget(vals) {
         if (!vals) return '';
-        
-        const renderRow = (label, obj) => {
-            const isPass = obj.passed;
-            const icon = isPass 
-                ? `<svg class="val-icon text-green-500" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>`
-                : `<svg class="val-icon text-red-500" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
-            
-            return `
-                <div class="validation-row">
-                    <div class="text-gray-300 text-sm">${label}</div>
-                    <div class="val-status ${isPass ? 'val-pass' : 'val-fail'}">
-                        ${icon}
-                        <span>${obj.message}</span>
-                    </div>
+        const renderRow = (label, obj) => `
+            <div class="validation-row">
+                <div class="text-gray-300 text-sm">${label}</div>
+                <div class="val-status ${obj.passed ? 'val-pass' : 'val-fail'} flex items-center">
+                    ${obj.passed ? 
+                    '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>' : 
+                    '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'}
+                    <span>${obj.message}</span>
                 </div>
-            `;
-        };
+            </div>`;
 
         return `
             <div class="widget-card">
@@ -286,27 +282,26 @@
                     ${renderRow("Totals Validation", vals.totals)}
                     ${renderRow("Structural Validation", vals.structural)}
                 </div>
-            </div>
-        `;
+            </div>`;
     }
 
-    function renderDashboardWidget(data) {
-        const m = data.metrics;
+    function renderDashboardWidget(data, m) {
+        // HARDCODED ORDER AS REQUESTED
         const kpis = `
             <div class="kpi-grid">
-                <div class="kpi-box"><div class="kpi-label">${m.total_contract.label}</div><div class="kpi-value">${m.total_contract.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.gp.label}</div><div class="kpi-value">${m.gp.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.gp_pct.label}</div><div class="kpi-value">${m.gp_pct.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.earned.label}</div><div class="kpi-value">${m.earned.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.billed.label}</div><div class="kpi-value">${m.billed.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.net_bill.label}</div><div class="kpi-value" style="color:${m.net_bill.value.includes('Over')?'#10b981':'#ef4444'}">${m.net_bill.value}</div></div>
-            </div>
-        `;
+                <div class="kpi-box"><div class="kpi-label">${m.row1_1.label}</div><div class="kpi-value">${m.row1_1.value}</div></div>
+                <div class="kpi-box"><div class="kpi-label">${m.row1_2.label}</div><div class="kpi-value">${m.row1_2.value}</div></div>
+                <div class="kpi-box"><div class="kpi-label">${m.row1_3.label}</div><div class="kpi-value">${m.row1_3.value}</div></div>
+                <div class="kpi-box"><div class="kpi-label">${m.row2_1.label}</div><div class="kpi-value">${m.row2_1.value}</div></div>
+                <div class="kpi-box"><div class="kpi-label">${m.row2_2.label}</div><div class="kpi-value">${m.row2_2.value}</div></div>
+                <div class="kpi-box"><div class="kpi-label">${m.row2_3.label}</div><div class="kpi-value" style="color:${m.row2_3.value.includes('Over')?'#10b981':'#ef4444'}">${m.row2_3.value}</div></div>
+            </div>`;
 
         let riskRows = '';
-        data.riskRowsAll.forEach(r => {
+        data.riskRowsAll.forEach((r, i) => {
+            const riskId = `risk-${i}`;
             riskRows += `
-                <div class="risk-row">
+                <div class="risk-row" onclick="toggleRisk('${riskId}')">
                     <div>
                         <div class="font-semibold">${r.jobId}</div>
                         <div class="text-xs text-gray-500 truncate w-32">${r.jobName || 'No Name'}</div>
@@ -315,7 +310,12 @@
                     <div><span class="risk-level ${r.riskLevel === 'high' ? 'risk-high' : 'risk-medium'}">${r.riskLevelLabel}</span></div>
                     <div class="font-semibold text-right ${r.ubobType === 'OB' ? 'variance-ob' : 'variance-ub'}">${r.amountAbs}</div>
                 </div>
-            `;
+                <div id="${riskId}" class="risk-details">
+                    <div class="py-2">
+                        <strong>Analysis:</strong> ${r.analysis}<br/>
+                        <strong>Completion:</strong> ${r.percentComplete}
+                    </div>
+                </div>`;
         });
 
         return `
@@ -326,27 +326,18 @@
                 </div>
                 <div class="widget-content" id="content-dash">
                     <div class="p-4">
-                        <div class="wip-summary">
-                            <h4>Portfolio Overview</h4>
-                            <p>${data.summary.text}</p>
-                        </div>
+                        <div class="wip-summary"><h4>Portfolio Overview</h4><p>${data.summary.text}</p></div>
                         ${kpis}
                         <div>
                             <h4 class="text-sm font-semibold text-gray-400 mb-3">Top Billing Risks</h4>
                             <div class="risk-table">
-                                <div class="risk-header">
-                                    <div>Job</div>
-                                    <div>Risk Type</div>
-                                    <div>Level</div>
-                                    <div class="text-right">Variance</div>
-                                </div>
+                                <div class="risk-header"><div>Job</div><div>Risk Type</div><div>Level</div><div class="text-right">Variance</div></div>
                                 ${riskRows}
                             </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        `;
+            </div>`;
     }
 
     function renderTableWidget(rows) {
@@ -362,8 +353,7 @@
                 <td class="text-right ${r.over_billings>0?'variance-ob':(r.under_billings>0?'variance-ub':'')}">
                     ${r.over_billings>0 ? fmt(r.over_billings) : (r.under_billings>0 ? fmt(r.under_billings) : '-')}
                 </td>
-            </tr>
-        `).join('');
+            </tr>`).join('');
 
         return `
              <div class="widget-card">
@@ -374,57 +364,43 @@
                 <div class="widget-content collapsed" id="content-table" style="height: 0px;">
                     <div class="data-table" style="max-height: 400px; overflow-y: auto;">
                         <table>
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th class="text-right">Contract</th>
-                                    <th class="text-right">Est Cost</th>
-                                    <th class="text-right">Est GP</th>
-                                    <th class="text-right">Earned</th>
-                                    <th class="text-right">Billed</th>
-                                    <th class="text-right">OB/UB</th>
-                                </tr>
-                            </thead>
+                            <thead><tr><th>ID</th><th class="text-right">Contract</th><th class="text-right">Est Cost</th><th class="text-right">Est GP</th><th class="text-right">Earned</th><th class="text-right">Billed</th><th class="text-right">OB/UB</th></tr></thead>
                             <tbody>${trs}</tbody>
                         </table>
                     </div>
                 </div>
-            </div>
-        `;
+            </div>`;
     }
 
-    // --- COLLAPSE LOGIC (ANIMATION FIX) ---
+    // --- INTERACTIVITY ---
+    function toggleRisk(id) {
+        const el = document.getElementById(id);
+        el.classList.toggle('expanded');
+        // Adjust parent height dynamically
+        const parent = el.closest('.widget-content');
+        if(parent && !parent.classList.contains('collapsed')) {
+            parent.style.height = parent.scrollHeight + "px";
+        }
+    }
+
     function setupCollapsibles() {
         ['val', 'dash', 'table'].forEach(id => {
             const header = document.getElementById(`header-${id}`);
             const content = document.getElementById(`content-${id}`);
             const icon = document.getElementById(`icon-${id}`);
-
             if (!header || !content) return;
             
-            // Set initial explicit height if not collapsed, so transition works immediately
-            if (!content.classList.contains('collapsed')) {
-                content.style.height = content.scrollHeight + "px";
-            }
+            if (!content.classList.contains('collapsed')) content.style.height = content.scrollHeight + "px";
 
             header.addEventListener('click', () => {
-                const isCollapsed = content.classList.contains('collapsed');
-                
-                if (isCollapsed) {
-                    // Open
+                if (content.classList.contains('collapsed')) {
                     content.classList.remove('collapsed');
                     content.style.height = content.scrollHeight + "px";
                     icon.classList.remove('collapsed');
-                    
-                    // Reset to auto after transition for responsiveness
-                    setTimeout(() => {
-                        if(!content.classList.contains('collapsed')) content.style.height = 'auto';
-                    }, 300);
+                    setTimeout(() => { if(!content.classList.contains('collapsed')) content.style.height = 'auto'; }, 300);
                 } else {
-                    // Close - strictly set height first to enable transition
                     content.style.height = content.scrollHeight + "px";
-                    // Force reflow
-                    content.offsetHeight; 
+                    content.offsetHeight; // force reflow
                     content.classList.add('collapsed');
                     content.style.height = "0px";
                     icon.classList.add('collapsed');
