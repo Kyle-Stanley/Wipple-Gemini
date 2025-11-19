@@ -159,11 +159,11 @@ def analyst_node(state: WipState):
     # --- 1. AGGREGATES & RECALCULATION ---
     calc = WipTotals()
     
-    # We will recalculate the Net UB/OB based on the user's specific formula:
-    # Variance = Billed - (Cost/EstCost * Contract)
-    
     calculated_net_variance_sum = 0.0
-    billing_logic_failures = 0
+    
+    # Collect detailed errors for validation lists
+    billing_logic_errors = [] # Stores {id, msg}
+    basic_math_errors = []    # Stores {id, msg}
     
     for r in rows:
         # Standard sums
@@ -179,35 +179,34 @@ def analyst_node(state: WipState):
         calc.over_billings += r.over_billings
         
         # --- User's Logic for Net UB/OB ---
-        # 1. Determine Performance % (Cost / Est Cost)
-        # Use 0 if est cost is missing to avoid div/0
         poc = 0.0
         if r.estimated_total_costs and r.estimated_total_costs != 0:
             poc = r.cost_to_date / r.estimated_total_costs
         
-        # 2. Calculate "Theoretical" Revenue
         expected_revenue = poc * r.total_contract_price
-        
-        # 3. Variance = Actual Billed - Expected Revenue
-        # Positive = Overbilled (Cash heavy)
-        # Negative = Underbilled (Cash light)
         row_variance = r.billed_to_date - expected_revenue
         calculated_net_variance_sum += row_variance
         
-        # --- Validation Logic ---
-        # Does the reported OB/UB column match our calculated variance?
+        # --- VALIDATION A: Billing Logic ---
         # Reported Net = Over - Under
         reported_net = r.over_billings - r.under_billings
-        # Allow slight tolerance for rounding or manual adjustments
         if abs(reported_net - row_variance) > 100.0: 
-             billing_logic_failures += 1
+             billing_logic_errors.append({
+                 "id": r.job_id, 
+                 "msg": f"Reported Net ${reported_net:,.0f} vs Calculated ${row_variance:,.0f}"
+             })
+             
+        # --- VALIDATION B: Basic Math ---
+        # Contract - Cost = GP
+        if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 1.0:
+            basic_math_errors.append({
+                "id": r.job_id,
+                "msg": f"Contract - Cost ({r.total_contract_price - r.estimated_total_costs:,.0f}) != GP ({r.estimated_gross_profit:,.0f})"
+            })
 
     # --- 2. KPIs ---
-    
     t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
     gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
-    
-    # Net UB / OB is the sum of all individual variances calculated above
     net_ub_ob = calculated_net_variance_sum
     net_ub_ob_label = f"Over ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Under ${abs(net_ub_ob)/1000:.0f}k"
 
@@ -216,44 +215,41 @@ def analyst_node(state: WipState):
     struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
     struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
     
-    # B. Formulaic (Now strictly checks the Billing Logic too)
-    # We check basic Contract math AND the UB/OB logic
-    basic_math_failures = 0
-    for r in rows:
-        if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 1.0:
-            basic_math_failures += 1
-            
-    total_formula_failures = basic_math_failures + billing_logic_failures
-    formula_pass = total_formula_failures == 0
+    # B. Formulaic
+    total_failures = len(basic_math_errors) + len(billing_logic_errors)
+    formula_pass = total_failures == 0
     
     if formula_pass:
         formula_msg = "Formulas & Billing Logic Balance"
-    elif billing_logic_failures > 0:
-        formula_msg = f"Billing Logic Mismatch ({billing_logic_failures} rows)"
+    elif len(billing_logic_errors) > 0:
+        formula_msg = f"Billing Logic Mismatch ({len(billing_logic_errors)} rows)"
     else:
-        formula_msg = f"Basic Math Errors ({basic_math_failures} rows)"
+        formula_msg = f"Basic Math Errors ({len(basic_math_errors)} rows)"
+        
+    # Combine errors for display
+    all_formula_errors = basic_math_errors + billing_logic_errors
 
     # C. Totals
     totals_pass = False
     totals_msg = "No Totals Row"
+    totals_details = []
     if extracted_totals:
-        if abs(calc.revenues_earned - extracted_totals.revenues_earned) < 5.0:
+        diff = abs(calc.revenues_earned - extracted_totals.revenues_earned)
+        if diff < 5.0:
             totals_pass = True
             totals_msg = "Sum matches Report Total"
         else:
-            totals_msg = f"Sum Mismatch (${abs(calc.revenues_earned - extracted_totals.revenues_earned):,.0f})"
+            totals_msg = f"Sum Mismatch (${diff:,.0f})"
+            totals_details.append({"id": "TOTALS", "msg": f"Calc Earned ${calc.revenues_earned:,.0f} vs Report ${extracted_totals.revenues_earned:,.0f}"})
 
     # --- 4. PORTFOLIO NARRATIVE ---
     loss_jobs = sum(1 for r in rows if r.estimated_gross_profit < 0)
-    
-    # Count based on calculated variance
     ub_jobs_count = 0
     for r in rows:
         poc = (r.cost_to_date / r.estimated_total_costs) if r.estimated_total_costs else 0
         expected = poc * r.total_contract_price
         if r.billed_to_date < expected:
-             ub_jobs_count += 1
-             
+             ub_jobs_count += 1    
     ub_pct = (ub_jobs_count / len(rows) * 100) if rows else 0
     
     if loss_jobs == 0:
@@ -304,9 +300,9 @@ def analyst_node(state: WipState):
         "widget_data": {
             "summary": {"text": summary_text},
             "validations": {
-                "structural": {"passed": struct_pass, "message": struct_msg},
-                "formulaic": {"passed": formula_pass, "message": formula_msg},
-                "totals": {"passed": totals_pass, "message": totals_msg}
+                "structural": {"passed": struct_pass, "message": struct_msg, "details": []},
+                "formulaic": {"passed": formula_pass, "message": formula_msg, "details": all_formula_errors},
+                "totals": {"passed": totals_pass, "message": totals_msg, "details": totals_details}
             },
             "metrics": {
                 "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},

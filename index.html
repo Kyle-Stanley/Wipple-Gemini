@@ -60,18 +60,27 @@
         .kpi-label { font-size: 0.75rem; color: #8e8ea0; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
         .kpi-value { font-size: 1.25rem; font-weight: 600; color: #ececec; }
 
-        /* VALIDATION - AESTHETIC GREEN/RED */
-        .validation-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; margin-bottom: 1px; }
+        /* VALIDATION - EXPANDABLE & AESTHETIC */
+        .validation-row { padding: 12px 16px; margin-bottom: 1px; cursor: default; }
+        .validation-row.expandable { cursor: pointer; }
         .validation-row:last-child { margin-bottom: 0; }
         
         .val-row-pass { background-color: rgba(16, 185, 129, 0.2); border-left: 3px solid #10b981; }
         .val-row-fail { background-color: rgba(239, 68, 68, 0.2); border-left: 3px solid #ef4444; }
 
+        .val-header { display: flex; justify-content: space-between; align-items: center; }
         .val-pass { color: #10b981; font-weight: 600; } 
         .val-fail { color: #ef4444; font-weight: 600; }
+        
+        .val-details { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; padding-left: 8px; }
+        .val-details.open { max-height: 300px; margin-top: 8px; overflow-y: auto; }
+        .val-error-item { font-size: 0.75rem; color: #d1d5db; border-bottom: 1px solid rgba(255,255,255,0.1); padding: 6px 0; }
+        .val-error-item:last-child { border-bottom: none; }
+        
+        .val-expand-icon { transition: transform 0.2s; margin-left: 8px; }
+        .val-expand-icon.rotated { transform: rotate(180deg); }
 
         /* RISKS - ADJUSTED COLUMN WIDTHS */
-        /* Grid: Name(3fr) Tags(1fr) Level(0.8fr) Amount(1fr) */
         .risk-row { display: grid; grid-template-columns: 3fr 1fr 0.8fr 1fr; padding: 12px 0; border-bottom: 1px solid rgba(62, 62, 78, 0.3); color: #ececec; align-items: center; cursor: pointer; transition: background 0.2s; }
         .risk-row:hover { background-color: rgba(255,255,255,0.03); }
         .risk-header { display: grid; grid-template-columns: 3fr 1fr 0.8fr 1fr; padding: 8px 0; border-bottom: 1px solid #3e3e4e; color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; }
@@ -157,7 +166,6 @@
     let currentLoadingDiv = null;
     let lastTableData = [];
 
-    // RESTORED AGENT PERSONA
     const agentStatusMessages = [
         "OCR Agent is scanning the document now...",
         "OCR was successful. Passing to Validation Agent to confirm table validity...",
@@ -191,7 +199,6 @@
         
         addMessage(`Uploaded ${uploadedFile.name}`, 'user');
         
-        // RESTORED INITIAL MESSAGE
         addMessage(agentStatusMessages[0], 'agent-status');
         statusStep = 1;
         
@@ -221,7 +228,6 @@
                     lines.forEach(line => {
                         if (line.startsWith('event: status')) {
                             removeLoading();
-                            // Cycle through persona messages
                             const msg = agentStatusMessages[statusStep];
                             if (msg) {
                                 addMessage(msg, 'agent-status');
@@ -309,16 +315,45 @@
 
     function renderValidationWidget(vals) {
         if (!vals) return '';
-        const renderRow = (label, obj) => `
-            <div class="validation-row ${obj.passed ? 'val-row-pass' : 'val-row-fail'}">
-                <div class="text-gray-300 text-sm font-medium">${label}</div>
-                <div class="val-status ${obj.passed ? 'val-pass' : 'val-fail'} flex items-center">
-                    ${obj.passed ? 
-                    '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>' : 
-                    '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'}
-                    <span>${obj.message}</span>
+        
+        // Helper to generate a unique ID for toggling
+        const genId = () => 'val-' + Math.random().toString(36).substr(2, 9);
+
+        const renderRow = (label, obj) => {
+            const hasDetails = obj.details && obj.details.length > 0;
+            const rowId = genId();
+            const expandableClass = hasDetails ? 'expandable' : '';
+            const bgClass = obj.passed ? 'val-row-pass' : 'val-row-fail';
+            const statusClass = obj.passed ? 'val-pass' : 'val-fail';
+            
+            let detailsHtml = '';
+            if (hasDetails) {
+                const items = obj.details.map(d => `<div class="val-error-item"><span class="font-bold text-white mr-2">${d.id}:</span>${d.msg}</div>`).join('');
+                detailsHtml = `<div id="${rowId}-details" class="val-details">${items}</div>`;
+            }
+
+            // Onclick handler only if details exist
+            const onClick = hasDetails ? `onclick="toggleValidationDetails('${rowId}')"` : '';
+            const icon = hasDetails ? `<svg id="${rowId}-icon" class="val-expand-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>` : '';
+            
+            const statusIcon = obj.passed ? 
+                '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>' : 
+                '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+
+            return `
+                <div class="validation-row ${bgClass} ${expandableClass}" ${onClick}>
+                    <div class="val-header">
+                        <div class="text-gray-300 text-sm font-medium">${label}</div>
+                        <div class="val-status ${statusClass} flex items-center">
+                            ${statusIcon}
+                            <span>${obj.message}</span>
+                            ${icon}
+                        </div>
+                    </div>
+                    ${detailsHtml}
                 </div>
-            </div>`;
+            `;
+        };
 
         return `
             <div class="widget-card">
@@ -332,6 +367,22 @@
                     ${renderRow("Structural Validation", vals.structural)}
                 </div>
             </div>`;
+    }
+    
+    // New toggle function for validations
+    function toggleValidationDetails(rowId) {
+        const details = document.getElementById(rowId + '-details');
+        const icon = document.getElementById(rowId + '-icon');
+        if (!details) return;
+        
+        details.classList.toggle('open');
+        if(icon) icon.classList.toggle('rotated');
+        
+        // Adjust parent height if it's fixed
+        const parent = details.closest('.widget-content');
+        if(parent && !parent.classList.contains('collapsed')) {
+            parent.style.height = 'auto'; // Ensure it grows
+        }
     }
 
     function renderDashboardWidget(data, m) {
