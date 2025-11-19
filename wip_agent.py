@@ -1,5 +1,6 @@
 import os
 import json
+import math
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field, computed_field
 from langgraph.graph import StateGraph, END
@@ -14,9 +15,8 @@ from google.genai import types
 if "GOOGLE_API_KEY" not in os.environ:
     os.environ["GOOGLE_API_KEY"] = "" 
 
-# Initialize the NEW 2025 Client for native PDF reading
 client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-MODEL_NAME = "gemini-2.0-flash-exp"  # or "gemini-1.5-pro"
+MODEL_NAME = "gemini-2.0-flash-exp"
 
 llm = ChatGoogleGenerativeAI(
     model=MODEL_NAME,
@@ -24,103 +24,54 @@ llm = ChatGoogleGenerativeAI(
 )
 
 # ==========================================
-# 2. THE DATA MODELS - EXPANDED FOR FULL WIP
+# 2. DATA MODELS
 # ==========================================
 
 class FullWipRow(BaseModel):
-    """Complete WIP row with all standard columns"""
     job_id: str = Field(description="Job Number or ID")
     job_name: Optional[str] = Field(default="", description="Job Name or Description")
     
-    # Contract and Cost columns
-    total_contract_price: float = Field(description="Total Contract Price/Revenue")
-    estimated_total_costs: float = Field(description="Estimated Total Costs at Completion")
-    estimated_gross_profit: float = Field(description="Estimated Gross Profit")
+    total_contract_price: float = Field(default=0.0)
+    estimated_total_costs: float = Field(default=0.0)
+    estimated_gross_profit: float = Field(default=0.0)
     
-    # Earned/Actual columns
-    revenues_earned: float = Field(description="Revenues Earned to Date")
-    cost_to_date: float = Field(description="Costs Incurred to Date")
-    gross_profit_to_date: float = Field(description="Gross Profit to Date")
+    revenues_earned: float = Field(default=0.0)
+    cost_to_date: float = Field(default=0.0)
+    gross_profit_to_date: float = Field(default=0.0)
     
-    # Billing columns
-    billed_to_date: float = Field(description="Amount Billed to Date")
-    cost_to_complete: float = Field(description="Cost to Complete")
-    under_billings: float = Field(description="Under Billings")
-    over_billings: float = Field(description="Over Billings")
+    billed_to_date: float = Field(default=0.0)
+    cost_to_complete: float = Field(default=0.0)
+    under_billings: float = Field(default=0.0)
+    over_billings: float = Field(default=0.0)
 
 class WipTotals(BaseModel):
-    """Totals row from the WIP for validation"""
-    total_contract_price: Optional[float] = None
-    estimated_total_costs: Optional[float] = None
-    estimated_gross_profit: Optional[float] = None
-    revenues_earned: Optional[float] = None
-    cost_to_date: Optional[float] = None
-    gross_profit_to_date: Optional[float] = None
-    billed_to_date: Optional[float] = None
-    cost_to_complete: Optional[float] = None
-    under_billings: Optional[float] = None
-    over_billings: Optional[float] = None
+    total_contract_price: float = 0.0
+    estimated_total_costs: float = 0.0
+    estimated_gross_profit: float = 0.0
+    revenues_earned: float = 0.0
+    cost_to_date: float = 0.0
+    gross_profit_to_date: float = 0.0
+    billed_to_date: float = 0.0
+    cost_to_complete: float = 0.0
+    under_billings: float = 0.0
+    over_billings: float = 0.0
 
 class CalculatedWipRow(FullWipRow):
-    """Enhanced with calculated fields for backwards compatibility"""
-    
-    @computed_field
-    @property
-    def contract_amount(self) -> float:
-        """Legacy field for compatibility"""
-        return self.total_contract_price
-    
-    @computed_field
-    @property
-    def est_cost(self) -> float:
-        """Legacy field for compatibility"""
-        return self.estimated_total_costs
+    """Adds calculated fields and normalization for the frontend"""
     
     @computed_field
     @property
     def percent_complete(self) -> float:
         if self.estimated_total_costs and self.estimated_total_costs > 0:
-            return round(self.cost_to_date / self.estimated_total_costs, 4)
+            val = self.cost_to_date / self.estimated_total_costs
+            return min(val, 1.0) # Cap at 100% for display sanity, though >100 is possible
         return 0.0
     
     @computed_field
     @property
-    def earned_revenue(self) -> float:
-        """Calculate if not provided"""
-        if self.revenues_earned > 0:
-            return self.revenues_earned
-        return round(self.total_contract_price * self.percent_complete, 2)
-    
-    @computed_field
-    @property
-    def over_billing(self) -> float:
-        """Use provided value or calculate"""
-        if self.over_billings > 0:
-            return self.over_billings
-        val = self.billed_to_date - self.earned_revenue
-        return round(val, 2) if val > 0 else 0.0
-    
-    @computed_field
-    @property
-    def under_billing(self) -> float:
-        """Use provided value or calculate"""
-        if self.under_billings > 0:
-            return self.under_billings
-        val = self.earned_revenue - self.billed_to_date
-        return round(val, 2) if val > 0 else 0.0
-    
-    @computed_field
-    @property
-    def ctc(self) -> float:
-        """Use provided value or calculate"""
-        if self.cost_to_complete > 0:
-            return self.cost_to_complete
-        return round(self.estimated_total_costs - self.cost_to_date, 2)
-
-class WipExtractionResult(BaseModel):
-    """Complete extraction result with rows and totals"""
-    rows: List[FullWipRow]
-    totals: Optional[WipTotals] = None
+    def earned_revenue_calc(self) -> float:
+        """Internal calc for validation comparison"""
+        return self.total_contract_price * self.percent_complete
 
 class WipState(BaseModel):
     file_path: str
@@ -129,24 +80,25 @@ class WipState(BaseModel):
     final_json: Dict[str, Any] = {}
 
 # ==========================================
-# 3. THE EXTRACTION AGENT - FULL WIP
+# 3. EXTRACTOR NODE
 # ==========================================
 
 def extractor_node(state: WipState):
-    print(f"\n--- EXTRACTING COMPLETE WIP TABLE FROM: {state.file_path} ---")
+    print(f"\n--- EXTRACTING DATA FROM: {state.file_path} ---")
     
     try:
         with open(state.file_path, "rb") as f:
             file_bytes = f.read()
     except FileNotFoundError:
-        print(f"ERROR: File not found: {state.file_path}")
         return {"processed_data": [], "totals_row": None}
 
-    # Comprehensive extraction prompt with multiple column mappings
     prompt = """
-    Extract the COMPLETE WIP Schedule table including ALL columns and the TOTALS row.
-    
-    Return JSON matching this exact structure:
+    Extract the WIP Schedule table. I need three specific things:
+    1. Every single job row with all financial columns.
+    2. The Job Name and Job ID for every row.
+    3. The "TOTALS" row usually found at the bottom of the report.
+
+    Return JSON:
     {
         "rows": [
             {
@@ -177,63 +129,14 @@ def extractor_node(state: WipState):
             "over_billings": number
         }
     }
-    
-    COLUMN MAPPINGS (use these to identify columns):
-    
-    For total_contract_price, look for:
-    - "Total Contract", "Rev Contract", "Contract Amount", "Contract Price", 
-    - "Revised Contract", "Contract Value", "Total Revenue"
-    
-    For estimated_total_costs, look for:
-    - "Est Cost", "Estimated Cost", "Total Cost", "Est Total Cost",
-    - "Estimated Costs", "Total Estimated Cost", "Budget Cost"
-    
-    For estimated_gross_profit, look for:
-    - "Est GP", "Est Gross Profit", "Estimated GP", "Est Profit",
-    - "Estimated Margin", "Contract Margin"
-    
-    For revenues_earned, look for:
-    - "Earned Revenue", "Revenue Earned", "Earned", "Rev Earned",
-    - "Revenue to Date", "Earned to Date"
-    
-    For cost_to_date, look for:
-    - "Cost to Date", "JTD Cost", "Job to Date Cost", "Actual Cost",
-    - "Cost Incurred", "Total Cost to Date", "CTD"
-    
-    For gross_profit_to_date, look for:
-    - "GP to Date", "Gross Profit Earned", "Profit to Date", "GP Earned",
-    - "Earned GP", "Actual GP"
-    
-    For billed_to_date, look for:
-    - "Billed", "Total Billings", "Billed to Date", "Billings to Date",
-    - "Invoice to Date", "Total Billed", "BTD"
-    
-    For cost_to_complete, look for:
-    - "Cost to Complete", "CTC", "Remaining Cost", "Est to Complete",
-    - "ETC", "Forecast to Complete"
-    
-    For under_billings, look for:
-    - "Under Billing", "Underbilling", "UB", "Under Billed",
-    - "Revenue in Excess", "Unbilled"
-    
-    For over_billings, look for:
-    - "Over Billing", "Overbilling", "OB", "Over Billed",
-    - "Billing in Excess", "Deferred Revenue"
-    
-    EXTRACTION RULES:
-    1. Extract ALL data rows (jobs) - do NOT skip any
-    2. SEPARATELY extract the TOTALS row (usually at bottom, labeled "Total", "Totals", "Grand Total", etc.)
-    3. Convert parentheses (123.45) to negative: -123.45
-    4. Convert percentage values to decimals (e.g., 15% → 0.15) if stored as percentages
-    5. Remove currency symbols and commas from numbers
-    6. If a column doesn't exist, use 0 for that field
-    7. Include job names/descriptions if available
-    
-    Return ONLY valid JSON, no markdown or explanations.
+
+    RULES:
+    - If a value is in parentheses (100), it is negative -100.
+    - If a field is empty or dash, use 0.
+    - Do not calculate values, extract exactly what is written.
     """
 
     try:
-        # Generate content with structured output
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[
@@ -246,129 +149,128 @@ def extractor_node(state: WipState):
             )
         )
         
-        # Parse the response
-        extracted_data = json.loads(response.text)
+        data = json.loads(response.text)
+        rows = [CalculatedWipRow(**r) for r in data.get("rows", [])]
         
-        # Process rows
-        raw_rows = [FullWipRow(**row) for row in extracted_data.get("rows", [])]
-        calculated_rows = [CalculatedWipRow(**r.model_dump()) for r in raw_rows]
-        
-        # Process totals
         totals = None
-        if "totals" in extracted_data and extracted_data["totals"]:
-            totals = WipTotals(**extracted_data["totals"])
+        if data.get("totals"):
+            # Ensure we handle empty dictionary or partial matches
+            try:
+                totals = WipTotals(**data["totals"])
+            except:
+                print("Warning: Totals row malformed")
         
-        print(f"--- EXTRACTED {len(calculated_rows)} ROWS ---")
-        if totals:
-            print(f"--- TOTALS ROW EXTRACTED FOR VALIDATION ---")
-        
-        return {
-            "processed_data": calculated_rows,
-            "totals_row": totals
-        }
+        return {"processed_data": rows, "totals_row": totals}
         
     except Exception as e:
-        print(f"EXTRACTION ERROR: {e}")
+        print(f"Extraction Error: {e}")
         return {"processed_data": [], "totals_row": None}
 
 # ==========================================
-# 4. THE ANALYSIS AGENT - KEEP ORIGINAL STRUCTURE
+# 4. ANALYST NODE (VALIDATION LOGIC)
 # ==========================================
 
 def analyst_node(state: WipState):
-    print("--- ANALYZING COMPLETE WIP DATA ---")
-    data = state.processed_data
-    totals = state.totals_row
+    print("--- RUNNING VALIDATIONS & ANALYSIS ---")
+    rows = state.processed_data
+    extracted_totals = state.totals_row
     
-    if not data:
-        print("NO DATA. SKIPPING ANALYSIS.")
-        return {"final_json": {}}
+    if not rows:
+        return {"final_json": {"error": "No data found"}}
 
-    # Calculate aggregations
-    t_contract = sum(r.total_contract_price for r in data)
-    t_cost = sum(r.estimated_total_costs for r in data)
-    t_earned = sum(r.revenues_earned for r in data if r.revenues_earned > 0) or sum(r.earned_revenue for r in data)
-    t_cost_to_date = sum(r.cost_to_date for r in data)
-    t_billed = sum(r.billed_to_date for r in data)
-    t_ctc = sum(r.cost_to_complete for r in data if r.cost_to_complete > 0) or sum(r.ctc for r in data)
-    t_under = sum(r.under_billings for r in data)
-    t_over = sum(r.over_billings for r in data)
-    
-    # Calculate metrics - keep original logic
-    t_uegp = sum((r.contract_amount - r.est_cost) - (r.earned_revenue - r.cost_to_date) for r in data)
-    gp_pct = ((t_earned - t_cost_to_date) / t_earned * 100) if t_earned else 0
-    
-    # Net billing position
-    net_billing = t_over - t_under
-    net_billing_label = f"Over ${abs(net_billing)/1000:.0f}K" if net_billing > 0 else f"Under ${abs(net_billing)/1000:.0f}K"
-    
-    # Risk analysis - keep original structure
-    risks = []
-    sorted_jobs = sorted(data, key=lambda x: max(x.over_billing, x.under_billing), reverse=True)
-    
-    for job in sorted_jobs[:5]:  # Keep top 5 as original
-        variance = max(job.over_billing, job.under_billing)
-        severity = "high" if variance > 100000 else "medium"
-        risks.append({
-            "id": job.job_id,
-            "jobId": job.job_id,
-            "jobName": job.job_name or "",  # Add name if available
-            "riskTags": "Overbilling" if job.over_billing > 0 else "Underbilling",
-            "riskLevel": severity,
-            "riskLevelLabel": severity.capitalize(),
-            "amountAbs": f"${variance:,.0f}",
-            "ubobType": "OB" if job.over_billing > 0 else "UB",
-            "percentComplete": f"{job.percent_complete:.1%}"
-        })
+    # --- 1. CALCULATE AGGREGATES ---
+    calc_totals = WipTotals()
+    for r in rows:
+        calc_totals.total_contract_price += r.total_contract_price
+        calc_totals.estimated_total_costs += r.estimated_total_costs
+        calc_totals.estimated_gross_profit += r.estimated_gross_profit
+        calc_totals.revenues_earned += r.revenues_earned
+        calc_totals.cost_to_date += r.cost_to_date
+        calc_totals.gross_profit_to_date += r.gross_profit_to_date
+        calc_totals.billed_to_date += r.billed_to_date
+        calc_totals.cost_to_complete += r.cost_to_complete
+        calc_totals.under_billings += r.under_billings
+        calc_totals.over_billings += r.over_billings
 
-    # Generate narrative - keep it simple
-    response = llm.invoke(f"Write 1 concise, professional sentence summarizing the portfolio health. Total Contract: ${t_contract:,.0f}. GP: {gp_pct:.1f}%. Risks: {len(risks)} jobs.")
-    narrative = response.content.strip() if hasattr(response, 'content') else str(response).strip()
-    narrative = narrative.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+    # --- 2. PERFORM VALIDATIONS ---
+    
+    # A. Structural Validation (Did we get rows? Do they have IDs?)
+    struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
+    struct_msg = "Structure Valid" if struct_pass else "Missing Job IDs or Empty Table"
 
-    # Build the payload - KEEP ORIGINAL STRUCTURE
-    payload = {
-        # Full extracted table with all columns (new)
-        "full_wip_table": [row.model_dump() for row in data],
-        
-        # Keep original clean_table structure exactly
-        "clean_table": [row.model_dump() for row in data],
-        
-        # Validation data if we have totals
-        "totals_validation": totals.model_dump() if totals else None,
-        
-        # Widget data - KEEP ORIGINAL STRUCTURE
-        "widget_data": {
-            # Summary stays inside widget_data as original
-            "summary": {"type": "text", "text": narrative},
+    # B. Formulaic Validation (Row level logic)
+    # Check: Contract - Est Cost = Est GP (Allowing $1.00 rounding diff)
+    formula_failures = 0
+    for r in rows:
+        expected_gp = r.total_contract_price - r.estimated_total_costs
+        if abs(expected_gp - r.estimated_gross_profit) > 1.0:
+            formula_failures += 1
             
-            # Metrics - restore original order and labels
+    formula_pass = formula_failures == 0
+    formula_msg = "All formulas balance" if formula_pass else f"{formula_failures} rows have calculation errors"
+
+    # C. Totals Validation (Sum of rows vs Extracted Total)
+    totals_pass = False
+    totals_msg = "No Totals Row Found"
+    
+    if extracted_totals:
+        # Compare Revenue as a proxy for accuracy
+        diff = abs(calc_totals.revenues_earned - extracted_totals.revenues_earned)
+        if diff < 5.0: # Allow $5 rounding diff on grand total
+            totals_pass = True
+            totals_msg = "Sum of rows matches Report Total"
+        else:
+            totals_msg = f"Sum mismatch: Calc ${calc_totals.revenues_earned:,.0f} vs Rep ${extracted_totals.revenues_earned:,.0f}"
+
+    # --- 3. RISK ANALYSIS ---
+    risks = []
+    # Sort by magnitude of billing variance
+    sorted_rows = sorted(rows, key=lambda x: max(x.over_billings, x.under_billings), reverse=True)
+    
+    for row in sorted_rows[:5]:
+        is_ob = row.over_billings > row.under_billings
+        val = row.over_billings if is_ob else row.under_billings
+        
+        if val > 0:
+            severity = "high" if val > 100000 else "medium"
+            risks.append({
+                "jobId": row.job_id,
+                "jobName": row.job_name,
+                "riskTags": "Overbilling" if is_ob else "Underbilling",
+                "riskLevel": severity,
+                "riskLevelLabel": severity.capitalize(),
+                "amountAbs": f"${val:,.0f}",
+                "ubobType": "OB" if is_ob else "UB",
+                "percentComplete": f"{row.percent_complete:.1%}"
+            })
+
+    # --- 4. PORTFOLIO OVERVIEW TEXT ---
+    # Generate this deterministically to ensure it always appears
+    gp_percent = (calc_totals.gross_profit_to_date / calc_totals.revenues_earned * 100) if calc_totals.revenues_earned else 0
+    
+    summary_text = (
+        f"Portfolio contains {len(rows)} jobs with Total Contract Value of ${calc_totals.total_contract_price:,.0f}. "
+        f"Cumulative Gross Profit is running at {gp_percent:.1f}%. "
+        f"Identified {len(risks)} key billing variances requiring review."
+    )
+
+    # --- 5. CONSTRUCT FINAL PAYLOAD ---
+    payload = {
+        "clean_table": [r.model_dump() for r in rows],
+        "widget_data": {
+            "summary": {"text": summary_text},
+            "validations": {
+                "structural": {"passed": struct_pass, "message": struct_msg},
+                "formulaic": {"passed": formula_pass, "message": formula_msg},
+                "totals": {"passed": totals_pass, "message": totals_msg}
+            },
             "metrics": {
-                "totalContractAmount": {
-                    "label": "Total Contract", 
-                    "value": f"${t_contract/1000000:.2f}M"
-                },
-                "uegp": {
-                    "label": "UEGP", 
-                    "value": f"${t_uegp/1000000:.2f}M"
-                },
-                "gpPct": {
-                    "label": "GP%", 
-                    "value": f"{gp_pct:.1f}%"
-                },
-                "ctc": {
-                    "label": "CTC", 
-                    "value": f"${t_ctc/1000000:.2f}M"
-                },
-                "wipGpPct": {
-                    "label": "WIP GP%", 
-                    "value": f"{gp_pct:.1f}%"
-                },
-                # Replace CC GP% with Net Billing Position as you suggested
-                "ccGpPct": {
-                    "label": "Net Billing", 
-                    "value": net_billing_label
-                }
+                "total_contract": {"label": "Contract", "value": f"${calc_totals.total_contract_price/1000000:.2f}M"},
+                "earned": {"label": "Earned Rev", "value": f"${calc_totals.revenues_earned/1000000:.2f}M"},
+                "billed": {"label": "Billed", "value": f"${calc_totals.billed_to_date/1000000:.2f}M"},
+                "gp": {"label": "Gross Profit", "value": f"${calc_totals.gross_profit_to_date/1000000:.2f}M"},
+                "gp_pct": {"label": "GP Margin", "value": f"{gp_percent:.1f}%"},
+                "net_bill": {"label": "Net Billing", "value": f"${(calc_totals.over_billings - calc_totals.under_billings)/1000:.0f}k"}
             },
             "riskRowsAll": risks
         }
@@ -377,7 +279,7 @@ def analyst_node(state: WipState):
     return {"final_json": payload}
 
 # ==========================================
-# 5. EXECUTION FLOW
+# 5. WORKFLOW
 # ==========================================
 
 workflow = StateGraph(WipState)
@@ -387,22 +289,3 @@ workflow.set_entry_point("extract")
 workflow.add_edge("extract", "analyze")
 workflow.add_edge("analyze", END)
 app = workflow.compile()
-
-if __name__ == "__main__":
-    TEST_FILE = "test_wip.pdf" 
-    if os.path.exists(TEST_FILE):
-        result = app.invoke({"file_path": TEST_FILE})
-        
-        if result.get("final_json"):
-            print("\n--- EXTRACTION COMPLETE ---")
-            print(f"Rows extracted: {len(result['final_json'].get('full_wip_table', []))}")
-            
-            print("\n--- WIDGET DATA (for frontend) ---")
-            print(json.dumps(result["final_json"]["widget_data"], indent=2))
-            
-            # Save full output for debugging
-            with open("wip_output.json", "w") as f:
-                json.dump(result["final_json"], f, indent=2)
-            print("\nFull output saved to wip_output.json")
-    else:
-        print(f"ERROR: Please put a file named '{TEST_FILE}' in this folder.")
