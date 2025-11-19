@@ -22,32 +22,6 @@ llm = ChatGoogleGenerativeAI(
     temperature=0.0
 )
 
-import os
-import json
-from typing import List, Dict, Any, Optional, Generator
-from pydantic import BaseModel, Field, computed_field
-from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
-from google import genai
-from google.genai import types
-
-# ==========================================
-# 1. CONFIGURATION
-# ==========================================
-
-if "GOOGLE_API_KEY" not in os.environ:
-    os.environ["GOOGLE_API_KEY"] = "" 
-
-# Validated: Gemini 3 Pro (Nov 2025 Standard)
-MODEL_ID = "gemini-3.0-pro-preview"
-
-client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-
-llm = ChatGoogleGenerativeAI(
-    model=MODEL_ID,
-    temperature=0.0
-)
-
 # ==========================================
 # 2. DATA MODELS
 # ==========================================
@@ -80,6 +54,8 @@ class WipTotals(BaseModel):
     cost_to_complete: float = 0.0
     under_billings: float = 0.0
     over_billings: float = 0.0
+    
+    # Add computed fields for the totals row export
     uegp: float = 0.0 
 
 class CalculatedWipRow(FullWipRow):
@@ -94,6 +70,7 @@ class CalculatedWipRow(FullWipRow):
     @computed_field
     @property
     def uegp(self) -> float:
+        # Unearned Gross Profit = Est GP - GP to Date
         return self.estimated_gross_profit - self.gross_profit_to_date
 
 class WipState(BaseModel):
@@ -103,70 +80,7 @@ class WipState(BaseModel):
     final_json: Dict[str, Any] = {}
 
 # ==========================================
-# 3. CHAT FUNCTION (NEW)
-# ==========================================
-
-def chat_with_wip_stream(
-    history: List[Dict[str, str]], 
-    current_query: str, 
-    wip_data: Dict[str, Any]
-) -> Generator[str, None, None]:
-    """
-    Stateless RAG Chat:
-    Injects the analyzed JSON data + Conversation History into Gemini 3 context.
-    Streams the response token by token.
-    """
-    
-    # System Prompt: CFO Persona
-    system_instruction = """
-    You are Wipple, an expert Construction CFO and Financial Analyst.
-    You have been provided with a JSON dataset representing a WIP (Work-in-Progress) schedule.
-    
-    GUIDELINES:
-    1. BASE your answers STRICTLY on the provided JSON data.
-    2. If the user asks about a specific Job ID, look it up in the 'clean_table'.
-    3. Use financial terminology: Overbilling (liability), Underbilling (asset), Fade (profit loss), Bleed.
-    4. Be concise, direct, and professional.
-    5. If the data is missing or ambiguous, state that clearly.
-    """
-    
-    # Construct Context for Gemini
-    contents = []
-    
-    # 1. Inject Data as the first "User" message
-    # We minify the JSON to save tokens, though Gemini 3's window is massive.
-    data_context_msg = f"SYSTEM DATA INJECTION:\n{json.dumps(wip_data)}"
-    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=data_context_msg)]))
-    contents.append(types.Content(role="model", parts=[types.Part.from_text(text="I have processed the WIP schedule data. I am ready for your questions.")]))
-
-    # 2. Append Conversation History
-    for msg in history:
-        role = "user" if msg["role"] == "user" else "model"
-        contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
-        
-    # 3. Append Current Query
-    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=current_query)]))
-
-    try:
-        # Gemini 3 Stream Call
-        response_stream = client.models.generate_content_stream(
-            model=MODEL_ID,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.3, # Low temp for factual accuracy
-            )
-        )
-        
-        for chunk in response_stream:
-            if chunk.text:
-                yield chunk.text
-                
-    except Exception as e:
-        yield f"Error communicating with Gemini 3: {str(e)}"
-
-# ==========================================
-# 4. EXTRACTOR NODE (RESTORED)
+# 3. EXTRACTOR NODE
 # ==========================================
 
 def extractor_node(state: WipState):
@@ -213,7 +127,7 @@ def extractor_node(state: WipState):
 
     try:
         response = client.models.generate_content(
-            model=MODEL_ID,
+            model=MODEL_NAME,
             contents=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), prompt],
             config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
         )
@@ -234,7 +148,7 @@ def extractor_node(state: WipState):
         return {"processed_data": [], "totals_row": None}
 
 # ==========================================
-# 5. ANALYST NODE (RESTORED)
+# 4. ANALYST NODE (MATH & LOGIC)
 # ==========================================
 
 def analyst_node(state: WipState):
@@ -245,23 +159,29 @@ def analyst_node(state: WipState):
     if not rows:
         return {"final_json": {"error": "No data found"}}
 
+    # --- 1. AGGREGATES & RECALCULATION ---
     calc = WipTotals()
     
     calculated_net_variance_sum = 0.0
     billing_logic_errors = []
     basic_math_errors = []
     
-    # Normalization
+    # NORMALIZE DATA FIRST (Fix Sign Issues)
+    # If a PDF has (500) in Underbillings, it often means Overbilling.
+    # We normalize this so the table displays correctly.
     for r in rows:
+        # Case 1: Negative Underbilling -> Move to Overbilling
         if r.under_billings < 0:
             r.over_billings += abs(r.under_billings)
             r.under_billings = 0.0
+            
+        # Case 2: Negative Overbilling -> Move to Underbilling
         if r.over_billings < 0:
             r.under_billings += abs(r.over_billings)
             r.over_billings = 0.0
 
-    # Calculations & Validation Loop
     for r in rows:
+        # Aggregates
         calc.total_contract_price += r.total_contract_price
         calc.estimated_total_costs += r.estimated_total_costs
         calc.estimated_gross_profit += r.estimated_gross_profit
@@ -274,6 +194,7 @@ def analyst_node(state: WipState):
         calc.over_billings += r.over_billings
         calc.uegp += r.uegp 
         
+        # --- User's Logic for Net UB/OB ---
         poc = 0.0
         if r.estimated_total_costs and r.estimated_total_costs != 0:
             poc = r.cost_to_date / r.estimated_total_costs
@@ -282,7 +203,7 @@ def analyst_node(state: WipState):
         row_variance = r.billed_to_date - expected_revenue
         calculated_net_variance_sum += row_variance
         
-        # Validation Logic
+        # --- VALIDATION A: Cone of Silence ---
         reported_abs = abs(r.over_billings) + abs(r.under_billings)
         calculated_abs = abs(row_variance)
         
@@ -297,20 +218,21 @@ def analyst_node(state: WipState):
                  "msg": f"Var Mismatch ${diff:,.0f} (Allowed ${allowed_delta:,.0f} @ {poc*100:.0f}% POC)"
              })
              
+        # --- VALIDATION B: Basic Math ---
         if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 5.0:
             basic_math_errors.append({
                 "id": r.job_id,
                 "msg": f"Contract - Cost != GP"
             })
 
-    # KPIs
+    # --- 2. KPIs ---
     t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
     gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
     
     net_ub_ob = calculated_net_variance_sum
     net_ub_ob_label = f"Over ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Under ${abs(net_ub_ob)/1000:.0f}k"
 
-    # Validation Summaries
+    # --- 3. VALIDATIONS ---
     struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
     struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
     
@@ -326,6 +248,7 @@ def analyst_node(state: WipState):
         
     all_formula_errors = basic_math_errors + billing_logic_errors
 
+    # Totals Validation
     totals_pass = False
     totals_msg = "No Totals Row"
     totals_details = []
@@ -338,7 +261,7 @@ def analyst_node(state: WipState):
             totals_msg = f"Sum Mismatch (${diff:,.0f})"
             totals_details.append({"id": "TOTALS", "msg": f"Calc Earned ${calc.revenues_earned:,.0f} vs Report ${extracted_totals.revenues_earned:,.0f}"})
 
-    # Narrative
+    # --- 4. PORTFOLIO NARRATIVE ---
     loss_jobs = sum(1 for r in rows if r.estimated_gross_profit < 0)
     ub_jobs_count = sum(1 for r in rows if r.under_billings > 0)
     ub_pct = (ub_jobs_count / len(rows) * 100) if rows else 0
@@ -358,7 +281,7 @@ def analyst_node(state: WipState):
         f"Overall Net UB / OB position is {net_ub_ob_label}."
     )
 
-    # Risk Engine
+    # --- 5. RISK ANALYSIS ---
     risks = []
     rows_with_variance = []
     for r in rows:
