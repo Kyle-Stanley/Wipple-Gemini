@@ -44,15 +44,26 @@
         .kpi-label { font-size: 0.75rem; color: #8e8ea0; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
         .kpi-value { font-size: 1.25rem; font-weight: 600; color: #ececec; }
 
-        /* VALIDATION */
-        .validation-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #3e3e4e; }
-        .validation-row:last-child { border-bottom: none; }
-        .val-pass { color: #10b981; } .val-fail { color: #ef4444; }
+        /* VALIDATION - AESTHETIC GREEN/RED */
+        .validation-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; margin-bottom: 1px; }
+        .validation-row:last-child { margin-bottom: 0; }
+        
+        /* Increased opacity for visibility */
+        .val-row-pass { background-color: rgba(16, 185, 129, 0.15); border-left: 3px solid #10b981; }
+        .val-row-fail { background-color: rgba(239, 68, 68, 0.15); border-left: 3px solid #ef4444; }
 
-        /* RISKS */
-        .risk-row { display: grid; grid-template-columns: 1.5fr 1.5fr 1fr 1fr; padding: 10px 0; border-bottom: 1px solid rgba(62, 62, 78, 0.3); color: #ececec; align-items: center; cursor: pointer; }
+        .val-pass { color: #10b981; font-weight: 600; } 
+        .val-fail { color: #ef4444; font-weight: 600; }
+
+        /* RISKS - WIDER JOB AREA */
+        /* Grid: Name(2.5fr) Tags(1fr) Level(0.8fr) Amount(1fr) */
+        .risk-row { display: grid; grid-template-columns: 2.5fr 1fr 0.8fr 1fr; padding: 12px 0; border-bottom: 1px solid rgba(62, 62, 78, 0.3); color: #ececec; align-items: center; cursor: pointer; transition: background 0.2s; }
         .risk-row:hover { background-color: rgba(255,255,255,0.03); }
-        .risk-header { display: grid; grid-template-columns: 1.5fr 1.5fr 1fr 1fr; padding: 8px 0; border-bottom: 1px solid #3e3e4e; color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; }
+        .risk-header { display: grid; grid-template-columns: 2.5fr 1fr 0.8fr 1fr; padding: 8px 0; border-bottom: 1px solid #3e3e4e; color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; }
+        
+        .risk-expand-icon { transition: transform 0.2s; margin-left: 6px; color: #666; display: inline-block; vertical-align: middle; }
+        .risk-expand-icon.expanded { transform: rotate(180deg); color: #ececec; }
+
         .risk-details { background-color: rgba(0,0,0,0.2); padding: 0 16px; max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out, padding 0.3s ease; color: #a0a0a0; font-size: 0.875rem; }
         .risk-details.expanded { max-height: 300px; padding: 12px 16px; }
         
@@ -71,6 +82,9 @@
         .data-table th { background: #2a2a2a; padding: 10px; text-align: left; color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; position: sticky; top: 0; }
         .data-table td { padding: 10px; border-bottom: 1px solid #333; font-size: 0.85rem; color: #ececec; }
         .text-right { text-align: right; }
+        
+        .btn-download { background: transparent; color: #00BFFF; font-size: 0.75rem; border: 1px solid #00BFFF; padding: 4px 10px; border-radius: 4px; transition: all 0.2s; }
+        .btn-download:hover { background: rgba(0, 191, 255, 0.1); }
 
         /* INPUT UI */
         .input-container { background-color: #2f2f2f; border: 1.5px solid #565869; border-radius: 24px; }
@@ -86,13 +100,15 @@
 </head>
 <body class="min-h-screen overflow-y-auto pb-32">
     
+    <!-- Header (Clean) -->
     <header class="h-16 flex items-center px-6 sticky top-0 z-30 bg-[#212121]">
         <img src="logo2_bw.png" alt="Wipple" class="h-14" onerror="this.style.display='none'">
-        <div class="text-xl font-semibold text-white ml-2">Wipple Financial Agent</div>
     </header>
 
+    <!-- Chat Window -->
     <div id="messages-window" class="messages-container p-6"></div>
 
+    <!-- Input Area -->
     <div class="fixed bottom-0 left-0 right-0 z-30 p-4 bg-[#212121]">
         <div class="max-w-3xl mx-auto">
             <div id="welcome-message" class="welcome-message">
@@ -124,8 +140,16 @@
     let uploadedFile = null;
     let isProcessing = false;
     let currentLoadingDiv = null;
+    let lastTableData = [];
 
-    // Helper to format currency
+    // RESTORED AGENT PERSONA
+    const agentStatusMessages = [
+        "OCR Agent is scanning the document now...",
+        "OCR was successful. Passing to Validation Agent to confirm table validity...",
+        "Validations passed. Analyst Agent is preparing final analysis..."
+    ];
+    let statusStep = 0;
+
     const fmt = (num) => {
         if(num === undefined || num === null) return '$0';
         if(typeof num === 'string' && (num.includes('M') || num.includes('k') || num.includes('$'))) return num;
@@ -148,11 +172,15 @@
         welcomeMessage.classList.add('hidden');
         isProcessing = true;
         sendButton.disabled = true;
+        statusStep = 0; // Reset status cycle
         
         addMessage(`Uploaded ${uploadedFile.name}`, 'user');
-        // Initial Status
-        addMessage("Parsing document structure...", 'agent-status');
-        showLoading();
+        
+        // RESTORED INITIAL MESSAGE
+        addMessage(agentStatusMessages[0], 'agent-status');
+        statusStep = 1; // Next will be step 2
+        
+        showLoading(); // Start loading immediately
 
         const formData = new FormData();
         formData.append('file', uploadedFile);
@@ -177,8 +205,14 @@
 
                     lines.forEach(line => {
                         if (line.startsWith('event: status')) {
+                            // IGNORE BACKEND TEXT - USE LOCAL PERSONA LIST
                             removeLoading();
-                            addMessage(line.split('data: ')[1], 'agent-status');
+                            // Get next message in cycle
+                            const msg = agentStatusMessages[statusStep];
+                            if (msg) {
+                                addMessage(msg, 'agent-status');
+                                statusStep++;
+                            }
                             showLoading();
                         } else if (line.startsWith('event: result')) {
                             removeLoading();
@@ -239,6 +273,7 @@
     function renderResults(data) {
         const wd = data.widget_data;
         const m = wd.metrics;
+        lastTableData = data.clean_table;
 
         // 1. Validation Widget
         const valDiv = document.createElement('div');
@@ -261,12 +296,12 @@
     function renderValidationWidget(vals) {
         if (!vals) return '';
         const renderRow = (label, obj) => `
-            <div class="validation-row">
-                <div class="text-gray-300 text-sm">${label}</div>
+            <div class="validation-row ${obj.passed ? 'val-row-pass' : 'val-row-fail'}">
+                <div class="text-gray-300 text-sm font-medium">${label}</div>
                 <div class="val-status ${obj.passed ? 'val-pass' : 'val-fail'} flex items-center">
                     ${obj.passed ? 
-                    '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>' : 
-                    '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'}
+                    '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>' : 
+                    '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'}
                     <span>${obj.message}</span>
                 </div>
             </div>`;
@@ -286,7 +321,6 @@
     }
 
     function renderDashboardWidget(data, m) {
-        // HARDCODED ORDER AS REQUESTED
         const kpis = `
             <div class="kpi-grid">
                 <div class="kpi-box"><div class="kpi-label">${m.row1_1.label}</div><div class="kpi-value">${m.row1_1.value}</div></div>
@@ -303,7 +337,10 @@
             riskRows += `
                 <div class="risk-row" onclick="toggleRisk('${riskId}')">
                     <div>
-                        <div class="font-semibold">${r.jobId}</div>
+                        <div class="font-semibold flex items-center">
+                            ${r.jobId}
+                            <svg class="risk-expand-icon" id="${riskId}-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        </div>
                         <div class="text-xs text-gray-500 truncate w-32">${r.jobName || 'No Name'}</div>
                     </div>
                     <div class="text-gray-400 text-xs">${r.riskTags}</div>
@@ -311,9 +348,9 @@
                     <div class="font-semibold text-right ${r.ubobType === 'OB' ? 'variance-ob' : 'variance-ub'}">${r.amountAbs}</div>
                 </div>
                 <div id="${riskId}" class="risk-details">
-                    <div class="py-2">
-                        <strong>Analysis:</strong> ${r.analysis}<br/>
-                        <strong>Completion:</strong> ${r.percentComplete}
+                    <div class="py-3">
+                        <div class="mb-2 text-gray-300"><strong class="text-white">Analysis:</strong> ${r.analysis}</div>
+                        <div class="text-gray-400"><strong>Completion:</strong> ${r.percentComplete}</div>
                     </div>
                 </div>`;
         });
@@ -329,7 +366,7 @@
                         <div class="wip-summary"><h4>Portfolio Overview</h4><p>${data.summary.text}</p></div>
                         ${kpis}
                         <div>
-                            <h4 class="text-sm font-semibold text-gray-400 mb-3">Top Billing Risks</h4>
+                            <h4 class="text-sm font-semibold text-gray-400 mb-3">Top Risks</h4>
                             <div class="risk-table">
                                 <div class="risk-header"><div>Job</div><div>Risk Type</div><div>Level</div><div class="text-right">Variance</div></div>
                                 ${riskRows}
@@ -345,9 +382,9 @@
         let trs = rows.map(r => `
             <tr>
                 <td>${r.job_id}</td>
+                <td class="text-gray-400 text-xs">${r.job_name || '--'}</td>
                 <td class="text-right">${fmt(r.total_contract_price)}</td>
                 <td class="text-right">${fmt(r.estimated_total_costs)}</td>
-                <td class="text-right">${fmt(r.estimated_gross_profit)}</td>
                 <td class="text-right">${fmt(r.revenues_earned)}</td>
                 <td class="text-right">${fmt(r.billed_to_date)}</td>
                 <td class="text-right ${r.over_billings>0?'variance-ob':(r.under_billings>0?'variance-ub':'')}">
@@ -357,14 +394,15 @@
 
         return `
              <div class="widget-card">
-                <div class="widget-header" id="header-table">
-                    <span class="font-semibold">Extracted Data (${rows.length} Rows)</span>
+                <div class="widget-header" id="header-table" style="padding-right: 8px;">
+                    <span class="font-semibold flex-1">Extracted Data (${rows.length} Rows)</span>
+                    <button onclick="downloadCSV(event)" class="btn-download mr-3">Download CSV</button>
                     <svg id="icon-table" class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                 </div>
                 <div class="widget-content collapsed" id="content-table" style="height: 0px;">
                     <div class="data-table" style="max-height: 400px; overflow-y: auto;">
                         <table>
-                            <thead><tr><th>ID</th><th class="text-right">Contract</th><th class="text-right">Est Cost</th><th class="text-right">Est GP</th><th class="text-right">Earned</th><th class="text-right">Billed</th><th class="text-right">OB/UB</th></tr></thead>
+                            <thead><tr><th>ID</th><th>Name</th><th class="text-right">Contract</th><th class="text-right">Est Cost</th><th class="text-right">Earned</th><th class="text-right">Billed</th><th class="text-right">OB/UB</th></tr></thead>
                             <tbody>${trs}</tbody>
                         </table>
                     </div>
@@ -372,15 +410,34 @@
             </div>`;
     }
 
-    // --- INTERACTIVITY ---
+    function downloadCSV(e) {
+        e.stopPropagation(); 
+        if (!lastTableData || !lastTableData.length) return;
+        const headers = Object.keys(lastTableData[0]);
+        const csvRows = [headers.join(',')];
+        for (const row of lastTableData) {
+            const values = headers.map(header => {
+                const val = row[header];
+                return `"${('' + val).replace(/"/g, '""')}"`;
+            });
+            csvRows.push(values.join(','));
+        }
+        const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'wip_extract.csv'; a.click();
+    }
+
     function toggleRisk(id) {
         const el = document.getElementById(id);
+        const icon = document.getElementById(id + '-icon');
+        
         el.classList.toggle('expanded');
-        // Adjust parent height dynamically
-        const parent = el.closest('.widget-content');
-        if(parent && !parent.classList.contains('collapsed')) {
-            parent.style.height = parent.scrollHeight + "px";
-        }
+        if(icon) icon.classList.toggle('expanded');
+        
+        // REMOVED THE PARENT HEIGHT CALCULATION HERE
+        // By letting the parent remain "auto" (or whatever it is),
+        // it will naturally expand to fit the new content.
     }
 
     function setupCollapsibles() {
@@ -391,16 +448,22 @@
             if (!header || !content) return;
             
             if (!content.classList.contains('collapsed')) content.style.height = content.scrollHeight + "px";
-
-            header.addEventListener('click', () => {
+            const newHeader = header.cloneNode(true);
+            header.parentNode.replaceChild(newHeader, header);
+            
+            newHeader.addEventListener('click', (e) => {
+                if(e.target.tagName === 'BUTTON') return;
                 if (content.classList.contains('collapsed')) {
                     content.classList.remove('collapsed');
+                    // Animate open
                     content.style.height = content.scrollHeight + "px";
                     icon.classList.remove('collapsed');
+                    // RESET TO AUTO FOR DYNAMIC CONTENT
                     setTimeout(() => { if(!content.classList.contains('collapsed')) content.style.height = 'auto'; }, 300);
                 } else {
-                    content.style.height = content.scrollHeight + "px";
-                    content.offsetHeight; // force reflow
+                    // Animate close
+                    content.style.height = content.scrollHeight + "px"; // Force pixel height for transition
+                    content.offsetHeight; // Force reflow
                     content.classList.add('collapsed');
                     content.style.height = "0px";
                     icon.classList.add('collapsed');

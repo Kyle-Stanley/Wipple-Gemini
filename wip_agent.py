@@ -150,7 +150,7 @@ def analyst_node(state: WipState):
     if not rows:
         return {"final_json": {"error": "No data found"}}
 
-    # 1. Aggregates
+    # --- 1. AGGREGATES ---
     calc = WipTotals()
     for r in rows:
         calc.total_contract_price += r.total_contract_price
@@ -162,25 +162,28 @@ def analyst_node(state: WipState):
         calc.billed_to_date += r.billed_to_date
         calc.cost_to_complete += r.cost_to_complete
         calc.under_billings += r.under_billings
-        calc_totals = calc # Alias for easier reading below
         calc.over_billings += r.over_billings
 
-    # 2. Specific KPIs requested
-    # UEGP = Unearned Gross Profit = Estimated GP - Realized GP
-    # Or: (Contract - Est Cost) - (Earned - CostToDate)
+    # --- 2. KPIs ---
+    
+    # UEGP = Unearned Gross Profit
     t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
     
     # GP %
     gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
     
-    # Net Billings
-    net_billings = calc.over_billings - calc.under_billings
-    net_bill_label = f"Over ${net_billings/1000:.0f}k" if net_billings > 0 else f"Under ${abs(net_billings)/1000:.0f}k"
+    # Net UB / OB: Sum(Abs(Over)) - Sum(Abs(Under))
+    # We use abs() to be robust against OCR reading them as negatives
+    total_over_abs = sum(abs(r.over_billings) for r in rows)
+    total_under_abs = sum(abs(r.under_billings) for r in rows)
+    net_ub_ob = total_over_abs - total_under_abs
+    
+    net_ub_ob_label = f"Over ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Under ${abs(net_ub_ob)/1000:.0f}k"
 
-    # 3. Validations
+    # --- 3. VALIDATIONS ---
     struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
     
-    # Formula check: Contract - Est Cost = Est GP
+    # Formulaic check
     formula_failures = 0
     for r in rows:
         if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 1.0:
@@ -189,15 +192,33 @@ def analyst_node(state: WipState):
 
     # Totals check
     totals_pass = False
-    totals_msg = "No Totals Row"
+    totals_msg = "Fail"
     if extracted_totals:
         if abs(calc.revenues_earned - extracted_totals.revenues_earned) < 5.0:
             totals_pass = True
-            totals_msg = "Matches Report Total"
-        else:
-            totals_msg = f"Calc ${calc.revenues_earned:,.0f} vs Rep ${extracted_totals.revenues_earned:,.0f}"
+            totals_msg = "Pass"
 
-    # 4. Risk Analysis
+    # --- 4. PORTFOLIO NARRATIVE ---
+    loss_jobs = sum(1 for r in rows if r.estimated_gross_profit < 0)
+    ub_jobs_count = sum(1 for r in rows if r.under_billings > r.over_billings)
+    ub_pct = (ub_jobs_count / len(rows) * 100) if rows else 0
+    
+    if loss_jobs == 0:
+        profit_text = "consistently profitable"
+    else:
+        profit_text = f"profitable, with {loss_jobs} jobs projecting losses"
+        
+    if ub_pct > 15:
+        ub_text = f"Under billings seem to be a consistent issue with {ub_pct:.0f}% of jobs showing a negative position."
+    else:
+        ub_text = f"Billing cadence is healthy, with only {ub_pct:.0f}% of jobs currently underbilled."
+
+    summary_text = (
+        f"The portfolio is {profit_text}. {ub_text} "
+        f"Overall Net UB / OB position is {net_ub_ob_label}."
+    )
+
+    # --- 5. RISK ANALYSIS ---
     risks = []
     sorted_rows = sorted(rows, key=lambda x: max(x.over_billings, x.under_billings), reverse=True)
     
@@ -206,12 +227,6 @@ def analyst_node(state: WipState):
         val = row.over_billings if is_ob else row.under_billings
         if val > 0:
             severity = "high" if val > 100000 else "medium"
-            # Generate analysis text
-            if is_ob:
-                analysis = f"Billings exceed completion by ${val:,.0f}. Verify cash flow advantage vs liability."
-            else:
-                analysis = f"Revenue recognition lags billing by ${val:,.0f}. Potential cash flow drag."
-                
             risks.append({
                 "jobId": row.job_id,
                 "jobName": row.job_name,
@@ -221,31 +236,25 @@ def analyst_node(state: WipState):
                 "amountAbs": f"${val:,.0f}",
                 "ubobType": "OB" if is_ob else "UB",
                 "percentComplete": f"{row.percent_complete:.1%}",
-                "analysis": analysis
+                "analysis": f"{'Billings exceed' if is_ob else 'Revenue exceeds'} progress by ${val:,.0f}."
             })
-
-    summary_text = (
-        f"Analyzed {len(rows)} jobs. Portfolio maintains {gp_percent:.1f}% margin with {net_bill_label} position. "
-        f"Validation passed on {len(rows)-formula_failures}/{len(rows)} rows."
-    )
 
     payload = {
         "clean_table": [r.model_dump() for r in rows],
         "widget_data": {
             "summary": {"text": summary_text},
             "validations": {
-                "structural": {"passed": struct_pass, "message": "Structure Valid" if struct_pass else "Check Data"},
-                "formulaic": {"passed": formula_pass, "message": "Formulas Balance" if formula_pass else "Calc Errors"},
+                "structural": {"passed": struct_pass, "message": "Pass" if struct_pass else "Fail"},
+                "formulaic": {"passed": formula_pass, "message": "Pass" if formula_pass else "Fail"},
                 "totals": {"passed": totals_pass, "message": totals_msg}
             },
-            # EXACT ORDER REQUESTED
             "metrics": {
                 "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},
                 "row1_2": {"label": "UEGP", "value": f"${t_uegp/1000000:.2f}M"},
                 "row1_3": {"label": "CTC", "value": f"${calc.cost_to_complete/1000000:.2f}M"},
                 "row2_1": {"label": "Earned Rev", "value": f"${calc.revenues_earned/1000000:.2f}M"},
                 "row2_2": {"label": "GP %", "value": f"{gp_percent:.1f}%"},
-                "row2_3": {"label": "Net Billings", "value": net_bill_label}
+                "row2_3": {"label": "Net UB / OB", "value": net_ub_ob_label}
             },
             "riskRowsAll": risks
         }
