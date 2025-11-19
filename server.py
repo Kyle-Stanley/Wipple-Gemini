@@ -6,22 +6,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import uvicorn
 
-# Import your existing agent (assuming 'wip_agent.py' is in the same folder)
+# Import your existing agent
 from wip_agent import app as agent_app
 
 # --- FastAPI Setup ---
 app = FastAPI()
 
-# Allow your frontend (wipple.ai) to talk to this
+# Allow your frontend to talk to this
 app.add_middleware(
     CORSMiddleware,
-    # CRITICAL: Add your actual domains here to fix the "Stuck" issue
     allow_origins=[
         "https://wipple.ai", 
         "https://www.wipple.ai", 
         "https://wipple-ai.web.app",
         "http://localhost:8000",
-        "*" # Keep * for testing if you want, but specific domains are safer for prod
+        "*" 
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -62,17 +61,14 @@ async def processing_generator(temp_filename: str):
                 final_data = chunk["analyze"]["final_json"]
                 
                 # 3. Send Final Result
-                # Note: We must dump the JSON to a string before passing to format_sse
                 yield format_sse("result", json.dumps(final_data))
-                break # Exit the loop once the final result is sent
+                break 
 
     except Exception as e:
-        # Send an error event if anything fails
         print(f"STREAMING ERROR: {e}")
         yield format_sse("error", f"An error occurred during analysis: {str(e)}")
         
     finally:
-        # Cleanup the temporary file
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
@@ -82,18 +78,19 @@ async def processing_generator(temp_filename: str):
 async def analyze_wip_stream(file: UploadFile = File(...)):
     print(f"--- RECEIVING STREAM REQUEST: {file.filename} ---")
     
-    # Save uploaded file to temp disk
     temp_filename = f"temp_{file.filename}"
     with open(temp_filename, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
-    # Return the StreamingResponse with the generator
     return StreamingResponse(
         processing_generator(temp_filename), 
         media_type="text/event-stream"
     )
 
 if __name__ == "__main__":
-    # Use the PORT environment variable provided by Railway, default to 8000 for local testing
+    # CRITICAL FIX: Use the PORT environment variable provided by Railway
+    # Default to 8000 only if running locally
     port = int(os.environ.get("PORT", 8000))
+    
+    # Host must be 0.0.0.0 to accept external connections
     uvicorn.run(app, host="0.0.0.0", port=port)
