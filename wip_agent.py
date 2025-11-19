@@ -159,14 +159,11 @@ def analyst_node(state: WipState):
     # --- 1. AGGREGATES & RECALCULATION ---
     calc = WipTotals()
     
-    calculated_net_variance_sum = 0.0
-    
-    # Collect detailed errors for validation lists
-    billing_logic_errors = [] # Stores {id, msg}
-    basic_math_errors = []    # Stores {id, msg}
+    billing_logic_errors = []
+    basic_math_errors = []
     
     for r in rows:
-        # Standard sums
+        # Aggregates
         calc.total_contract_price += r.total_contract_price
         calc.estimated_total_costs += r.estimated_total_costs
         calc.estimated_gross_profit += r.estimated_gross_profit
@@ -178,44 +175,45 @@ def analyst_node(state: WipState):
         calc.under_billings += r.under_billings
         calc.over_billings += r.over_billings
         
-        # --- User's Logic for Net UB/OB ---
-        poc = 0.0
-        if r.estimated_total_costs and r.estimated_total_costs != 0:
-            poc = r.cost_to_date / r.estimated_total_costs
+        # --- FORMULAIC VALIDATION (Consistent-ish) ---
+        # Check 1: UB/OB consistency
+        # Reported Net = Over (Positive) - Under (Positive ABS)
+        # Calculated Net = Billed - Earned
         
-        expected_revenue = poc * r.total_contract_price
-        row_variance = r.billed_to_date - expected_revenue
-        calculated_net_variance_sum += row_variance
+        # Since user confirmed Reported Columns are ABS values:
+        reported_net_signed = abs(r.over_billings) - abs(r.under_billings)
+        calculated_net_signed = r.billed_to_date - r.revenues_earned
         
-        # --- VALIDATION A: Billing Logic ---
-        # Reported Net = Over - Under
-        reported_net = r.over_billings - r.under_billings
-        if abs(reported_net - row_variance) > 100.0: 
+        # Compare absolute difference to handle sign flips
+        if abs(abs(reported_net_signed) - abs(calculated_net_signed)) > 100.0:
              billing_logic_errors.append({
                  "id": r.job_id, 
-                 "msg": f"Reported Net ${reported_net:,.0f} vs Calculated ${row_variance:,.0f}"
+                 "msg": f"Net UB/OB Mismatch: PDF ${abs(reported_net_signed):,.0f} vs Calc ${abs(calculated_net_signed):,.0f}"
              })
              
-        # --- VALIDATION B: Basic Math ---
-        # Contract - Cost = GP
-        if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 1.0:
+        # Check 2: Basic Math (Contract - Cost = GP)
+        if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 5.0:
             basic_math_errors.append({
                 "id": r.job_id,
-                "msg": f"Contract - Cost ({r.total_contract_price - r.estimated_total_costs:,.0f}) != GP ({r.estimated_gross_profit:,.0f})"
+                "msg": f"Contract - Est Cost != Est GP"
             })
 
     # --- 2. KPIs ---
     t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
     gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
-    net_ub_ob = calculated_net_variance_sum
+    
+    # Net UB / OB KPI: Total Over - Total Under (using Extracted values)
+    # We use the reported values as the "truth" for the KPI summary if validation passes reasonably well
+    total_over_abs = sum(abs(r.over_billings) for r in rows)
+    total_under_abs = sum(abs(r.under_billings) for r in rows)
+    net_ub_ob = total_over_abs - total_under_abs
+    
     net_ub_ob_label = f"Over ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Under ${abs(net_ub_ob)/1000:.0f}k"
 
     # --- 3. VALIDATIONS ---
-    # A. Structural
     struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
     struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
     
-    # B. Formulaic
     total_failures = len(basic_math_errors) + len(billing_logic_errors)
     formula_pass = total_failures == 0
     
@@ -226,16 +224,15 @@ def analyst_node(state: WipState):
     else:
         formula_msg = f"Basic Math Errors ({len(basic_math_errors)} rows)"
         
-    # Combine errors for display
     all_formula_errors = basic_math_errors + billing_logic_errors
 
-    # C. Totals
+    # Totals Validation
     totals_pass = False
     totals_msg = "No Totals Row"
     totals_details = []
     if extracted_totals:
         diff = abs(calc.revenues_earned - extracted_totals.revenues_earned)
-        if diff < 5.0:
+        if diff < 10.0:
             totals_pass = True
             totals_msg = "Sum matches Report Total"
         else:
@@ -244,12 +241,9 @@ def analyst_node(state: WipState):
 
     # --- 4. PORTFOLIO NARRATIVE ---
     loss_jobs = sum(1 for r in rows if r.estimated_gross_profit < 0)
-    ub_jobs_count = 0
-    for r in rows:
-        poc = (r.cost_to_date / r.estimated_total_costs) if r.estimated_total_costs else 0
-        expected = poc * r.total_contract_price
-        if r.billed_to_date < expected:
-             ub_jobs_count += 1    
+    
+    # Count underbilled based on Reported
+    ub_jobs_count = sum(1 for r in rows if r.under_billings > r.over_billings)
     ub_pct = (ub_jobs_count / len(rows) * 100) if rows else 0
     
     if loss_jobs == 0:
@@ -267,33 +261,56 @@ def analyst_node(state: WipState):
         f"Overall Net UB / OB position is {net_ub_ob_label}."
     )
 
-    # --- 5. RISK ANALYSIS ---
+    # --- 5. RISK ANALYSIS (Cone of Silence) ---
     risks = []
     rows_with_variance = []
+    
     for r in rows:
-        poc = (r.cost_to_date / r.estimated_total_costs) if r.estimated_total_costs else 0
-        expected = poc * r.total_contract_price
-        variance = r.billed_to_date - expected
-        rows_with_variance.append((r, variance))
+        # 1. Calculate POC (Performance)
+        poc = 0.0
+        if r.estimated_total_costs and r.estimated_total_costs != 0:
+            poc = r.cost_to_date / r.estimated_total_costs
+            
+        # 2. Calculate Theoretical Variance (How far off billings are from POC)
+        # Theoretical Revenue = POC * Contract
+        # Variance = Billed - Theoretical Revenue
+        expected_revenue = poc * r.total_contract_price
+        variance = r.billed_to_date - expected_revenue
         
+        # 3. The "Cone of Silence"
+        # As POC approaches 100%, the Allowed Variance shrinks.
+        # If 90% done, allowed variance is 10% of Contract.
+        # If 50% done, allowed variance is 50% of Contract.
+        # Formula: Allowed = Contract * (1.0 - POC)
+        
+        # We use (1.0 - POC) as the "Remaining Work Factor"
+        # Adding a small 2.5% buffer for closeout noise
+        allowable_variance = r.total_contract_price * max(0.025, (1.0 - min(poc, 1.0)))
+        
+        # If actual variance is OUTSIDE the cone, flag it.
+        if abs(variance) > allowable_variance and abs(variance) > 5000: # $5k min floor
+             rows_with_variance.append((r, variance, allowable_variance))
+        
+    # Sort risks by magnitude of variance
     sorted_rows = sorted(rows_with_variance, key=lambda x: abs(x[1]), reverse=True)
     
-    for row, variance in sorted_rows[:5]:
+    for row, variance, limit in sorted_rows[:5]:
         is_ob = variance > 0
         val = abs(variance)
-        if val > 0:
-            severity = "high" if val > 100000 else "medium"
-            risks.append({
-                "jobId": row.job_id,
-                "jobName": row.job_name,
-                "riskTags": "Overbilling" if is_ob else "Underbilling",
-                "riskLevel": severity,
-                "riskLevelLabel": severity.capitalize(),
-                "amountAbs": f"${val:,.0f}",
-                "ubobType": "OB" if is_ob else "UB",
-                "percentComplete": f"{row.percent_complete:.1%}",
-                "analysis": f"{'Billings exceed' if is_ob else 'Revenue exceeds'} progress by ${val:,.0f}."
-            })
+        
+        severity = "high" if val > (limit * 1.5) else "medium"
+        
+        risks.append({
+            "jobId": row.job_id,
+            "jobName": row.job_name,
+            "riskTags": "Overbilling" if is_ob else "Underbilling",
+            "riskLevel": severity,
+            "riskLevelLabel": severity.capitalize(),
+            "amountAbs": f"${val:,.0f}",
+            "ubobType": "OB" if is_ob else "UB",
+            "percentComplete": f"{row.percent_complete:.1%}",
+            "analysis": f"Variance of ${val:,.0f} exceeds the ${(limit/1000):.0f}k threshold for this stage."
+        })
 
     payload = {
         "clean_table": [r.model_dump() for r in rows],

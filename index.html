@@ -80,10 +80,12 @@
         .val-expand-icon { transition: transform 0.2s; margin-left: 8px; }
         .val-expand-icon.rotated { transform: rotate(180deg); }
 
-        /* RISKS - ADJUSTED COLUMN WIDTHS */
+        /* RISKS - BOLD NAMES & WHITE TEXT */
         .risk-row { display: grid; grid-template-columns: 3fr 1fr 0.8fr 1fr; padding: 12px 0; border-bottom: 1px solid rgba(62, 62, 78, 0.3); color: #ececec; align-items: center; cursor: pointer; transition: background 0.2s; }
         .risk-row:hover { background-color: rgba(255,255,255,0.03); }
         .risk-header { display: grid; grid-template-columns: 3fr 1fr 0.8fr 1fr; padding: 8px 0; border-bottom: 1px solid #3e3e4e; color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; }
+        
+        .job-name-bold { font-weight: 700; color: #ffffff; }
         
         .risk-expand-icon { transition: transform 0.2s; margin-left: 6px; color: #666; display: inline-block; vertical-align: middle; }
         .risk-expand-icon.expanded { transform: rotate(180deg); color: #ececec; }
@@ -316,7 +318,6 @@
     function renderValidationWidget(vals) {
         if (!vals) return '';
         
-        // Helper to generate a unique ID for toggling
         const genId = () => 'val-' + Math.random().toString(36).substr(2, 9);
 
         const renderRow = (label, obj) => {
@@ -332,7 +333,6 @@
                 detailsHtml = `<div id="${rowId}-details" class="val-details">${items}</div>`;
             }
 
-            // Onclick handler only if details exist
             const onClick = hasDetails ? `onclick="toggleValidationDetails('${rowId}')"` : '';
             const icon = hasDetails ? `<svg id="${rowId}-icon" class="val-expand-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>` : '';
             
@@ -369,7 +369,6 @@
             </div>`;
     }
     
-    // New toggle function for validations
     function toggleValidationDetails(rowId) {
         const details = document.getElementById(rowId + '-details');
         const icon = document.getElementById(rowId + '-icon');
@@ -378,10 +377,9 @@
         details.classList.toggle('open');
         if(icon) icon.classList.toggle('rotated');
         
-        // Adjust parent height if it's fixed
         const parent = details.closest('.widget-content');
         if(parent && !parent.classList.contains('collapsed')) {
-            parent.style.height = 'auto'; // Ensure it grows
+            parent.style.height = 'auto';
         }
     }
 
@@ -406,7 +404,7 @@
                             ${r.jobId}
                             <svg class="risk-expand-icon" id="${riskId}-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                         </div>
-                        <div class="text-xs text-gray-500 truncate">${r.jobName || 'No Name'}</div>
+                        <div class="text-xs job-name-bold">${r.jobName || 'No Name'}</div>
                     </div>
                     <div class="text-gray-400 text-xs">${r.riskTags}</div>
                     <div><span class="risk-level ${r.riskLevel === 'high' ? 'risk-high' : 'risk-medium'}">${r.riskLevelLabel}</span></div>
@@ -447,7 +445,7 @@
         let trs = rows.map(r => `
             <tr>
                 <td class="font-mono text-xs">${r.job_id}</td>
-                <td class="text-gray-400 text-xs truncate max-w-[150px]" title="${r.job_name}">${r.job_name || '--'}</td>
+                <td class="text-gray-400 text-xs" title="${r.job_name}">${r.job_name || '--'}</td>
                 <td class="text-right">${fmt(r.total_contract_price)}</td>
                 <td class="text-right">${fmt(r.estimated_total_costs)}</td>
                 <td class="text-right">${fmt(r.estimated_gross_profit)}</td>
@@ -459,7 +457,6 @@
                 <td class="text-right">${fmt(r.cost_to_complete)}</td>
             </tr>`).join('');
 
-        // Unique ID for this table instance
         const tableId = 'tbl-' + Math.random().toString(36).substr(2, 9);
 
         return `
@@ -496,10 +493,8 @@
         const card = document.getElementById(`card-${id}`);
         if(card.classList.contains('maximized')) {
             card.classList.remove('maximized');
-            // Restore collapse state if needed, but usually keep open
         } else {
             card.classList.add('maximized');
-            // Ensure content is visible
             const content = document.getElementById(`content-${id}`);
             content.classList.remove('collapsed');
             content.style.height = 'auto';
@@ -532,7 +527,6 @@
     }
 
     function setupCollapsibles() {
-        // For the table, we use a dynamic ID, so we need to find it
         const widgets = document.querySelectorAll('.widget-card');
         widgets.forEach(widget => {
             const header = widget.querySelector('.widget-header');
@@ -541,12 +535,10 @@
             
             if(!header || !content) return;
             
-            // Clean old listeners
             const newHeader = header.cloneNode(true);
             header.parentNode.replaceChild(newHeader, header);
             
             newHeader.addEventListener('click', (e) => {
-                // Don't trigger on buttons
                 if(e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
                 
                 if (content.classList.contains('collapsed')) {
