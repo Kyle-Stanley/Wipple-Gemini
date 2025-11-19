@@ -88,9 +88,5 @@ async def analyze_wip_stream(file: UploadFile = File(...)):
     )
 
 if __name__ == "__main__":
-    # CRITICAL FIX: Use the PORT environment variable provided by Railway
-    # Default to 8000 only if running locally
     port = int(os.environ.get("PORT", 8000))
-    
-    # Host must be 0.0.0.0 to accept external connections
     uvicorn.run(app, host="0.0.0.0", port=port)
