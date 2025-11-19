@@ -166,6 +166,20 @@ def analyst_node(state: WipState):
     billing_logic_errors = []
     basic_math_errors = []
     
+    # NORMALIZE DATA FIRST (Fix Sign Issues)
+    # If a PDF has (500) in Underbillings, it often means Overbilling.
+    # We normalize this so the table displays correctly.
+    for r in rows:
+        # Case 1: Negative Underbilling -> Move to Overbilling
+        if r.under_billings < 0:
+            r.over_billings += abs(r.under_billings)
+            r.under_billings = 0.0
+            
+        # Case 2: Negative Overbilling -> Move to Underbilling
+        if r.over_billings < 0:
+            r.under_billings += abs(r.over_billings)
+            r.over_billings = 0.0
+
     for r in rows:
         # Aggregates
         calc.total_contract_price += r.total_contract_price
@@ -178,7 +192,7 @@ def analyst_node(state: WipState):
         calc.cost_to_complete += r.cost_to_complete
         calc.under_billings += r.under_billings
         calc.over_billings += r.over_billings
-        calc.uegp += r.uegp # Accumulate UEGP for totals row
+        calc.uegp += r.uegp 
         
         # --- User's Logic for Net UB/OB ---
         poc = 0.0
@@ -186,24 +200,16 @@ def analyst_node(state: WipState):
             poc = r.cost_to_date / r.estimated_total_costs
         
         expected_revenue = poc * r.total_contract_price
-        
-        # Calculated Variance (Mathematical Truth)
-        # Billed - Expected
         row_variance = r.billed_to_date - expected_revenue
         calculated_net_variance_sum += row_variance
         
-        # --- VALIDATION A: Cone of Silence (Billing Logic) ---
-        # 1. Get Absolute Magnitude of Reported Variance
+        # --- VALIDATION A: Cone of Silence ---
         reported_abs = abs(r.over_billings) + abs(r.under_billings)
-        
-        # 2. Get Absolute Magnitude of Calculated Variance
         calculated_abs = abs(row_variance)
         
-        # 3. Tolerance based on POC
         tolerance_pct = max(0.05, 1.0 - min(poc, 1.0))
         allowed_delta = max(1000.0, calculated_abs * tolerance_pct)
         
-        # 4. Check Difference
         diff = abs(reported_abs - calculated_abs)
         
         if diff > allowed_delta: 
@@ -257,13 +263,7 @@ def analyst_node(state: WipState):
 
     # --- 4. PORTFOLIO NARRATIVE ---
     loss_jobs = sum(1 for r in rows if r.estimated_gross_profit < 0)
-    
-    ub_jobs_count = 0
-    for r in rows:
-        poc = (r.cost_to_date / r.estimated_total_costs) if r.estimated_total_costs else 0
-        expected = poc * r.total_contract_price
-        if r.billed_to_date < expected:
-             ub_jobs_count += 1    
+    ub_jobs_count = sum(1 for r in rows if r.under_billings > 0)
     ub_pct = (ub_jobs_count / len(rows) * 100) if rows else 0
     
     if loss_jobs == 0:
@@ -310,7 +310,7 @@ def analyst_node(state: WipState):
 
     payload = {
         "clean_table": [r.model_dump() for r in rows],
-        "calculated_totals": calc.model_dump(), # PASSED FOR CSV
+        "calculated_totals": calc.model_dump(), 
         "widget_data": {
             "summary": {"text": summary_text},
             "validations": {
