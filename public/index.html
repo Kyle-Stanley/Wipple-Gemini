@@ -148,6 +148,23 @@
         .welcome-message.hidden { opacity: 0; height: 0; margin: 0; overflow: hidden; }
         .collapse-icon { transition: transform 0.3s; }
         .collapse-icon.collapsed { transform: rotate(-90deg); }
+
+        /* --- BOND AGENT STYLES (ADDED) --- */
+        .widget-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+        .info-cell { background: #1e1e1e; padding: 10px; border-radius: 6px; border: 1px solid #333; }
+        .info-label { color: #888; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .info-val { color: #fff; font-weight: 500; font-size: 0.95rem; }
+        
+        .risk-pill { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
+        .risk-pill.High { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+        .risk-pill.Medium { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
+        .risk-pill.Low { background: rgba(16, 185, 129, 0.2); color: #10b981; }
+
+        .statute-item { border-bottom: 1px solid #333; padding: 10px 0; }
+        .statute-item:last-child { border-bottom: none; }
+        .statute-citation { color: #60a5fa; font-weight: 600; font-size: 0.9rem; cursor: pointer; display: flex; justify-content: space-between; }
+        .statute-details { margin-top: 8px; font-size: 0.9rem; display: none; background: #1a1a1a; padding: 10px; border-radius: 6px; }
+        .statute-verbatim { font-family: monospace; background: #111; padding: 8px; margin: 4px 0; color: #ccc; font-size: 0.8rem; border-left: 2px solid #666; }
     </style>
     <!-- Firebase Libraries -->
     <script type="module">
@@ -222,7 +239,7 @@
     <div class="fixed bottom-0 left-0 right-0 z-30 p-4 bg-[#212121]">
         <div class="max-w-3xl mx-auto">
             <div id="welcome-message" class="welcome-message">
-                Welcome to Wipple. Upload your WIP schedule (PDF) to begin analysis.
+                Welcome to Wipple. Upload a WIP Schedule or Bond Form to begin.
             </div>
             <div class="input-container flex items-center">
                 <input type="file" id="file-input" accept="application/pdf" class="hidden">
@@ -238,8 +255,9 @@
     </div>
 
 <script>
-    // FIXED: HTTPS and correct path
-    const API_ENDPOINT = "https://wipple-gemini-production.up.railway.app/analyze-wip-stream";
+    // UPDATED API ENDPOINT for the Router Server
+    const API_ENDPOINT = "https://wipple-gemini-production.up.railway.app/analyze-stream";
+    const CHAT_ENDPOINT = "https://wipple-gemini-production.up.railway.app/chat";
     
     const messagesWindow = document.getElementById('messages-window');
     const fileInput = document.getElementById('file-input');
@@ -253,11 +271,13 @@
     let currentLoadingDiv = null;
     let lastTableData = [];
     let lastCalculatedTotals = null;
+    
+    // New Context for Bond Chat
+    let fullAnalysisContext = null;
 
     const agentStatusMessages = [
-        "OCR Agent is scanning the document now...",
-        "OCR was successful. Passing to Validation Agent to confirm table validity...",
-        "Validations passed. Analyst Agent is preparing final analysis..."
+        "Scanning document structure...",
+        "Router detected document type..."
     ];
     let statusStep = 0;
 
@@ -268,6 +288,14 @@
     };
 
     window.onload = () => { uploadButton.disabled = false; chatInput.disabled = false; };
+    
+    // Handle Enter Key for Chat
+    chatInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !sendButton.disabled) {
+            handleSend();
+        }
+    });
+
     uploadButton.addEventListener('click', () => !isProcessing && fileInput.click());
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length) {
@@ -279,6 +307,36 @@
     sendButton.addEventListener('click', handleSend);
 
     function handleSend() {
+        // CASE 1: Chat Message (No File Upload)
+        if (!uploadedFile && chatInput.value.trim() !== "" && !isProcessing) {
+            const text = chatInput.value.trim();
+            addMessage(text, 'user');
+            chatInput.value = '';
+            
+            if(!fullAnalysisContext) {
+                addMessage("Please upload a document first so I can understand the context.", 'ai-message');
+                return;
+            }
+
+            showLoading();
+            fetch(CHAT_ENDPOINT, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text, context: JSON.stringify(fullAnalysisContext) })
+            })
+            .then(res => res.json())
+            .then(data => {
+                removeLoading();
+                addMessage(data.reply || "No response.", 'ai-message');
+            })
+            .catch(e => {
+                removeLoading();
+                addMessage("Error connecting to chat.", 'error');
+            });
+            return;
+        }
+
+        // CASE 2: File Upload & Analysis
         if (!uploadedFile || isProcessing) return;
         welcomeMessage.classList.add('hidden');
         isProcessing = true;
@@ -286,10 +344,7 @@
         statusStep = 0;
         
         addMessage(`Uploaded ${uploadedFile.name}`, 'user');
-        
         addMessage(agentStatusMessages[0], 'agent-status');
-        statusStep = 1;
-        
         showLoading();
 
         const formData = new FormData();
@@ -314,29 +369,61 @@
                     buffer = lines.pop();
 
                     lines.forEach(line => {
-                        if (line.startsWith('event: status')) {
-                            removeLoading();
-                            const msg = agentStatusMessages[statusStep];
-                            if (msg) {
-                                addMessage(msg, 'agent-status');
-                                statusStep++;
-                            }
-                            showLoading();
-                        } else if (line.startsWith('event: result')) {
-                            removeLoading();
-                            const data = JSON.parse(line.split('data: ')[1]);
+                        if (line.startsWith('event: ')) {
+                            const type = line.split('\n')[0].replace('event: ', '').trim();
+                            const dataStr = line.split('data: ')[1];
                             
-                            // Render
-                            renderResults(data);
-                            
-                            // SAVE TO FIREBASE
-                            if(window.saveAnalysis) {
-                                window.saveAnalysis(data);
+                            // --- EXISTING HANDLERS ---
+                            if (type === 'status') {
+                                removeLoading();
+                                addMessage(dataStr, 'agent-status');
+                                showLoading();
                             }
-
-                        } else if (line.startsWith('event: error')) {
-                            removeLoading();
-                            addMessage("Error processing file.", 'error');
+                            else if (type === 'error') {
+                                removeLoading();
+                                addMessage("Error processing file.", 'error');
+                            }
+                            // --- NEW ROUTER HANDLERS ---
+                            else if (type === 'router') {
+                                removeLoading();
+                                addMessage(`Document identified as <strong>${dataStr}</strong>.`, 'agent-status');
+                                showLoading();
+                            }
+                            // --- BOND AGENT HANDLERS ---
+                            else if (type === 'bond_step_1') {
+                                const data = JSON.parse(dataStr);
+                                renderBondWidget1(data);
+                            }
+                            else if (type === 'bond_step_2') {
+                                const data = JSON.parse(dataStr);
+                                renderBondWidget2(data);
+                            }
+                            else if (type === 'bond_step_3') {
+                                const data = JSON.parse(dataStr);
+                                renderBondWidget3(data);
+                            }
+                            else if (type === 'result_bond_final') {
+                                fullAnalysisContext = JSON.parse(dataStr); // Save context for chat
+                                if(window.saveAnalysis) window.saveAnalysis(fullAnalysisContext);
+                            }
+                            // --- WIP HANDLER (Wrapper) ---
+                            else if (type === 'result_wip') {
+                                removeLoading();
+                                const payload = JSON.parse(dataStr);
+                                const data = payload.data; // Extract the inner data expected by existing renderResults
+                                fullAnalysisContext = payload;
+                                
+                                // Call EXISTING Render Function
+                                renderResults(data);
+                                
+                                if(window.saveAnalysis) window.saveAnalysis(data);
+                            }
+                            // --- LEGACY FALLBACK ---
+                            else if (type === 'result') {
+                                removeLoading();
+                                const data = JSON.parse(dataStr);
+                                renderResults(data);
+                            }
                         }
                     });
                     read();
@@ -381,10 +468,13 @@
         fileInput.value = ''; 
         uploadedFile = null;
         chatInput.value = '';
-        chatInput.placeholder = "Analysis complete.";
+        chatInput.placeholder = "Ask a question about the document...";
         uploadButton.disabled = false;
         chatInput.disabled = false;
+        sendButton.disabled = false; // Enable for chat
     }
+
+    // --- EXISTING WIP RENDERERS (PRESERVED) ---
 
     function renderResults(data) {
         const wd = data.widget_data;
@@ -692,6 +782,126 @@
             });
         });
     }
+
+    // --- NEW BOND AGENT RENDERERS (ADDED) ---
+
+    function renderBondWidget1(data) {
+        const p = data.parties;
+        const r = data.risks;
+        
+        const html = `
+        <div class="widget-card slide-in">
+            <div class="widget-header">
+                <span>Bond Analysis & Risk Terms</span>
+                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="widget-content">
+                <!-- Parties -->
+                <div class="widget-grid-2 mb-4">
+                    <div class="info-cell">
+                        <div class="info-label">Principal</div>
+                        <div class="info-val">${p.principal_name}</div>
+                    </div>
+                    <div class="info-cell">
+                        <div class="info-label">Obligee</div>
+                        <div class="info-val">${p.obligee_name}</div>
+                    </div>
+                    <div class="info-cell">
+                        <div class="info-label">Penal Sum</div>
+                        <div class="info-val text-green-400">${p.penal_sum}</div>
+                    </div>
+                    <div class="info-cell">
+                        <div class="info-label">Risk Level</div>
+                        <div class="info-val">
+                            <span class="risk-pill ${r.risk_level}">${r.risk_level}</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Clauses -->
+                <div class="space-y-3">
+                    <div class="info-cell">
+                        <div class="info-label">Cancellation Terms</div>
+                        <div class="text-sm text-gray-300 italic">"${r.cancellation_terms}"</div>
+                        <div class="mt-1 text-xs text-gray-400">Notice: <span class="text-white">${r.cancellation_notice_period}</span></div>
+                    </div>
+                    <div class="info-cell">
+                        <div class="info-label">Forfeiture</div>
+                        <div class="text-sm text-gray-300">${r.forfeiture_language}</div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+        addMessage(html, 'widget');
+        setupCollapsibles();
+    }
+
+    function renderBondWidget2(statutes) {
+        const items = statutes.map((s, idx) => `
+            <div class="statute-item">
+                <div class="statute-citation" onclick="toggleStatute(${idx})">
+                    <span>${s.citation} - ${s.name}</span>
+                    <span class="text-gray-500 text-xs">▼</span>
+                </div>
+                <div id="stat-${idx}" class="statute-details">
+                    <div class="text-gray-400 text-xs mb-1">SUMMARY</div>
+                    <div class="text-sm text-white mb-2">${s.plain_summary || 'No summary available.'}</div>
+                    
+                    <div class="text-gray-400 text-xs mb-1">VERBATIM TEXT</div>
+                    <div class="statute-verbatim">${s.verbatim_text || 'Excerpt not found.'}</div>
+                    
+                    ${s.source_link ? `<a href="${s.source_link}" target="_blank" class="text-blue-400 text-xs hover:underline mt-2 block">View Official Source ↗</a>` : ''}
+                </div>
+            </div>
+        `).join('');
+
+        const html = `
+        <div class="widget-card slide-in">
+            <div class="widget-header">
+                <span>Statutory References & Compliance</span>
+                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="widget-content">
+                ${items.length ? items : '<div class="text-gray-500 text-sm">No specific statutes cited.</div>'}
+            </div>
+        </div>`;
+        addMessage(html, 'widget');
+        setupCollapsibles();
+    }
+
+    window.toggleStatute = (idx) => {
+        const el = document.getElementById(`stat-${idx}`);
+        if(el) el.style.display = el.style.display === 'block' ? 'none' : 'block';
+    };
+
+    function renderBondWidget3(op) {
+        const html = `
+        <div class="widget-card slide-in">
+            <div class="widget-header">
+                <div class="flex items-center space-x-2">
+                    <span>Underwriting Opinion</span>
+                    <span class="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded">${op.risk_state}</span>
+                </div>
+                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="widget-content">
+                <div class="mb-4">
+                    <div class="info-label">Recommendation</div>
+                    <div class="text-lg font-bold ${op.recommendation.includes('Approve') ? 'text-green-400' : 'text-yellow-400'}">${op.recommendation}</div>
+                </div>
+                <div class="mb-4">
+                    <div class="info-label">Legal Opinion</div>
+                    <div class="text-sm text-gray-300 space-y-2 whitespace-pre-wrap leading-relaxed">${op.legal_opinion_text}</div>
+                </div>
+                 <div>
+                    <div class="info-label">Cancellation Summary</div>
+                    <div class="text-sm text-gray-300">${op.cancellation_summary}</div>
+                </div>
+            </div>
+        </div>`;
+        addMessage(html, 'widget');
+        setupCollapsibles();
+    }
+
 </script>
 </body>
 </html>
