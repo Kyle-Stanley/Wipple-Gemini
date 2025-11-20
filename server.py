@@ -1,6 +1,7 @@
 import shutil
 import os
 import json
+import re
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -19,6 +20,8 @@ if "GOOGLE_API_KEY" not in os.environ:
     os.environ["GOOGLE_API_KEY"] = ""
 
 client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+
+# 1. UNIFIED MODEL DEFINITION
 MODEL_NAME = "gemini-3-pro-preview"
 
 app = FastAPI()
@@ -31,38 +34,81 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- SSE Helper Functions ---
+# --- Helpers ---
 
 def format_sse(event_type: str, data: str) -> str:
     """Formats a message as a Server-Sent Event."""
     clean_data = data.replace('\n', ' ') 
     return f"event: {event_type}\ndata: {clean_data}\n\n"
 
+def clean_json_text(text: str) -> str:
+    """Strips markdown code blocks and non-JSON prefixes from LLM response."""
+    # Find JSON fences and extract content
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0]
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0]
+    
+    # Aggressive cleaning for any leading/trailing whitespace or non-JSON characters
+    text = text.strip()
+    return text
+
 async def detect_document_type(file_path: str) -> str:
-    """Reads the first chunk of the file to classify it."""
+    """Reads the ENTIRE file and uses Gemini 3 Pro to classify it using JSON."""
     try:
         with open(file_path, "rb") as f:
-            chunk = f.read(10000) 
+            file_bytes = f.read() 
             
-        prompt = "Classify this document as either 'WIP' (Construction Work in Progress Schedule / Financial Table) or 'BOND' (Legal Bond Form, Contract, or Surety Document). Return ONLY the word 'WIP' or 'BOND'."
+        # SIMPLE PROMPT: Just visual structure
+        prompt = """
+        Look at this document. Is it mainly a TABLE/SPREADSHEET or is it mainly TEXT/PARAGRAPHS?
+        
+        - If it's dominated by TABLES with rows and columns of data → classify as "WIP"
+        - If it's dominated by TEXT in paragraphs (like a contract or form) → classify as "BOND"
+        
+        Return JSON:
+        {
+            "document_type": "WIP" or "BOND",
+            "reasoning": "One sentence: what you see visually"
+        }
+        """
         
         response = client.models.generate_content(
-            model="gemini-2.0-flash-lite-preview-02-05",
-            contents=[types.Part.from_bytes(data=chunk, mime_type="application/pdf"), prompt]
+            model=MODEL_NAME,
+            contents=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", 
+                temperature=0.0
+            )
         )
-        result = response.text.strip().upper()
-        if "BOND" in result: return "BOND"
+        
+        # CRITICAL FIX: Clean the LLM output before json.loads()
+        raw_text = response.text
+        cleaned_text = clean_json_text(raw_text)
+        
+        data = json.loads(cleaned_text)
+        doc_type = data.get("document_type", "WIP").upper()
+        
+        # SIMPLE LOGGING
+        print(f"\n🔍 ROUTER: {doc_type}")
+        print(f"   Why: {data.get('reasoning', 'N/A')}\n")
+        
+        if doc_type == "BOND":
+            return "BOND"
+            
         return "WIP"
+        
     except Exception as e:
-        print(f"Router Error: {e}")
+        print(f"ROUTER ERROR (Defaulting to WIP): {e}")
+        # Note: Printing the raw response helps diagnose the parsing failure
+        if 'response' in locals():
+            print(f"Raw Response causing failure: {response.text}")
         return "WIP"
 
-# --- Stream Handlers (Defined before usage) ---
+# --- Stream Handlers (No changes needed here) ---
 
 async def run_wip_stream(inputs):
     """Handles the WIP agent stream events."""
-    # Note: We iterate synchronously because LangGraph stream is synchronous by default
-    # unless using astream, but this loop works within the async generator.
     for chunk in wip_app.stream(inputs, stream_mode="updates"):
         if "extract" in chunk:
             row_count = len(chunk["extract"]["processed_data"])
@@ -133,7 +179,7 @@ async def processing_generator(temp_filename: str):
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
-# --- Endpoints ---
+# --- Endpoints (No changes needed here) ---
 
 class ChatRequest(BaseModel):
     message: str
@@ -142,7 +188,6 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     try:
-        # Using standard string concatenation to avoid syntax highlighting issues with triple quotes in some editors
         prompt = (
             "You are a helpful Bond & Construction Financial Analyst.\n"
             "The user is asking a question about a document you just analyzed.\n\n"
