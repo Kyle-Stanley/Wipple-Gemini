@@ -29,14 +29,16 @@ class BondParties(BaseModel):
 
 class RiskClauses(BaseModel):
     security_required: str = Field(description="Yes/No and details")
-    bond_type: str = Field(description="Performance, Payment, etc.")
+    bond_type: str = Field(description="Performance Bond / Payment Bond / Letter of Credit / Cash / Certificate of Deposit")
+    forms_provided: str = Field(description="Yes/No - whether exhibits/appendices included")
+    adjustable_amount: str = Field(description="Yes/No - whether subject to mid-term increases")
     cancellation_terms: str = Field(description="Verbatim cancellation language")
     cancellation_notice_period: str = Field(description="e.g. '30 Days'")
-    forfeiture_language: str = Field(description="Yes/No and details")
-    duration: str = Field(description="Term or coverage period")
-    risk_level: str = Field(description="Low, Medium, High based on terms")
-    payment_terms: str = Field(description="Quick payment terms if any")
-    enforcement: str = Field(description="Claims process or triggering events")
+    effective_duration: str = Field(description="Term or coverage period")
+    forfeiture_language: str = Field(description="Verbatim forfeiture clause or 'Not Present'")
+    quick_payment_terms: str = Field(description="Payment required within 30 days or less - Yes/No and details")
+    efficiency_guarantees: str = Field(description="Performance, quality, or output accountability - details or 'Not Present'")
+    enforcement_mechanisms: str = Field(description="Claims process, notices, time limits, triggering events")
 
 class StatuteRef(BaseModel):
     citation: str
@@ -47,11 +49,25 @@ class StatuteRef(BaseModel):
     found: bool = True
 
 class UnderwritingOpinion(BaseModel):
-    risk_state: str
-    bond_description: str
-    legal_opinion_text: str = Field(description="The synthesized legal opinion paragraphs")
-    recommendation: str = Field(description="Approve, Decline, or Refer")
-    cancellation_summary: str
+    risk_state: str = Field(description="State where bond is issued")
+    obligee: str = Field(description="Name of obligee")
+    bond_description: str = Field(description="Purpose/type of bond")
+    sfaa_descriptor: Optional[str] = Field(default="N/A", description="SFAA No. or Descriptor Code if available")
+    penalty: str = Field(description="Penal sum / bond amount")
+    statutory_references: List[str] = Field(description="List of statutes/rules cited")
+    # Legal Opinion Structured Components
+    who_must_post: str = Field(description="Who is required to post the bond")
+    statutory_definitions: str = Field(description="Relevant definitions from statutes")
+    exemptions: str = Field(description="Who is exempt from bond requirement")
+    bond_guarantees: str = Field(description="What the bond guarantees/covers")
+    deadlines_cycles: str = Field(description="Licensing/bonding deadlines and expiration cycles")
+    claims_history: str = Field(description="Past claims experience or loss ratio if known")
+    alternative_instruments: str = Field(description="Whether bond can be replaced by other financial instruments")
+    # Cancellation
+    cancellation_verbatim: str = Field(description="Exact cancellation clause language")
+    cancellation_summary: str = Field(description="Plain language summary of notice period")
+    # Recommendation
+    recommendation: str = Field(description="Approve / Decline / Refer")
 
 class BondState(BaseModel):
     file_path: str
@@ -83,13 +99,36 @@ def extraction_node(state: BondState):
     prompt = """
     Analyze this Bond Form/Contract. Extract the following:
     1. The Parties (Principal, Obligee, Surety) and Penal Sum.
-    2. Key Risk Clauses (Cancellation terms, notice periods, forfeiture, duration, enforcement).
+    2. Key Risk Clauses - extract ALL of the following (use "Not Present" if clause doesn't exist):
+       - security_required: Yes/No and type details
+       - bond_type: Performance Bond / Payment Bond / Letter of Credit / Cash / Certificate of Deposit
+       - forms_provided: Yes/No - are exhibits/appendices included?
+       - adjustable_amount: Yes/No - can amount increase mid-term?
+       - cancellation_terms: The EXACT verbatim cancellation language
+       - cancellation_notice_period: e.g. "30 Days"
+       - effective_duration: Term or coverage period
+       - forfeiture_language: Exact forfeiture clause or "Not Present"
+       - quick_payment_terms: Payment within 30 days or less? Details or "Not Present"
+       - efficiency_guarantees: Performance/quality/output accountability or "Not Present"
+       - enforcement_mechanisms: Claims process, notice requirements, time limits, triggering events
     3. A list of ALL legal statutes, codes, or regulations explicitly cited (e.g., "California Civil Code 1234", "Public Contract Code").
     
     Return JSON matching the structure:
     {
         "parties": { "principal_name": "...", "obligee_name": "...", "surety_name": "...", "penal_sum": "..." },
-        "risks": { "security_required": "...", "bond_type": "...", "cancellation_terms": "...", "cancellation_notice_period": "...", "forfeiture_language": "...", "duration": "...", "risk_level": "...", "payment_terms": "...", "enforcement": "..." },
+        "risks": { 
+            "security_required": "...", 
+            "bond_type": "...", 
+            "forms_provided": "...",
+            "adjustable_amount": "...",
+            "cancellation_terms": "...", 
+            "cancellation_notice_period": "...", 
+            "effective_duration": "...",
+            "forfeiture_language": "...", 
+            "quick_payment_terms": "...",
+            "efficiency_guarantees": "...",
+            "enforcement_mechanisms": "..."
+        },
         "identified_citations": ["Code A", "Regulation B"]
     }
     """
@@ -181,21 +220,37 @@ def opinion_node(state: BondState):
     statutes_txt = json.dumps([s.model_dump() for s in state.researched_statutes])
 
     prompt = f"""
-    Generate a Commercial Underwriting Opinion for this bond.
+    Generate a Commercial Underwriting Opinion for this bond in the exact structured format required.
     
     Data Available:
     Parties: {parties_txt}
     Risks: {risks_txt}
     Statutory Research: {statutes_txt}
     
-    Generate JSON:
+    Generate JSON with ALL fields:
     {{
         "risk_state": "State inferred from obligee/statutes",
-        "bond_description": "Brief purpose",
-        "legal_opinion_text": "Detailed legal opinion covering: Who posts, definitions, exemptions, guarantees, deadlines, loss ratio history (if known/searchable), and replacement options.",
-        "recommendation": "Approve / Decline / Refer",
-        "cancellation_summary": "Plain language summary of cancellation notice period and rights."
+        "obligee": "Name of obligee from parties data",
+        "bond_description": "Brief purpose/type of bond",
+        "sfaa_descriptor": "SFAA No. or Descriptor Code if found, otherwise 'N/A'",
+        "penalty": "The penal sum amount",
+        "statutory_references": ["List", "of", "statute", "citations"],
+        
+        "who_must_post": "Who is required to post the bond - be specific",
+        "statutory_definitions": "Relevant definitions from the statutes cited",
+        "exemptions": "Who is exempt from the bond requirement - or 'None identified'",
+        "bond_guarantees": "What the bond specifically guarantees or covers",
+        "deadlines_cycles": "Licensing/bonding deadlines and expiration cycles",
+        "claims_history": "Past claims experience or loss ratio if known from research, otherwise 'No data available'",
+        "alternative_instruments": "Whether bond can be replaced by cash, LOC, CD, etc.",
+        
+        "cancellation_verbatim": "Exact cancellation clause from the bond",
+        "cancellation_summary": "Plain language: notice period and rights upon cancellation",
+        
+        "recommendation": "Approve / Decline / Refer - with brief reasoning"
     }}
+    
+    Be thorough and specific. Use the researched statutes to inform the legal opinion components.
     """
 
     try:
