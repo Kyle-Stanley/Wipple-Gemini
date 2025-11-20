@@ -216,6 +216,20 @@ async def analyze_stream(file: UploadFile = File(...)):
         media_type="text/event-stream"
     )
 
+# BACKWARD COMPATIBILITY: Keep old endpoint name working
+@app.post("/analyze-wip-stream")
+async def analyze_wip_stream_legacy(file: UploadFile = File(...)):
+    """Legacy endpoint - redirects to new unified endpoint"""
+    print(f"--- LEGACY ENDPOINT CALLED: {file.filename} ---")
+    temp_filename = f"temp_{file.filename}"
+    with open(temp_filename, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    return StreamingResponse(
+        processing_generator(temp_filename), 
+        media_type="text/event-stream"
+    )
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
