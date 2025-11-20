@@ -791,7 +791,7 @@
                         </div>
                         <div class="bond-cell">
                             <div class="bond-label">Penal Sum</div>
-                            <div class="bond-value" style="color: #10b981; font-weight: 600;">${p.penal_sum}</div>
+                            <div class="bond-value">${p.penal_sum}</div>
                         </div>
                     </div>
                 </div>
@@ -859,8 +859,10 @@
                     <span class="font-semibold">Statutory References & Compliance</span>
                     <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                 </div>
-                <div class="widget-content" style="padding: 20px;">
-                    <div style="color: #8e8ea0; font-size: 0.875rem;">No specific statutes cited in this bond.</div>
+                <div class="widget-content">
+                    <div style="padding: 20px;">
+                        <div style="color: #8e8ea0; font-size: 0.875rem;">No specific statutes cited in this bond.</div>
+                    </div>
                 </div>
             </div>`;
             addMessage(html, 'widget');
@@ -915,8 +917,10 @@
                 <span class="font-semibold">Statutory References & Compliance</span>
                 <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
             </div>
-            <div class="widget-content" style="padding: 20px;">
-                ${items}
+            <div class="widget-content">
+                <div style="padding: 20px;">
+                    ${items}
+                </div>
             </div>
         </div>`;
         
@@ -946,7 +950,8 @@
                 <span class="font-semibold">Underwriting Opinion</span>
                 <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
             </div>
-            <div class="widget-content" style="padding: 20px;">
+            <div class="widget-content">
+                <div style="padding: 20px;">
                 <div class="opinion-header-grid">
                     <div class="opinion-field">
                         <div class="bond-label">Risk State</div>
@@ -966,7 +971,7 @@
                     </div>
                     <div class="opinion-field">
                         <div class="bond-label">Penalty</div>
-                        <div class="bond-value" style="color: #10b981; font-weight: 600;">${op.penalty}</div>
+                        <div class="bond-value">${op.penalty}</div>
                     </div>
                     <div class="opinion-field" style="grid-column: span 1;">
                         <div class="bond-label">Statutory References</div>
@@ -1010,14 +1015,15 @@
                     <h4 style="color: #ffffff; font-size: 1.125rem; font-weight: 700; margin-bottom: 12px;">Cancellation Clause</h4>
                     
                     <div style="margin-bottom: 12px;">
-                        <div class="statute-section-label">VERBATIM TEXT</div>
-                        <div class="statute-verbatim">${op.cancellation_verbatim}</div>
-                    </div>
-                    
-                    <div>
                         <div class="statute-section-label">SUMMARY</div>
                         <div class="statute-text">${op.cancellation_summary}</div>
                     </div>
+                    
+                    <div>
+                        <div class="statute-section-label">VERBATIM TEXT</div>
+                        <div class="statute-verbatim">${op.cancellation_verbatim}</div>
+                    </div>
+                </div>
                 </div>
             </div>
         </div>`;
