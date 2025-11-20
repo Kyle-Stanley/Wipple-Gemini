@@ -148,23 +148,222 @@
         .welcome-message.hidden { opacity: 0; height: 0; margin: 0; overflow: hidden; }
         .collapse-icon { transition: transform 0.3s; }
         .collapse-icon.collapsed { transform: rotate(-90deg); }
+/* ================================================
+   BOND WIDGET STYLES - UPDATED
+   ================================================ */
 
-        /* --- BOND AGENT STYLES (ADDED) --- */
-        .widget-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-        .info-cell { background: #1e1e1e; padding: 10px; border-radius: 6px; border: 1px solid #333; }
-        .info-label { color: #888; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-        .info-val { color: #fff; font-weight: 500; font-size: 0.95rem; }
-        
-        .risk-pill { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
-        .risk-pill.High { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        .risk-pill.Medium { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
-        .risk-pill.Low { background: rgba(16, 185, 129, 0.2); color: #10b981; }
+/* Grid for parties/header info */
+.bond-grid { 
+    display: grid; 
+    grid-template-columns: repeat(2, 1fr); 
+    gap: 12px; 
+    margin-bottom: 20px; 
+}
 
-        .statute-item { border-bottom: 1px solid #333; padding: 10px 0; }
-        .statute-item:last-child { border-bottom: none; }
-        .statute-citation { color: #60a5fa; font-weight: 600; font-size: 0.9rem; cursor: pointer; display: flex; justify-content: space-between; }
-        .statute-details { margin-top: 8px; font-size: 0.9rem; display: none; background: #1a1a1a; padding: 10px; border-radius: 6px; }
-        .statute-verbatim { font-family: monospace; background: #111; padding: 8px; margin: 4px 0; color: #ccc; font-size: 0.8rem; border-left: 2px solid #666; }
+.bond-cell { 
+    background: #1a1a1a; 
+    padding: 12px; 
+    border-radius: 6px; 
+    border: 1px solid #3e3e4e; 
+}
+
+.bond-label { 
+    color: #8e8ea0; 
+    font-size: 0.75rem; 
+    text-transform: uppercase; 
+    letter-spacing: 0.5px; 
+    margin-bottom: 6px; 
+}
+
+.bond-value { 
+    color: #ececec; 
+    font-weight: 500; 
+    font-size: 0.95rem; 
+    line-height: 1.4;
+}
+
+.bond-value-sm {
+    color: #d1d5db;
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+
+/* Risk clauses list */
+.bond-risk-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.bond-risk-item {
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(62, 62, 78, 0.3);
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 16px;
+    align-items: start;
+}
+
+.bond-risk-item:last-child {
+    border-bottom: none;
+}
+
+/* Statutes */
+.statute-item { 
+    border-bottom: 1px solid rgba(62, 62, 78, 0.3); 
+    padding: 16px 0; 
+}
+
+.statute-item:last-child { 
+    border-bottom: none; 
+}
+
+.statute-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    padding: 4px 0;
+}
+
+.statute-header:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.statute-citation-text { 
+    color: #ececec; 
+    font-weight: 600; 
+    font-size: 0.95rem; 
+    margin-bottom: 4px;
+}
+
+.statute-name {
+    color: #8e8ea0;
+    font-size: 0.85rem;
+}
+
+.statute-chevron {
+    color: #8e8ea0;
+    transition: transform 0.3s ease, color 0.2s;
+    flex-shrink: 0;
+}
+
+.statute-chevron.rotated {
+    transform: rotate(180deg);
+    color: #ececec;
+}
+
+.statute-details-container { 
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    padding: 0 8px;
+}
+
+.statute-details-container.open { 
+    max-height: 600px;
+    padding: 16px 8px 8px 8px;
+}
+
+.statute-section-label {
+    color: #8e8ea0;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    font-weight: 600;
+}
+
+.statute-text {
+    color: #d1d5db;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+.statute-verbatim { 
+    font-family: 'Courier New', monospace; 
+    background: #0d0d0d; 
+    padding: 12px; 
+    border-radius: 4px;
+    color: #d1d5db; 
+    font-size: 0.85rem; 
+    border-left: 3px solid #565869;
+    line-height: 1.6;
+    white-space: pre-wrap;
+}
+
+.statute-link {
+    color: #00BFFF;
+    font-size: 0.85rem;
+    text-decoration: none;
+    display: inline-block;
+    margin-top: 8px;
+    transition: all 0.2s;
+}
+
+.statute-link:hover {
+    color: #60d9ff;
+    text-decoration: underline;
+}
+
+/* Opinion Document */
+.opinion-badge {
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-weight: 600;
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.opinion-header-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #3e3e4e;
+}
+
+.opinion-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.opinion-section {
+    background: #1a1a1a;
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid #3e3e4e;
+}
+
+.opinion-subsection {
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(62, 62, 78, 0.3);
+}
+
+.opinion-subsection:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.opinion-label {
+    color: #8e8ea0;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    font-weight: 600;
+}
+
+.opinion-text {
+    color: #ececec;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
     </style>
     <!-- Firebase Libraries -->
     <script type="module">
@@ -239,7 +438,7 @@
     <div class="fixed bottom-0 left-0 right-0 z-30 p-4 bg-[#212121]">
         <div class="max-w-3xl mx-auto">
             <div id="welcome-message" class="welcome-message">
-                Welcome to Wipple. Upload a WIP Schedule or Bond Form to begin.
+                Welcome to Wipple. Upload your WIP schedule (PDF) to begin analysis.
             </div>
             <div class="input-container flex items-center">
                 <input type="file" id="file-input" accept="application/pdf" class="hidden">
@@ -255,9 +454,8 @@
     </div>
 
 <script>
-    // UPDATED API ENDPOINT for the Router Server
-    const API_ENDPOINT = "https://wipple-gemini-production.up.railway.app/analyze-stream";
-    const CHAT_ENDPOINT = "https://wipple-gemini-production.up.railway.app/chat";
+    // FIXED: HTTPS and correct path
+    const API_ENDPOINT = "https://wipple-gemini-production.up.railway.app/analyze-wip-stream";
     
     const messagesWindow = document.getElementById('messages-window');
     const fileInput = document.getElementById('file-input');
@@ -271,13 +469,11 @@
     let currentLoadingDiv = null;
     let lastTableData = [];
     let lastCalculatedTotals = null;
-    
-    // New Context for Bond Chat
-    let fullAnalysisContext = null;
 
     const agentStatusMessages = [
-        "Scanning document structure...",
-        "Router detected document type..."
+        "OCR Agent is scanning the document now...",
+        "OCR was successful. Passing to Validation Agent to confirm table validity...",
+        "Validations passed. Analyst Agent is preparing final analysis..."
     ];
     let statusStep = 0;
 
@@ -288,14 +484,6 @@
     };
 
     window.onload = () => { uploadButton.disabled = false; chatInput.disabled = false; };
-    
-    // Handle Enter Key for Chat
-    chatInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !sendButton.disabled) {
-            handleSend();
-        }
-    });
-
     uploadButton.addEventListener('click', () => !isProcessing && fileInput.click());
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length) {
@@ -307,36 +495,6 @@
     sendButton.addEventListener('click', handleSend);
 
     function handleSend() {
-        // CASE 1: Chat Message (No File Upload)
-        if (!uploadedFile && chatInput.value.trim() !== "" && !isProcessing) {
-            const text = chatInput.value.trim();
-            addMessage(text, 'user');
-            chatInput.value = '';
-            
-            if(!fullAnalysisContext) {
-                addMessage("Please upload a document first so I can understand the context.", 'ai-message');
-                return;
-            }
-
-            showLoading();
-            fetch(CHAT_ENDPOINT, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text, context: JSON.stringify(fullAnalysisContext) })
-            })
-            .then(res => res.json())
-            .then(data => {
-                removeLoading();
-                addMessage(data.reply || "No response.", 'ai-message');
-            })
-            .catch(e => {
-                removeLoading();
-                addMessage("Error connecting to chat.", 'error');
-            });
-            return;
-        }
-
-        // CASE 2: File Upload & Analysis
         if (!uploadedFile || isProcessing) return;
         welcomeMessage.classList.add('hidden');
         isProcessing = true;
@@ -344,7 +502,10 @@
         statusStep = 0;
         
         addMessage(`Uploaded ${uploadedFile.name}`, 'user');
+        
         addMessage(agentStatusMessages[0], 'agent-status');
+        statusStep = 1;
+        
         showLoading();
 
         const formData = new FormData();
@@ -369,61 +530,29 @@
                     buffer = lines.pop();
 
                     lines.forEach(line => {
-                        if (line.startsWith('event: ')) {
-                            const type = line.split('\n')[0].replace('event: ', '').trim();
-                            const dataStr = line.split('data: ')[1];
+                        if (line.startsWith('event: status')) {
+                            removeLoading();
+                            const msg = agentStatusMessages[statusStep];
+                            if (msg) {
+                                addMessage(msg, 'agent-status');
+                                statusStep++;
+                            }
+                            showLoading();
+                        } else if (line.startsWith('event: result')) {
+                            removeLoading();
+                            const data = JSON.parse(line.split('data: ')[1]);
                             
-                            // --- EXISTING HANDLERS ---
-                            if (type === 'status') {
-                                removeLoading();
-                                addMessage(dataStr, 'agent-status');
-                                showLoading();
+                            // Render
+                            renderResults(data);
+                            
+                            // SAVE TO FIREBASE
+                            if(window.saveAnalysis) {
+                                window.saveAnalysis(data);
                             }
-                            else if (type === 'error') {
-                                removeLoading();
-                                addMessage("Error processing file.", 'error');
-                            }
-                            // --- NEW ROUTER HANDLERS ---
-                            else if (type === 'router') {
-                                removeLoading();
-                                addMessage(`Document identified as <strong>${dataStr}</strong>.`, 'agent-status');
-                                showLoading();
-                            }
-                            // --- BOND AGENT HANDLERS ---
-                            else if (type === 'bond_step_1') {
-                                const data = JSON.parse(dataStr);
-                                renderBondWidget1(data);
-                            }
-                            else if (type === 'bond_step_2') {
-                                const data = JSON.parse(dataStr);
-                                renderBondWidget2(data);
-                            }
-                            else if (type === 'bond_step_3') {
-                                const data = JSON.parse(dataStr);
-                                renderBondWidget3(data);
-                            }
-                            else if (type === 'result_bond_final') {
-                                fullAnalysisContext = JSON.parse(dataStr); // Save context for chat
-                                if(window.saveAnalysis) window.saveAnalysis(fullAnalysisContext);
-                            }
-                            // --- WIP HANDLER (Wrapper) ---
-                            else if (type === 'result_wip') {
-                                removeLoading();
-                                const payload = JSON.parse(dataStr);
-                                const data = payload.data; // Extract the inner data expected by existing renderResults
-                                fullAnalysisContext = payload;
-                                
-                                // Call EXISTING Render Function
-                                renderResults(data);
-                                
-                                if(window.saveAnalysis) window.saveAnalysis(data);
-                            }
-                            // --- LEGACY FALLBACK ---
-                            else if (type === 'result') {
-                                removeLoading();
-                                const data = JSON.parse(dataStr);
-                                renderResults(data);
-                            }
+
+                        } else if (line.startsWith('event: error')) {
+                            removeLoading();
+                            addMessage("Error processing file.", 'error');
                         }
                     });
                     read();
@@ -468,13 +597,10 @@
         fileInput.value = ''; 
         uploadedFile = null;
         chatInput.value = '';
-        chatInput.placeholder = "Ask a question about the document...";
+        chatInput.placeholder = "Analysis complete.";
         uploadButton.disabled = false;
         chatInput.disabled = false;
-        sendButton.disabled = false; // Enable for chat
     }
-
-    // --- EXISTING WIP RENDERERS (PRESERVED) ---
 
     function renderResults(data) {
         const wd = data.widget_data;
@@ -783,124 +909,294 @@
         });
     }
 
-    // --- NEW BOND AGENT RENDERERS (ADDED) ---
+// ========================================
+// BOND WIDGET RENDERERS - UPDATED
+// ========================================
 
-    function renderBondWidget1(data) {
-        const p = data.parties;
-        const r = data.risks;
+function renderBondWidget1(data) {
+    const p = data.parties;
+    const r = data.risks;
+    
+    const html = `
+    <div class="widget-card">
+        <div class="widget-header">
+            <span class="font-semibold">Bond Analysis & Risk Terms</span>
+            <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="widget-content" style="padding: 20px;">
+            
+            <!-- Parties Section -->
+            <div style="margin-bottom: 24px;">
+                <h4 style="color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">Parties Involved</h4>
+                <div class="bond-grid">
+                    <div class="bond-cell">
+                        <div class="bond-label">Principal</div>
+                        <div class="bond-value">${p.principal_name}</div>
+                    </div>
+                    <div class="bond-cell">
+                        <div class="bond-label">Obligee</div>
+                        <div class="bond-value">${p.obligee_name}</div>
+                    </div>
+                    <div class="bond-cell">
+                        <div class="bond-label">Surety</div>
+                        <div class="bond-value">${p.surety_name || 'Not Specified'}</div>
+                    </div>
+                    <div class="bond-cell">
+                        <div class="bond-label">Penal Sum</div>
+                        <div class="bond-value" style="color: #10b981; font-weight: 600;">${p.penal_sum}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Key Risk Clauses Section -->
+            <div>
+                <h4 style="color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">Key Risk Clauses</h4>
+                <div class="bond-risk-list">
+                    <div class="bond-risk-item">
+                        <div class="bond-label">Security Required</div>
+                        <div class="bond-value-sm">${r.security_required}</div>
+                    </div>
+                    <div class="bond-risk-item">
+                        <div class="bond-label">Type</div>
+                        <div class="bond-value-sm">${r.bond_type}</div>
+                    </div>
+                    <div class="bond-risk-item">
+                        <div class="bond-label">Forms Provided</div>
+                        <div class="bond-value-sm">${r.forms_provided}</div>
+                    </div>
+                    <div class="bond-risk-item">
+                        <div class="bond-label">Adjustable Amount</div>
+                        <div class="bond-value-sm">${r.adjustable_amount}</div>
+                    </div>
+                    <div class="bond-risk-item">
+                        <div class="bond-label">Cancellation Notice Period</div>
+                        <div class="bond-value-sm">${r.cancellation_notice_period}</div>
+                    </div>
+                    <div class="bond-risk-item">
+                        <div class="bond-label">Effective Duration</div>
+                        <div class="bond-value-sm">${r.effective_duration}</div>
+                    </div>
+                    <div class="bond-risk-item">
+                        <div class="bond-label">Quick Payment Terms</div>
+                        <div class="bond-value-sm">${r.quick_payment_terms}</div>
+                    </div>
+                    <div class="bond-risk-item">
+                        <div class="bond-label">Efficiency Guarantees</div>
+                        <div class="bond-value-sm">${r.efficiency_guarantees}</div>
+                    </div>
+                    <div class="bond-risk-item">
+                        <div class="bond-label">Enforcement Mechanisms</div>
+                        <div class="bond-value-sm">${r.enforcement_mechanisms}</div>
+                    </div>
+                    <div class="bond-risk-item" style="border: none;">
+                        <div class="bond-label">Cancellation Terms</div>
+                        <div class="bond-value-sm" style="font-style: italic; color: #d1d5db;">"${r.cancellation_terms}"</div>
+                    </div>
+                    <div class="bond-risk-item" style="border: none;">
+                        <div class="bond-label">Forfeiture Language</div>
+                        <div class="bond-value-sm" style="font-style: italic; color: #d1d5db;">${r.forfeiture_language}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>`;
+    
+    addMessage(html, 'widget');
+    setupCollapsibles();
+}
+
+function renderBondWidget2(statutes) {
+    if (!statutes || statutes.length === 0) {
+        const html = `
+        <div class="widget-card">
+            <div class="widget-header">
+                <span class="font-semibold">Statutory References & Compliance</span>
+                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="widget-content" style="padding: 20px;">
+                <div style="color: #8e8ea0; font-size: 0.875rem;">No specific statutes cited in this bond.</div>
+            </div>
+        </div>`;
+        addMessage(html, 'widget');
+        setupCollapsibles();
+        return;
+    }
+
+    const items = statutes.map((s, idx) => {
+        const hasExcerpt = s.verbatim_text && s.verbatim_text !== 'Excerpt not found.';
+        const hasSummary = s.plain_summary && s.plain_summary.length > 0;
         
-        const html = `
-        <div class="widget-card slide-in">
-            <div class="widget-header">
-                <span>Bond Analysis & Risk Terms</span>
-                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-            </div>
-            <div class="widget-content">
-                <!-- Parties -->
-                <div class="widget-grid-2 mb-4">
-                    <div class="info-cell">
-                        <div class="info-label">Principal</div>
-                        <div class="info-val">${p.principal_name}</div>
-                    </div>
-                    <div class="info-cell">
-                        <div class="info-label">Obligee</div>
-                        <div class="info-val">${p.obligee_name}</div>
-                    </div>
-                    <div class="info-cell">
-                        <div class="info-label">Penal Sum</div>
-                        <div class="info-val text-green-400">${p.penal_sum}</div>
-                    </div>
-                    <div class="info-cell">
-                        <div class="info-label">Risk Level</div>
-                        <div class="info-val">
-                            <span class="risk-pill ${r.risk_level}">${r.risk_level}</span>
-                        </div>
-                    </div>
-                </div>
-                <!-- Clauses -->
-                <div class="space-y-3">
-                    <div class="info-cell">
-                        <div class="info-label">Cancellation Terms</div>
-                        <div class="text-sm text-gray-300 italic">"${r.cancellation_terms}"</div>
-                        <div class="mt-1 text-xs text-gray-400">Notice: <span class="text-white">${r.cancellation_notice_period}</span></div>
-                    </div>
-                    <div class="info-cell">
-                        <div class="info-label">Forfeiture</div>
-                        <div class="text-sm text-gray-300">${r.forfeiture_language}</div>
-                    </div>
-                </div>
-            </div>
-        </div>`;
-        addMessage(html, 'widget');
-        setupCollapsibles();
-    }
-
-    function renderBondWidget2(statutes) {
-        const items = statutes.map((s, idx) => `
+        return `
             <div class="statute-item">
-                <div class="statute-citation" onclick="toggleStatute(${idx})">
-                    <span>${s.citation} - ${s.name}</span>
-                    <span class="text-gray-500 text-xs">▼</span>
+                <div class="statute-header" onclick="toggleStatute(${idx})">
+                    <div>
+                        <div class="statute-citation-text">${s.citation}</div>
+                        <div class="statute-name">${s.name}</div>
+                    </div>
+                    <svg id="statute-icon-${idx}" class="statute-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 9l6 6 6-6"/>
+                    </svg>
                 </div>
-                <div id="stat-${idx}" class="statute-details">
-                    <div class="text-gray-400 text-xs mb-1">SUMMARY</div>
-                    <div class="text-sm text-white mb-2">${s.plain_summary || 'No summary available.'}</div>
-                    
-                    <div class="text-gray-400 text-xs mb-1">VERBATIM TEXT</div>
-                    <div class="statute-verbatim">${s.verbatim_text || 'Excerpt not found.'}</div>
-                    
-                    ${s.source_link ? `<a href="${s.source_link}" target="_blank" class="text-blue-400 text-xs hover:underline mt-2 block">View Official Source ↗</a>` : ''}
+                <div id="stat-${idx}" class="statute-details-container">
+                    ${hasSummary ? `
+                        <div style="margin-bottom: 12px;">
+                            <div class="statute-section-label">SUMMARY</div>
+                            <div class="statute-text">${s.plain_summary}</div>
+                        </div>
+                    ` : ''}
+                    ${hasExcerpt ? `
+                        <div style="margin-bottom: 12px;">
+                            <div class="statute-section-label">VERBATIM TEXT</div>
+                            <div class="statute-verbatim">${s.verbatim_text}</div>
+                        </div>
+                    ` : ''}
+                    ${s.source_link ? `
+                        <a href="${s.source_link}" target="_blank" class="statute-link">
+                            View Official Source ↗
+                        </a>
+                    ` : ''}
+                    ${!hasExcerpt && !hasSummary ? `
+                        <div class="statute-text" style="color: #8e8ea0;">Statute identified but unable to retrieve official excerpt.</div>
+                    ` : ''}
                 </div>
             </div>
-        `).join('');
+        `;
+    }).join('');
 
-        const html = `
-        <div class="widget-card slide-in">
-            <div class="widget-header">
-                <span>Statutory References & Compliance</span>
-                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-            </div>
-            <div class="widget-content">
-                ${items.length ? items : '<div class="text-gray-500 text-sm">No specific statutes cited.</div>'}
-            </div>
-        </div>`;
-        addMessage(html, 'widget');
-        setupCollapsibles();
+    const html = `
+    <div class="widget-card">
+        <div class="widget-header">
+            <span class="font-semibold">Statutory References & Compliance</span>
+            <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="widget-content" style="padding: 20px;">
+            ${items}
+        </div>
+    </div>`;
+    
+    addMessage(html, 'widget');
+    setupCollapsibles();
+}
+
+window.toggleStatute = (idx) => {
+    const el = document.getElementById(`stat-${idx}`);
+    const icon = document.getElementById(`statute-icon-${idx}`);
+    
+    if (!el) return;
+    
+    if (el.classList.contains('open')) {
+        el.classList.remove('open');
+        if (icon) icon.classList.remove('rotated');
+    } else {
+        el.classList.add('open');
+        if (icon) icon.classList.add('rotated');
     }
+};
 
-    window.toggleStatute = (idx) => {
-        const el = document.getElementById(`stat-${idx}`);
-        if(el) el.style.display = el.style.display === 'block' ? 'none' : 'block';
-    };
+function renderBondWidget3(op) {
+    const html = `
+    <div class="widget-card">
+        <div class="widget-header">
+            <div class="flex items-center space-x-2">
+                <span class="font-semibold">Underwriting Opinion</span>
+                <span class="opinion-badge">${op.recommendation}</span>
+            </div>
+            <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="widget-content" style="padding: 20px;">
+            
+            <!-- Header Info Grid -->
+            <div class="opinion-header-grid">
+                <div class="opinion-field">
+                    <div class="bond-label">Risk State</div>
+                    <div class="bond-value">${op.risk_state}</div>
+                </div>
+                <div class="opinion-field">
+                    <div class="bond-label">Obligee</div>
+                    <div class="bond-value">${op.obligee}</div>
+                </div>
+                <div class="opinion-field">
+                    <div class="bond-label">Bond Description</div>
+                    <div class="bond-value">${op.bond_description}</div>
+                </div>
+                <div class="opinion-field">
+                    <div class="bond-label">SFAA No. / Descriptor</div>
+                    <div class="bond-value">${op.sfaa_descriptor}</div>
+                </div>
+                <div class="opinion-field">
+                    <div class="bond-label">Penalty</div>
+                    <div class="bond-value" style="color: #10b981; font-weight: 600;">${op.penalty}</div>
+                </div>
+                <div class="opinion-field" style="grid-column: span 1;">
+                    <div class="bond-label">Statutory References</div>
+                    <div class="bond-value-sm">${op.statutory_references.join(', ')}</div>
+                </div>
+            </div>
 
-    function renderBondWidget3(op) {
-        const html = `
-        <div class="widget-card slide-in">
-            <div class="widget-header">
-                <div class="flex items-center space-x-2">
-                    <span>Underwriting Opinion</span>
-                    <span class="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded">${op.risk_state}</span>
+            <!-- Legal Opinion Section -->
+            <div style="margin-top: 24px;">
+                <h4 style="color: #00BFFF; font-size: 0.875rem; font-weight: 600; text-transform: uppercase; margin-bottom: 16px; letter-spacing: 0.5px;">Legal Opinion</h4>
+                
+                <div class="opinion-section">
+                    <div class="opinion-subsection">
+                        <div class="opinion-label">Who Must Post Bond</div>
+                        <div class="opinion-text">${op.who_must_post}</div>
+                    </div>
+                    
+                    <div class="opinion-subsection">
+                        <div class="opinion-label">Statutory Definitions</div>
+                        <div class="opinion-text">${op.statutory_definitions}</div>
+                    </div>
+                    
+                    <div class="opinion-subsection">
+                        <div class="opinion-label">Exemptions</div>
+                        <div class="opinion-text">${op.exemptions}</div>
+                    </div>
+                    
+                    <div class="opinion-subsection">
+                        <div class="opinion-label">Bond Guarantees</div>
+                        <div class="opinion-text">${op.bond_guarantees}</div>
+                    </div>
+                    
+                    <div class="opinion-subsection">
+                        <div class="opinion-label">Licensing/Bonding Deadlines</div>
+                        <div class="opinion-text">${op.deadlines_cycles}</div>
+                    </div>
+                    
+                    <div class="opinion-subsection">
+                        <div class="opinion-label">Past Claims Experience</div>
+                        <div class="opinion-text">${op.claims_history}</div>
+                    </div>
+                    
+                    <div class="opinion-subsection">
+                        <div class="opinion-label">Alternative Instruments</div>
+                        <div class="opinion-text">${op.alternative_instruments}</div>
+                    </div>
                 </div>
-                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
             </div>
-            <div class="widget-content">
-                <div class="mb-4">
-                    <div class="info-label">Recommendation</div>
-                    <div class="text-lg font-bold ${op.recommendation.includes('Approve') ? 'text-green-400' : 'text-yellow-400'}">${op.recommendation}</div>
+
+            <!-- Cancellation Section -->
+            <div style="margin-top: 24px;">
+                <h4 style="color: #00BFFF; font-size: 0.875rem; font-weight: 600; text-transform: uppercase; margin-bottom: 12px; letter-spacing: 0.5px;">Cancellation Clause</h4>
+                
+                <div style="background: #1a1a1a; padding: 14px; border-radius: 6px; border-left: 3px solid #3e3e4e; margin-bottom: 12px;">
+                    <div style="font-family: 'Courier New', monospace; font-size: 0.85rem; color: #d1d5db; font-style: italic; line-height: 1.6;">
+                        "${op.cancellation_verbatim}"
+                    </div>
                 </div>
-                <div class="mb-4">
-                    <div class="info-label">Legal Opinion</div>
-                    <div class="text-sm text-gray-300 space-y-2 whitespace-pre-wrap leading-relaxed">${op.legal_opinion_text}</div>
-                </div>
-                 <div>
-                    <div class="info-label">Cancellation Summary</div>
-                    <div class="text-sm text-gray-300">${op.cancellation_summary}</div>
+                
+                <div style="background: rgba(0, 191, 255, 0.05); padding: 12px; border-radius: 6px; border-left: 3px solid #00BFFF;">
+                    <div style="color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 4px;">Summary</div>
+                    <div style="color: #ececec; font-size: 0.9rem; line-height: 1.5;">${op.cancellation_summary}</div>
                 </div>
             </div>
-        </div>`;
-        addMessage(html, 'widget');
-        setupCollapsibles();
-    }
+
+        </div>
+    </div>`;
+    
+    addMessage(html, 'widget');
+    setupCollapsibles();
+}
 
 </script>
 </body>
