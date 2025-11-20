@@ -773,9 +773,9 @@
                 <span class="font-semibold">Bond Analysis & Risk Terms</span>
                 <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
             </div>
-            <div class="widget-content" style="padding: 20px;">
-                <div style="margin-bottom: 24px;">
-                    <h4 style="color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">Parties Involved</h4>
+            <div class="widget-content">
+                <div style="margin-bottom: 24px; padding: 20px 20px 0 20px;">
+                    <h4 style="color: #ffffff; font-size: 1.125rem; font-weight: 700; margin-bottom: 12px;">Parties Involved</h4>
                     <div class="bond-grid">
                         <div class="bond-cell">
                             <div class="bond-label">Principal</div>
@@ -795,8 +795,8 @@
                         </div>
                     </div>
                 </div>
-                <div>
-                    <h4 style="color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">Key Risk Clauses</h4>
+                <div style="padding: 0 20px 20px 20px;">
+                    <h4 style="color: #ffffff; font-size: 1.125rem; font-weight: 700; margin-bottom: 12px;">Key Risk Clauses</h4>
                     <div class="bond-risk-list">
                         <div class="bond-risk-item">
                             <div class="bond-label">Security Required</div>
@@ -943,10 +943,7 @@
         const html = `
         <div class="widget-card">
             <div class="widget-header">
-                <div class="flex items-center space-x-2">
-                    <span class="font-semibold">Underwriting Opinion</span>
-                    <span class="opinion-badge">${op.recommendation}</span>
-                </div>
+                <span class="font-semibold">Underwriting Opinion</span>
                 <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
             </div>
             <div class="widget-content" style="padding: 20px;">
@@ -977,7 +974,7 @@
                     </div>
                 </div>
                 <div style="margin-top: 24px;">
-                    <h4 style="color: #00BFFF; font-size: 0.875rem; font-weight: 600; text-transform: uppercase; margin-bottom: 16px; letter-spacing: 0.5px;">Legal Opinion</h4>
+                    <h4 style="color: #ffffff; font-size: 1.125rem; font-weight: 700; margin-bottom: 16px;">Legal Opinion</h4>
                     <div class="opinion-section">
                         <div class="opinion-subsection">
                             <div class="opinion-label">Who Must Post Bond</div>
@@ -1010,15 +1007,16 @@
                     </div>
                 </div>
                 <div style="margin-top: 24px;">
-                    <h4 style="color: #00BFFF; font-size: 0.875rem; font-weight: 600; text-transform: uppercase; margin-bottom: 12px; letter-spacing: 0.5px;">Cancellation Clause</h4>
-                    <div style="background: #1a1a1a; padding: 14px; border-radius: 6px; border-left: 3px solid #3e3e4e; margin-bottom: 12px;">
-                        <div style="font-family: 'Courier New', monospace; font-size: 0.85rem; color: #d1d5db; font-style: italic; line-height: 1.6;">
-                            "${op.cancellation_verbatim}"
-                        </div>
+                    <h4 style="color: #ffffff; font-size: 1.125rem; font-weight: 700; margin-bottom: 12px;">Cancellation Clause</h4>
+                    
+                    <div style="margin-bottom: 12px;">
+                        <div class="statute-section-label">VERBATIM TEXT</div>
+                        <div class="statute-verbatim">${op.cancellation_verbatim}</div>
                     </div>
-                    <div style="background: rgba(0, 191, 255, 0.05); padding: 12px; border-radius: 6px; border-left: 3px solid #00BFFF;">
-                        <div style="color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 4px;">Summary</div>
-                        <div style="color: #ececec; font-size: 0.9rem; line-height: 1.5;">${op.cancellation_summary}</div>
+                    
+                    <div>
+                        <div class="statute-section-label">SUMMARY</div>
+                        <div class="statute-text">${op.cancellation_summary}</div>
                     </div>
                 </div>
             </div>
