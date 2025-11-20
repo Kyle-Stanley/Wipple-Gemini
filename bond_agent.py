@@ -159,56 +159,76 @@ def research_node(state: BondState):
     if not citations:
         return {"researched_statutes": []}
 
-    # Construct a search prompt for the tool
-    search_prompt = f"""
-    I have a list of legal citations found in a bond form: {json.dumps(citations)}.
+    # Search for each statute individually to ensure grounding
+    researched = []
     
-    For EACH citation, I need you to find the official legal text using Google Search.
-    
-    Return a JSON list:
-    [
-        {{
-            "citation": "The citation code",
-            "name": "The name of the act/statute",
-            "verbatim_text": "A short 2-3 sentence excerpt from the official source",
-            "plain_summary": "A 1 sentence plain english summary",
-            "source_link": "The URL to the .gov or legal database found",
-            "found": true
-        }}
-    ]
-    
-    If you cannot find a specific statute, set "found": false.
-    """
-
-    try:
-        # Enable Google Search Tool
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=search_prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                response_mime_type="application/json",
-                temperature=0.0
-            )
-        )
+    for citation in citations:
+        print(f"Searching for: {citation}")
         
-        raw_data = response.text
-        # Sometimes the search tool might return text mixed with grounding; ensure we parse JSON
+        search_prompt = f"""
+        Find information about this legal statute: "{citation}"
+        
+        Use Google Search to find the official statute text.
+        
+        Return ONLY information you can verify from search results. If you cannot find it, set "found": false.
+        
+        Return JSON:
+        {{
+            "citation": "{citation}",
+            "name": "Official name of the statute/act",
+            "verbatim_text": "2-3 sentence excerpt from the official source you found",
+            "plain_summary": "1 sentence plain summary",
+            "source_link": "The actual URL from search results",
+            "found": true or false
+        }}
+        """
+        
         try:
-            data = json.loads(raw_data)
-        except:
-            # Fallback if it returns a list directly
-            if isinstance(raw_data, list):
-                data = raw_data
-            else:
-                data = []
-
-        statutes = [StatuteRef(**s) for s in data]
-        return {"researched_statutes": statutes}
-
-    except Exception as e:
-        print(f"Research Error: {e}")
-        return {"researched_statutes": []}
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=search_prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    response_mime_type="application/json",
+                    temperature=0.0
+                )
+            )
+            
+            # Check if response has grounding metadata
+            print(f"Response for {citation}:")
+            print(f"  Text: {response.text[:200]}...")
+            
+            # Check if search was actually used
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'grounding_metadata'):
+                    print(f"  ✓ Has grounding metadata")
+                else:
+                    print(f"  ⚠ NO grounding metadata - response may be hallucinated")
+            
+            data = json.loads(response.text)
+            
+            # Validate: if found=true but no source_link, mark as suspicious
+            if data.get('found') and not data.get('source_link'):
+                print(f"  ⚠ WARNING: Marked as found but no source link provided")
+                data['found'] = False
+                data['verbatim_text'] = "Statute identified but could not retrieve official text"
+                data['plain_summary'] = "Unable to verify statute details"
+            
+            researched.append(StatuteRef(**data))
+            
+        except Exception as e:
+            print(f"Error researching {citation}: {e}")
+            researched.append(StatuteRef(
+                citation=citation,
+                name="Research Error",
+                verbatim_text="Unable to retrieve statute information",
+                plain_summary="Statute lookup failed",
+                source_link=None,
+                found=False
+            ))
+    
+    return {"researched_statutes": researched}
 
 def opinion_node(state: BondState):
     """Step 3: Synthesize the Underwriting Opinion."""
