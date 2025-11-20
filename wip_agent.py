@@ -97,6 +97,15 @@ def extractor_node(state: WipState):
     1. Extract every job row with all financial columns, Job Name, and Job ID.
     2. Extract the "TOTALS" row from the bottom of the report.
 
+    CRITICAL: UNDER vs OVER BILLINGS
+    - UNDER BILLINGS (UB) happens when: Cost to Date > Billed to Date
+      Column headers: "Costs in Excess of Billings" OR "Billings in Excess of Revenues" OR similar
+      Formula: Cost to Date - Billed to Date (when positive)
+      
+    - OVER BILLINGS (OB) happens when: Billed to Date > Cost to Date  
+      Column headers: "In Excess of Billings" OR "Earnings in Excess of Costs" OR similar
+      Formula: Billed to Date - Cost to Date (when positive)
+
     Return JSON:
     {
         "rows": [
@@ -123,6 +132,7 @@ def extractor_node(state: WipState):
     RULES:
     - (100) in parens is negative -100.
     - Empty fields are 0.
+    - Match column headers to the definitions above carefully
     """
 
     try:
