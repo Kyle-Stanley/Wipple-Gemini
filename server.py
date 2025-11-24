@@ -39,9 +39,9 @@ app.add_middleware(
     allow_origins=origins,
     allow_origin_regex=r"https://.*\.railway\.app",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],  # Add this
+    expose_headers=["*"],
 )
 # ------------------------
 
@@ -193,7 +193,7 @@ class ChatRequest(BaseModel):
     message: str
     context: str 
 
-@app.post("/chat/")  # Add /
+@app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     try:
         prompt = (
@@ -212,7 +212,7 @@ async def chat_endpoint(req: ChatRequest):
     except Exception as e:
         return {"reply": "I'm having trouble connecting to the chat service right now."}
 
-@app.post("/analyze-stream/")  # Add /
+@app.post("/analyze-stream")
 async def analyze_stream(file: UploadFile = File(...)):
     print(f"--- RECEIVING FILE: {file.filename} ---")
     temp_filename = f"temp_{file.filename}"
@@ -225,7 +225,7 @@ async def analyze_stream(file: UploadFile = File(...)):
     )
 
 # BACKWARD COMPATIBILITY
-@app.post("/analyze-wip-stream/")  # Add /
+@app.post("/analyze-wip-stream")
 async def analyze_wip_stream_legacy(file: UploadFile = File(...)):
     """Legacy endpoint - redirects to new unified endpoint"""
     print(f"--- LEGACY ENDPOINT CALLED: {file.filename} ---")
@@ -237,6 +237,13 @@ async def analyze_wip_stream_legacy(file: UploadFile = File(...)):
         processing_generator(temp_filename), 
         media_type="text/event-stream"
     )
+
+# Debug: Print all registered routes
+print("\n=== REGISTERED ROUTES ===")
+for route in app.routes:
+    if hasattr(route, 'methods') and hasattr(route, 'path'):
+        print(f"{route.methods} {route.path}")
+print("=========================\n")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
