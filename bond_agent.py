@@ -200,16 +200,36 @@ def research_node(state: BondState):
                 )
             )
             
-            data = json.loads(response.text)
-            
+            # Robust JSON parsing
+            try:
+                data = json.loads(response.text)
+            except json.JSONDecodeError:
+                # Fallback: Try to find JSON within the response text if it's mixed with markdown
+                import re
+                json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group(0))
+                else:
+                    raise Exception("No valid JSON found in response")
+
+            # Default values for missing fields
+            citation_data = {
+                "citation": citation,
+                "name": data.get("name", "Unknown"),
+                "verbatim_text": data.get("verbatim_text"),
+                "plain_summary": data.get("plain_summary"),
+                "source_link": data.get("source_link"),
+                "found": data.get("found", False)
+            }
+
             # Validate: if found=true but no source_link, mark as suspicious
-            if data.get('found') and not data.get('source_link'):
+            if citation_data['found'] and not citation_data['source_link']:
                 print(f"  ⚠ WARNING: Marked as found but no source link provided")
-                data['found'] = False
-                data['verbatim_text'] = "Statute identified but could not retrieve official text"
-                data['plain_summary'] = "Unable to verify statute details"
+                citation_data['found'] = False
+                citation_data['verbatim_text'] = "Statute identified but could not retrieve official text"
+                citation_data['plain_summary'] = "Unable to verify statute details"
             
-            researched.append(StatuteRef(**data))
+            researched.append(StatuteRef(**citation_data))
             
         except Exception as e:
             print(f"Error researching {citation}: {e}")
