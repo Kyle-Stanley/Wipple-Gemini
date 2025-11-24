@@ -59,9 +59,9 @@ class UnderwritingOpinion(BaseModel):
     who_must_post: str = Field(description="Who is required to post the bond")
     statutory_definitions: str = Field(description="Relevant definitions from statutes")
     exemptions: str = Field(description="Who is exempt from bond requirement")
-    bond_guarantees: str = Field(description="What the bond guarantees/covers")
+    bond_guarantees: str = Field(description="What the bond specifically guarantees or covers")
     deadlines_cycles: str = Field(description="Licensing/bonding deadlines and expiration cycles")
-    claims_history: str = Field(description="Past claims experience or loss ratio if known")
+    claims_history: str = Field(description="Past claims experience or loss ratio if known from research, otherwise 'No data available'")
     alternative_instruments: str = Field(description="Whether bond can be replaced by other financial instruments")
     # Cancellation
     cancellation_verbatim: str = Field(description="Exact cancellation clause language")
@@ -96,6 +96,7 @@ def extraction_node(state: BondState):
     except:
         return {}
 
+    # Standard string (no f-string needed here)
     prompt = """
     Analyze this Bond Form/Contract. Extract the following:
     1. The Parties (Principal, Obligee, Surety) and Penal Sum.
@@ -134,10 +135,11 @@ def extraction_node(state: BondState):
     """
 
     try:
+        # FIX: Removed temperature=0.0 to prevent looping
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), prompt],
-            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
+            config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         
         data = json.loads(response.text)
@@ -165,46 +167,38 @@ def research_node(state: BondState):
     for citation in citations:
         print(f"Searching for: {citation}")
         
-        search_prompt = f"""
-        Find information about this legal statute: "{citation}"
+        # REFACTORED: Use standard string with .replace() to avoid f-string syntax errors
+        # This fixes the "Line 185" commenting issue.
+        search_prompt_template = """
+        Find information about this legal statute: "CITATION_PLACEHOLDER"
         
         Use Google Search to find the official statute text.
         
         Return ONLY information you can verify from search results. If you cannot find it, set "found": false.
         
         Return JSON:
-        {{
-            "citation": "{citation}",
+        {
+            "citation": "CITATION_PLACEHOLDER",
             "name": "Official name of the statute/act",
             "verbatim_text": "2-3 sentence excerpt from the official source you found",
             "plain_summary": "1 sentence plain summary",
             "source_link": "The actual URL from search results",
             "found": true or false
-        }}
+        }
         """
         
+        search_prompt = search_prompt_template.replace("CITATION_PLACEHOLDER", citation)
+        
         try:
+            # FIX: Removed temperature=0.0 to prevent looping
             response = client.models.generate_content(
                 model=MODEL_NAME,
                 contents=search_prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
-                    response_mime_type="application/json",
-                    temperature=0.0
+                    response_mime_type="application/json"
                 )
             )
-            
-            # Check if response has grounding metadata
-            print(f"Response for {citation}:")
-            print(f"  Text: {response.text[:200]}...")
-            
-            # Check if search was actually used
-            if hasattr(response, 'candidates') and response.candidates:
-                candidate = response.candidates[0]
-                if hasattr(candidate, 'grounding_metadata'):
-                    print(f"  ✓ Has grounding metadata")
-                else:
-                    print(f"  ⚠ NO grounding metadata - response may be hallucinated")
             
             data = json.loads(response.text)
             
@@ -239,16 +233,18 @@ def opinion_node(state: BondState):
     risks_txt = state.risks.model_dump_json() if state.risks else ""
     statutes_txt = json.dumps([s.model_dump() for s in state.researched_statutes])
 
-    prompt = f"""
+    # REFACTORED: Use standard string with .replace() to avoid f-string syntax errors
+    # This fixes the "Line 223" docstring highlighting issue.
+    prompt_template = """
     Generate a Commercial Underwriting Opinion for this bond in the exact structured format required.
     
     Data Available:
-    Parties: {parties_txt}
-    Risks: {risks_txt}
-    Statutory Research: {statutes_txt}
+    Parties: PARTIES_PLACEHOLDER
+    Risks: RISKS_PLACEHOLDER
+    Statutory Research: STATUTES_PLACEHOLDER
     
     Generate JSON with ALL fields:
-    {{
+    {
         "risk_state": "State inferred from obligee/statutes",
         "obligee": "Name of obligee from parties data",
         "bond_description": "Brief purpose/type of bond",
@@ -258,22 +254,27 @@ def opinion_node(state: BondState):
         
         "who_must_post": "Who is required to post the bond - be specific",
         "statutory_definitions": "Relevant definitions from the statutes cited",
-        "exemptions": "Who is exempt from the bond requirement - or 'None identified'",
+        "exemptions": "Who is exempt from bond requirement - or 'None identified'",
         "bond_guarantees": "What the bond specifically guarantees or covers",
         "deadlines_cycles": "Licensing/bonding deadlines and expiration cycles",
         "claims_history": "Past claims experience or loss ratio if known from research, otherwise 'No data available'",
-        "alternative_instruments": "Whether bond can be replaced by cash, LOC, CD, etc.",
+        "alternative_instruments": "Whether bond can be replaced by other financial instruments",
         
         "cancellation_verbatim": "Exact cancellation clause from the bond",
-        "cancellation_summary": "Plain language: notice period and rights upon cancellation",
+        "cancellation_summary": "Plain language summary of notice period",
         
         "recommendation": "Approve / Decline / Refer - with brief reasoning"
-    }}
+    }
     
     Be thorough and specific. Use the researched statutes to inform the legal opinion components.
     """
+    
+    prompt = prompt_template.replace("PARTIES_PLACEHOLDER", parties_txt)
+    prompt = prompt.replace("RISKS_PLACEHOLDER", risks_txt)
+    prompt = prompt.replace("STATUTES_PLACEHOLDER", statutes_txt)
 
     try:
+        # FIX: Adjusted temperature to 0.2 for creativity in opinion
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
