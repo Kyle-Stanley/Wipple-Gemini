@@ -26,18 +26,18 @@ MODEL_NAME = "gemini-3-pro-preview"
 
 app = FastAPI()
 
-# --- CORS FIX IS HERE ---
+# --- CORS FIX ---
 origins = [
     "https://wipple.ai",
     "https://www.wipple.ai",
     "http://localhost:3000",
-    "http://localhost:8000",
-    "https://wipple-gemini-production.up.railway.app"
+    "http://localhost:8000"
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, # Explicit list instead of ["*"]
+    allow_origins=origins,
+    allow_origin_regex=r"https://.*\.railway\.app", # Fixes dynamic Railway URLs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,13 +53,13 @@ def format_sse(event_type: str, data: str) -> str:
 
 def clean_json_text(text: str) -> str:
     """Strips markdown code blocks and non-JSON prefixes from LLM response."""
-    # Find JSON fences and extract content
+    # Robustly handle cases where model returns raw JSON without markdown
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0]
     elif "```" in text:
         text = text.split("```")[1].split("```")[0]
     
-    # Aggressive cleaning for any leading/trailing whitespace or non-JSON characters
+    # Aggressive cleaning
     text = text.strip()
     return text
 
@@ -88,7 +88,7 @@ async def detect_document_type(file_path: str) -> str:
             contents=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json", 
-                temperature=0.0
+                # Gemini 3 requires default temperature (approx 1.0) for best reasoning
             )
         )
         
@@ -110,12 +110,9 @@ async def detect_document_type(file_path: str) -> str:
         
     except Exception as e:
         print(f"ROUTER ERROR (Defaulting to WIP): {e}")
-        # Note: Printing the raw response helps diagnose the parsing failure
-        if 'response' in locals():
-            print(f"Raw Response causing failure: {response.text}")
         return "WIP"
 
-# --- Stream Handlers (No changes needed here) ---
+# --- Stream Handlers ---
 
 async def run_wip_stream(inputs):
     """Handles the WIP agent stream events."""
@@ -189,7 +186,7 @@ async def processing_generator(temp_filename: str):
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
-# --- Endpoints (No changes needed here) ---
+# --- Endpoints ---
 
 class ChatRequest(BaseModel):
     message: str
@@ -226,7 +223,7 @@ async def analyze_stream(file: UploadFile = File(...)):
         media_type="text/event-stream"
     )
 
-# BACKWARD COMPATIBILITY: Keep old endpoint name working
+# BACKWARD COMPATIBILITY
 @app.post("/analyze-wip-stream")
 async def analyze_wip_stream_legacy(file: UploadFile = File(...)):
     """Legacy endpoint - redirects to new unified endpoint"""
