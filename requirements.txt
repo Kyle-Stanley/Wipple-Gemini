@@ -4,7 +4,7 @@ uvicorn
 python-multipart
 
 # Google Gemini SDK (The New 2025 Standard)
-# google-genai (maybe uncomment this later)
+google-genai
 
 # LangChain/LangGraph Orchestration Core
 langchain-core
@@ -20,3 +20,4 @@ sniffio
 starlette
 
 typing-extensions
+
