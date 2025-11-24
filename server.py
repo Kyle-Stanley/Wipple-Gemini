@@ -193,7 +193,7 @@ class ChatRequest(BaseModel):
     message: str
     context: str 
 
-@app.post("/chat")
+@app.post("/chat/")  # Add /
 async def chat_endpoint(req: ChatRequest):
     try:
         prompt = (
@@ -212,7 +212,7 @@ async def chat_endpoint(req: ChatRequest):
     except Exception as e:
         return {"reply": "I'm having trouble connecting to the chat service right now."}
 
-@app.post("/analyze-stream")
+@app.post("/analyze-stream/")  # Add /
 async def analyze_stream(file: UploadFile = File(...)):
     print(f"--- RECEIVING FILE: {file.filename} ---")
     temp_filename = f"temp_{file.filename}"
@@ -225,7 +225,7 @@ async def analyze_stream(file: UploadFile = File(...)):
     )
 
 # BACKWARD COMPATIBILITY
-@app.post("/analyze-wip-stream")
+@app.post("/analyze-wip-stream/")  # Add /
 async def analyze_wip_stream_legacy(file: UploadFile = File(...)):
     """Legacy endpoint - redirects to new unified endpoint"""
     print(f"--- LEGACY ENDPOINT CALLED: {file.filename} ---")
