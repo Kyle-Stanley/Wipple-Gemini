@@ -17,9 +17,9 @@ if "GOOGLE_API_KEY" not in os.environ:
 client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
 MODEL_NAME = "gemini-3-pro-preview"
 
+# FIX: Removed temperature=0.0 to prevent Gemini 3 looping issues
 llm = ChatGoogleGenerativeAI(
-    model=MODEL_NAME,
-    temperature=0.0
+    model=MODEL_NAME
 )
 
 # ==========================================
@@ -136,10 +136,11 @@ def extractor_node(state: WipState):
     """
 
     try:
+        # FIX: Removed temperature=0.0 to prevent looping
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), prompt],
-            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
+            config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         
         data = json.loads(response.text)
