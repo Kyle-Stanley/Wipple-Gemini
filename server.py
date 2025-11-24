@@ -26,13 +26,23 @@ MODEL_NAME = "gemini-3-pro-preview"
 
 app = FastAPI()
 
+# --- CORS FIX IS HERE ---
+origins = [
+    "https://wipple.ai",
+    "https://www.wipple.ai",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "https://wipple-gemini-production.up.railway.app"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=origins, # Explicit list instead of ["*"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# ------------------------
 
 # --- Helpers ---
 
