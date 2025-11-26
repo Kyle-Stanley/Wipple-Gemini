@@ -10,18 +10,11 @@ from google.genai import types
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-
-if "GOOGLE_API_KEY" not in os.environ:
-    os.environ["GOOGLE_API_KEY"] = "" 
-
 client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
 MODEL_NAME = "gemini-3-pro-preview"
-
-# FIX: Removed temperature=0.0 to prevent Gemini 3 looping issues
 llm = ChatGoogleGenerativeAI(
     model=MODEL_NAME
 )
-
 # ==========================================
 # 2. DATA MODELS
 # ==========================================
@@ -29,15 +22,12 @@ llm = ChatGoogleGenerativeAI(
 class FullWipRow(BaseModel):
     job_id: str = Field(description="Job Number or ID")
     job_name: Optional[str] = Field(default="", description="Job Name")
-    
     total_contract_price: float = Field(default=0.0)
     estimated_total_costs: float = Field(default=0.0)
     estimated_gross_profit: float = Field(default=0.0)
-    
     revenues_earned: float = Field(default=0.0)
     cost_to_date: float = Field(default=0.0)
     gross_profit_to_date: float = Field(default=0.0)
-    
     billed_to_date: float = Field(default=0.0)
     cost_to_complete: float = Field(default=0.0)
     under_billings: float = Field(default=0.0)
@@ -169,16 +159,11 @@ def analyst_node(state: WipState):
     
     if not rows:
         return {"final_json": {"error": "No data found"}}
-
-    # --- 1. AGGREGATES & RECALCULATION ---
     calc = WipTotals()
-    
-    # Error Lists
     billing_logic_errors = [] # For UB/OB math mismatches
     basic_math_errors = []    # For Contract/Cost/GP math mismatches
     
-    # STRICT ACCOUNTING RECALCULATION (UB/OB)
-    # We overwrite the extracted UB/OB with calculated versions to ensure the "validated" table is mathematically perfect
+    # overwrite the extracted UB/OB with calculated versions to ensure the "validated" table is mathematically perfect
     for r in rows:
         # Calculate Variance
         variance = r.revenues_earned - r.billed_to_date
@@ -192,7 +177,6 @@ def analyst_node(state: WipState):
 
     # MAIN LOOP: AGGREGATION & VALIDATION
     for r in rows:
-        # A. Aggregate
         calc.total_contract_price += r.total_contract_price
         calc.estimated_total_costs += r.estimated_total_costs
         calc.estimated_gross_profit += r.estimated_gross_profit
@@ -205,7 +189,7 @@ def analyst_node(state: WipState):
         calc.over_billings += r.over_billings
         calc.uegp += r.uegp 
         
-        # B. Calculate Core Metrics from scratch (The "Truth" Source)
+        # B. Calculate Core Metrics from scratch
         # 1. Percent Complete
         calc_poc = 0.0
         if r.estimated_total_costs and r.estimated_total_costs != 0:
@@ -224,7 +208,6 @@ def analyst_node(state: WipState):
         
         # --- VALIDATION 1: Column Math Integrity ---
         # Check 1: Does Revenue match POC * Contract?
-        # (Allowing tolerance for manual override or rounding)
         rev_diff = abs(r.revenues_earned - calc_earned_rev)
         if rev_diff > 5000 and r.revenues_earned > 0: # $5k tolerance for stored materials/rounding
              basic_math_errors.append({
@@ -255,7 +238,6 @@ def analyst_node(state: WipState):
     net_ub_ob = calc.under_billings - calc.over_billings
     net_ub_ob_label = f"Under ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Over ${abs(net_ub_ob)/1000:.0f}k"
 
-    # --- 3. VALIDATION ROLLUP ---
     struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
     struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
     
@@ -280,7 +262,7 @@ def analyst_node(state: WipState):
             totals_msg = f"Sum Mismatch (${diff:,.0f})"
             totals_details.append({"id": "TOTALS", "msg": f"Calc Earned ${calc.revenues_earned:,.0f} vs Report ${extracted_totals.revenues_earned:,.0f}"})
 
-    # --- 4. RISK ANALYSIS (Cone of Silence) ---
+    # --- 4. RISK ANALYSIS ---
     risks = []
     
     for r in rows:
@@ -292,7 +274,7 @@ def analyst_node(state: WipState):
         # Positive = Billed More (OB), Negative = Billed Less (UB)
         variance_actual = r.billed_to_date - expected_revenue
         
-        # ALLOWABLE TOLERANCE (The Cone)
+        # ALLOWABLE TOLERANCE
         # Tolerance tightens as job gets closer to 100%
         # At 0% complete, high tolerance. At 100% complete, near zero tolerance.
         # Base tolerance: 10% of contract value, scaled down by POC.
@@ -300,7 +282,6 @@ def analyst_node(state: WipState):
         
         cone_width_factor = max(0.02, 0.10 * (1.0 - min(poc, 1.0))) # 10% tapering to 2%
         allowable_variance = (r.total_contract_price * cone_width_factor) + 5000
-        
         diff_from_tolerance = abs(variance_actual) - allowable_variance
         
         if diff_from_tolerance > 0:
@@ -329,11 +310,9 @@ def analyst_node(state: WipState):
 
     # Sort risks by severity (amount exceeding tolerance)
     risks.sort(key=lambda x: float(x['amountAbs'].replace('$','').replace(',','')), reverse=True)
-    top_risks = risks[:5]
+    top_risks = risks
 
     # --- 5. PORTFOLIO NARRATIVE ---
-    # More professional summary
-    
     total_jobs = len(rows)
     risky_job_count = len(risks)
     portfolio_poc = (calc.cost_to_date / calc.estimated_total_costs) if calc.estimated_total_costs else 0
@@ -366,7 +345,6 @@ def analyst_node(state: WipState):
             "riskRowsAll": top_risks
         }
     }
-    
     return {"final_json": payload}
 
 workflow = StateGraph(WipState)
