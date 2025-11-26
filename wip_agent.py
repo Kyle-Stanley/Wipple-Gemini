@@ -362,11 +362,11 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
     loss_jobs = [r for r in rows if r.estimated_gross_profit < 0]
     total_loss_exposure = sum(abs(r.estimated_gross_profit) for r in loss_jobs)
     
-    # Severe underbilling: UB > 10% of contract value AND material amount
+    # Severe underbilling: high % OR large absolute amount
     severe_ub_jobs = [
         r for r in rows 
-        if r.under_billings > r.total_contract_price * 0.10 
-        and r.under_billings > 50000
+        if (r.under_billings > r.total_contract_price * 0.10 and r.under_billings > 25000) or
+           (r.under_billings > 100000)
     ]
     total_ub_exposure = sum(r.under_billings for r in severe_ub_jobs)
     
@@ -404,8 +404,8 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
     # Overbilling (less critical but worth noting)
     severe_ob_jobs = [
         r for r in rows
-        if r.over_billings > r.total_contract_price * 0.10
-        and r.over_billings > 50000
+        if (r.over_billings > r.total_contract_price * 0.15 and r.over_billings > 25000) or
+           (r.over_billings > 100000)
     ]
     
     return {
@@ -503,8 +503,12 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
                 "detail": "This job is projected to lose money. Every dollar of loss reduces the contractor's capacity to pay obligations."
             })
         
-        # Check for severe underbilling
-        if r.under_billings > r.total_contract_price * 0.10 and r.under_billings > 50000:
+        # Check for severe underbilling - EITHER high % OR large absolute amount
+        is_severe_ub = (
+            (r.under_billings > r.total_contract_price * 0.10 and r.under_billings > 25000) or  # High % of contract
+            (r.under_billings > 100000)  # Large absolute amount regardless of %
+        )
+        if is_severe_ub:
             job_risk_tags.append("Severe Underbilling")
             risk_score += 40 + r.under_billings / 10000
             ub_pct = (r.under_billings / r.total_contract_price * 100) if r.total_contract_price else 0
@@ -540,7 +544,11 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
             })
         
         # Moderate: overbilling (less critical but worth flagging)
-        if r.over_billings > r.total_contract_price * 0.15 and r.over_billings > 50000:
+        is_severe_ob = (
+            (r.over_billings > r.total_contract_price * 0.15 and r.over_billings > 25000) or
+            (r.over_billings > 100000)
+        )
+        if is_severe_ob:
             job_risk_tags.append("Heavy Overbilling")
             risk_score += 5
             ob_pct = (r.over_billings / r.total_contract_price * 100) if r.total_contract_price else 0
