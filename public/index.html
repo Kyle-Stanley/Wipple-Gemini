@@ -65,7 +65,7 @@
             display: flex; 
             flex-direction: column;
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.3);
-            border: 1px solid #52525b; /* Bevel effect */
+            border: 1px solid #52525b;
         }
         .widget-card.maximized .widget-content { flex: 1; overflow: auto; height: auto !important; max-height: none !important; }
         .widget-card.maximized .data-table { max-height: none !important; }
@@ -84,7 +84,8 @@
         .kpi-label { font-size: 0.75rem; color: #8e8ea0; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
         .kpi-value { font-size: 1.25rem; font-weight: 600; color: #ececec; }
 
-        /* VALIDATION */
+        /* VALIDATION - Updated for job-grouped display */
+        .validation-section { margin-bottom: 1px; }
         .validation-row { padding: 12px 16px; margin-bottom: 1px; cursor: default; }
         .validation-row.expandable { cursor: pointer; }
         .validation-row:last-child { margin-bottom: 0; }
@@ -97,29 +98,165 @@
         .val-fail { color: #ef4444; font-weight: 600; }
         
         .val-details { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; padding-left: 8px; }
-        .val-details.open { max-height: 300px; margin-top: 8px; overflow-y: auto; }
-        .val-error-item { font-size: 0.75rem; color: #d1d5db; border-bottom: 1px solid rgba(255,255,255,0.1); padding: 6px 0; }
-        .val-error-item:last-child { border-bottom: none; }
+        .val-details.open { max-height: 500px; margin-top: 8px; overflow-y: auto; }
         
         .val-expand-icon { transition: transform 0.2s; margin-left: 8px; }
         .val-expand-icon.rotated { transform: rotate(180deg); }
 
-        /* RISKS */
-        .risk-row { display: grid; grid-template-columns: 3fr 1fr 0.8fr 1fr; padding: 12px 0; border-bottom: 1px solid rgba(62, 62, 78, 0.3); color: #ececec; align-items: center; cursor: pointer; transition: background 0.2s; }
+        /* Job issue item styling */
+        .job-issue-item { 
+            border-bottom: 1px solid rgba(255,255,255,0.1); 
+            padding: 12px 0; 
+        }
+        .job-issue-item:last-child { border-bottom: none; }
+        .job-issue-header { 
+            display: flex; 
+            align-items: center; 
+            cursor: pointer;
+            padding: 4px 0;
+        }
+        .job-issue-header:hover { background: rgba(255,255,255,0.02); }
+        .job-issue-id { 
+            font-weight: 700; 
+            color: #ffffff; 
+            font-size: 0.875rem;
+            min-width: 80px;
+        }
+        .job-issue-summary { 
+            color: #d1d5db; 
+            font-size: 0.75rem; 
+            flex: 1;
+        }
+        .job-issue-details { 
+            max-height: 0; 
+            overflow: hidden; 
+            transition: max-height 0.3s ease-out;
+            padding-left: 80px;
+        }
+        .job-issue-details.open { 
+            max-height: 400px; 
+            padding-top: 8px;
+        }
+        .error-line { 
+            color: #f87171; 
+            font-size: 0.8rem; 
+            padding: 4px 0;
+            display: flex;
+            align-items: flex-start;
+        }
+        .error-line::before {
+            content: "✗";
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+        .correction-line { 
+            color: #38bdf8; 
+            font-size: 0.8rem; 
+            padding: 6px 0;
+            padding-left: 16px;
+            border-left: 2px solid #38bdf8;
+            margin: 6px 0;
+            background: rgba(56, 189, 248, 0.05);
+        }
+        .correction-label {
+            font-weight: 600;
+            color: #38bdf8;
+        }
+        .confidence-badge {
+            font-size: 0.65rem;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-left: 8px;
+            text-transform: uppercase;
+        }
+        .confidence-high { background: rgba(16, 185, 129, 0.2); color: #10b981; }
+        .confidence-medium { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
+        .confidence-low { background: rgba(156, 163, 175, 0.2); color: #9ca3af; }
+
+        /* RISKS - Updated layout */
+        .risk-row { 
+            display: grid; 
+            grid-template-columns: 120px 1fr 80px; 
+            padding: 12px 0; 
+            border-bottom: 1px solid rgba(62, 62, 78, 0.3); 
+            color: #ececec; 
+            align-items: center; 
+            cursor: pointer; 
+            transition: background 0.2s; 
+        }
         .risk-row:hover { background-color: rgba(255,255,255,0.03); }
-        .risk-header { display: grid; grid-template-columns: 3fr 1fr 0.8fr 1fr; padding: 8px 0; border-bottom: 1px solid #3e3e4e; color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; }
+        .risk-header { 
+            display: grid; 
+            grid-template-columns: 120px 1fr 80px; 
+            padding: 8px 0; 
+            border-bottom: 1px solid #3e3e4e; 
+            color: #8e8ea0; 
+            font-size: 0.75rem; 
+            text-transform: uppercase; 
+        }
         
         .job-name-bold { font-weight: 700; color: #ffffff; }
         
         .risk-expand-icon { transition: transform 0.2s; margin-left: 6px; color: #666; display: inline-block; vertical-align: middle; }
         .risk-expand-icon.expanded { transform: rotate(180deg); color: #ececec; }
-        .risk-details { background-color: rgba(0,0,0,0.2); padding: 0 16px; max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out, padding 0.3s ease; color: #a0a0a0; font-size: 0.875rem; }
-        .risk-details.expanded { max-height: 300px; padding: 12px 16px; }
-        .risk-level { padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; width: fit-content; }
-        .risk-high { background-color: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        .risk-medium { background-color: rgba(251, 191, 36, 0.2); color: #fbbf24; }
-        .variance-ob { color: #4ade80; } 
-        .variance-ub { color: #ef4444; }
+        
+        .risk-details { 
+            background-color: rgba(0,0,0,0.2); 
+            padding: 0 16px; 
+            max-height: 0; 
+            overflow: hidden; 
+            transition: max-height 0.3s ease-out, padding 0.3s ease; 
+            color: #a0a0a0; 
+            font-size: 0.875rem; 
+        }
+        .risk-details.expanded { max-height: 500px; padding: 16px; }
+        
+        .risk-detail-item {
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .risk-detail-item:last-child { border-bottom: none; }
+        .risk-detail-tag {
+            font-weight: 600;
+            color: #ececec;
+            margin-bottom: 4px;
+        }
+        .risk-detail-summary {
+            color: #d1d5db;
+            font-size: 0.85rem;
+            margin-bottom: 4px;
+        }
+        .risk-detail-explanation {
+            color: #8e8ea0;
+            font-size: 0.8rem;
+            font-style: italic;
+        }
+        
+        /* Risk tier badges */
+        .risk-tier { 
+            padding: 4px 10px; 
+            border-radius: 4px; 
+            font-size: 0.7rem; 
+            font-weight: 700; 
+            width: fit-content;
+            letter-spacing: 0.5px;
+        }
+        .risk-tier-high { background-color: rgba(239, 68, 68, 0.25); color: #ef4444; }
+        .risk-tier-medium { background-color: rgba(251, 191, 36, 0.25); color: #fbbf24; }
+        .risk-tier-low { background-color: rgba(16, 185, 129, 0.25); color: #10b981; }
+
+        /* Portfolio risk tier in header */
+        .portfolio-tier-badge {
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            margin-left: 12px;
+        }
+        .portfolio-tier-high { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+        .portfolio-tier-moderate { background: rgba(251, 191, 36, 0.2); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); }
+        .portfolio-tier-low { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
 
         /* WIP SUMMARY */
         .wip-summary { background-color: rgba(0, 191, 255, 0.05); border-left: 3px solid #00BFFF; padding: 16px; border-radius: 6px; margin-bottom: 20px; }
@@ -190,14 +327,12 @@
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Globals for use in non-module scripts
         window.firebaseApp = null;
         window.db = null;
         window.auth = null;
         window.userId = null;
         window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
 
-        // --- FIREBASE INIT ---
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         
         if (firebaseConfig) {
@@ -206,7 +341,6 @@
             window.db = getFirestore(app);
             window.auth = getAuth(app);
 
-            // Auth Logic
             const initAuth = async () => {
                 try {
                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -223,11 +357,9 @@
             initAuth();
         }
 
-        // Make save function global
         window.saveAnalysis = async (data) => {
             if (!window.db || !window.userId) return;
             try {
-                // Path: /artifacts/{appId}/users/{userId}/wip_analyses/{autoId}
                 const colRef = collection(window.db, 'artifacts', window.appId, 'users', window.userId, 'wip_analyses');
                 await addDoc(colRef, {
                     timestamp: new Date(),
@@ -273,7 +405,6 @@
     </div>
 
 <script>
-    // UPDATED: Router server endpoint
     const API_ENDPOINT = "https://api.wipple.ai/analyze-stream";
     const CHAT_ENDPOINT = "https://api.wipple.ai/chat";
         
@@ -289,7 +420,7 @@
     let currentLoadingDiv = null;
     let lastTableData = [];
     let lastCalculatedTotals = null;
-    let fullAnalysisContext = null; // For chat context
+    let fullAnalysisContext = null;
 
     const agentStatusMessages = [
         "OCR Agent is scanning the document now...",
@@ -323,10 +454,8 @@
         statusStep = 0;
         
         addMessage(`Uploaded ${uploadedFile.name}`, 'user');
-        
         addMessage(agentStatusMessages[0], 'agent-status');
         statusStep = 1;
-        
         showLoading();
 
         const formData = new FormData();
@@ -355,24 +484,20 @@
                             const type = line.split('\n')[0].replace('event: ', '').trim();
                             const dataStr = line.split('data: ')[1];
                             
-                            // --- STATUS HANDLER ---
                             if (type === 'status') {
                                 removeLoading();
                                 addMessage(dataStr, 'agent-status');
                                 showLoading();
                             }
-                            // --- ERROR HANDLER ---
                             else if (type === 'error') {
                                 removeLoading();
                                 addMessage("Error processing file.", 'error');
                             }
-                            // --- ROUTER HANDLER ---
                             else if (type === 'router') {
                                 removeLoading();
                                 addMessage(`Document identified as <strong>${dataStr}</strong>.`, 'agent-status');
                                 showLoading();
                             }
-                            // --- BOND HANDLERS ---
                             else if (type === 'bond_step_1') {
                                 const data = JSON.parse(dataStr);
                                 renderBondWidget1(data);
@@ -389,7 +514,6 @@
                                 fullAnalysisContext = JSON.parse(dataStr);
                                 if(window.saveAnalysis) window.saveAnalysis(fullAnalysisContext);
                             }
-                            // --- WIP HANDLER ---
                             else if (type === 'result_wip') {
                                 removeLoading();
                                 const payload = JSON.parse(dataStr);
@@ -398,7 +522,6 @@
                                 renderResults(data);
                                 if(window.saveAnalysis) window.saveAnalysis(data);
                             }
-                            // --- LEGACY FALLBACK ---
                             else if (type === 'result') {
                                 removeLoading();
                                 const data = JSON.parse(dataStr);
@@ -483,8 +606,53 @@
         
         const genId = () => 'val-' + Math.random().toString(36).substr(2, 9);
 
-        const renderRow = (label, obj) => {
-            const hasDetails = obj.details && obj.details.length > 0;
+        // Build the job issues section for formulaic validation
+        const buildJobIssuesHtml = (jobIssues) => {
+            if (!jobIssues || jobIssues.length === 0) return '';
+            
+            return jobIssues.map((job, idx) => {
+                const jobId = genId();
+                const errorCount = job.errors.length;
+                const correctionCount = job.corrections.length;
+                const summaryParts = [];
+                if (errorCount > 0) summaryParts.push(`${errorCount} validation${errorCount > 1 ? 's' : ''} failed`);
+                if (correctionCount > 0) summaryParts.push(`${correctionCount} suggested fix${correctionCount > 1 ? 'es' : ''}`);
+                
+                const errorsHtml = job.errors.map(e => 
+                    `<div class="error-line">${e.message}</div>`
+                ).join('');
+                
+                const correctionsHtml = job.corrections.map(c => {
+                    const confidenceClass = c.confidence === 'high' ? 'confidence-high' : 
+                                           c.confidence === 'medium' ? 'confidence-medium' : 'confidence-low';
+                    return `
+                        <div class="correction-line">
+                            <span class="correction-label">→ Suggested:</span> 
+                            ${c.field} should be ${c.suggested}
+                            <span class="confidence-badge ${confidenceClass}">${c.confidence}</span>
+                            <div style="margin-top: 4px; color: #8e8ea0; font-size: 0.75rem;">${c.reasoning}</div>
+                        </div>
+                    `;
+                }).join('');
+                
+                return `
+                    <div class="job-issue-item">
+                        <div class="job-issue-header" onclick="toggleJobIssue('${jobId}')">
+                            <span class="job-issue-id">${job.jobId}</span>
+                            <span class="job-issue-summary">${summaryParts.join(', ')}</span>
+                            <svg id="${jobId}-icon" class="val-expand-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        </div>
+                        <div id="${jobId}-details" class="job-issue-details">
+                            ${errorsHtml}
+                            ${correctionsHtml}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        };
+
+        const renderRow = (label, obj, isFormulaic = false) => {
+            const hasDetails = (obj.details && obj.details.length > 0) || (isFormulaic && obj.jobIssues && obj.jobIssues.length > 0);
             const rowId = genId();
             const expandableClass = hasDetails ? 'expandable' : '';
             const bgClass = obj.passed ? 'val-row-pass' : 'val-row-fail';
@@ -492,8 +660,12 @@
             
             let detailsHtml = '';
             if (hasDetails) {
-                const items = obj.details.map(d => `<div class="val-error-item"><span class="font-bold text-white mr-2">${d.id}:</span>${d.msg}</div>`).join('');
-                detailsHtml = `<div id="${rowId}-details" class="val-details">${items}</div>`;
+                if (isFormulaic && obj.jobIssues && obj.jobIssues.length > 0) {
+                    detailsHtml = `<div id="${rowId}-details" class="val-details">${buildJobIssuesHtml(obj.jobIssues)}</div>`;
+                } else if (obj.details && obj.details.length > 0) {
+                    const items = obj.details.map(d => `<div class="val-error-item"><span class="font-bold text-white mr-2">${d.id}:</span>${d.msg}</div>`).join('');
+                    detailsHtml = `<div id="${rowId}-details" class="val-details">${items}</div>`;
+                }
             }
 
             const onClick = hasDetails ? `onclick="toggleValidationDetails('${rowId}')"` : '';
@@ -525,12 +697,21 @@
                     <svg id="icon-val" class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                 </div>
                 <div class="widget-content" id="content-val">
-                    ${renderRow("Formulaic Validation", vals.formulaic)}
+                    ${renderRow("Formulaic Validation", vals.formulaic, true)}
                     ${renderRow("Totals Validation", vals.totals)}
                     ${renderRow("Structural Validation", vals.structural)}
                 </div>
             </div>`;
     }
+    
+    window.toggleJobIssue = (id) => {
+        const details = document.getElementById(id + '-details');
+        const icon = document.getElementById(id + '-icon');
+        if (!details) return;
+        
+        details.classList.toggle('open');
+        if(icon) icon.classList.toggle('rotated');
+    };
     
     function toggleValidationDetails(rowId) {
         const details = document.getElementById(rowId + '-details');
@@ -547,6 +728,11 @@
     }
 
     function renderDashboardWidget(data, m) {
+        // Portfolio risk tier badge
+        const riskTier = data.riskTier || 'LOW';
+        const tierClass = riskTier === 'HIGH' ? 'portfolio-tier-high' : 
+                         riskTier === 'MODERATE' ? 'portfolio-tier-moderate' : 'portfolio-tier-low';
+        
         const kpis = `
             <div class="kpi-grid">
                 <div class="kpi-box"><div class="kpi-label">${m.row1_1.label}</div><div class="kpi-value">${m.row1_1.value}</div></div>
@@ -558,43 +744,68 @@
             </div>`;
 
         let riskRows = '';
-        data.riskRowsAll.forEach((r, i) => {
-            const riskId = `risk-${i}`;
-            riskRows += `
-                <div class="risk-row" onclick="toggleRisk('${riskId}')">
-                    <div>
-                        <div class="font-semibold flex items-center">
-                            ${r.jobId}
-                            <svg class="risk-expand-icon" id="${riskId}-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        if (data.riskRowsAll && data.riskRowsAll.length > 0) {
+            data.riskRowsAll.forEach((r, i) => {
+                const riskId = `risk-${i}`;
+                const tierClass = r.riskTier === 'HIGH' ? 'risk-tier-high' : 
+                                 r.riskTier === 'MEDIUM' ? 'risk-tier-medium' : 'risk-tier-low';
+                
+                // Build detail items
+                let detailsHtml = '';
+                if (r.riskDetails && r.riskDetails.length > 0) {
+                    detailsHtml = r.riskDetails.map(d => `
+                        <div class="risk-detail-item">
+                            <div class="risk-detail-tag">${d.tag}</div>
+                            <div class="risk-detail-summary">${d.summary}</div>
+                            <div class="risk-detail-explanation">${d.detail}</div>
                         </div>
-                        <div class="text-xs job-name-bold">${r.jobName || 'No Name'}</div>
+                    `).join('');
+                }
+                
+                riskRows += `
+                    <div class="risk-row" onclick="toggleRisk('${riskId}')">
+                        <div>
+                            <div class="font-semibold flex items-center">
+                                ${r.jobId}
+                                <svg class="risk-expand-icon" id="${riskId}-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                            </div>
+                            <div class="text-xs job-name-bold">${r.jobName || 'No Name'}</div>
+                        </div>
+                        <div class="text-gray-300 text-xs" style="padding-right: 12px;">${r.riskTags}</div>
+                        <div><span class="risk-tier ${tierClass}">${r.riskTier}</span></div>
                     </div>
-                    <div class="text-gray-400 text-xs">${r.riskTags}</div>
-                    <div><span class="risk-level ${r.riskLevel === 'high' ? 'risk-high' : 'risk-medium'}">${r.riskLevelLabel}</span></div>
-                    <div class="font-semibold text-right ${r.ubobType === 'OB' ? 'variance-ob' : 'variance-ub'}">${r.amountAbs}</div>
-                </div>
-                <div id="${riskId}" class="risk-details">
-                    <div class="py-3">
-                        <div class="mb-2 text-gray-300"><strong class="text-white">Analysis:</strong> ${r.analysis}</div>
-                        <div class="text-gray-400"><strong>Completion:</strong> ${r.percentComplete}</div>
-                    </div>
-                </div>`;
-        });
+                    <div id="${riskId}" class="risk-details">
+                        ${detailsHtml}
+                        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); color: #8e8ea0; font-size: 0.8rem;">
+                            <strong>Completion:</strong> ${r.percentComplete}
+                        </div>
+                    </div>`;
+            });
+        } else {
+            riskRows = '<div style="padding: 16px; color: #8e8ea0; text-align: center;">No significant risks identified</div>';
+        }
 
         return `
             <div class="widget-card">
                 <div class="widget-header" id="header-dash">
-                    <span class="font-semibold">WIP Health Summary</span>
+                    <div class="flex items-center">
+                        <span class="font-semibold">WIP Health Summary</span>
+                        <span class="portfolio-tier-badge ${tierClass}">${riskTier} RISK</span>
+                    </div>
                     <svg id="icon-dash" class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                 </div>
                 <div class="widget-content" id="content-dash">
                     <div class="p-4">
-                        <div class="wip-summary"><h4>Portfolio Overview</h4><p>${data.summary.text}</p></div>
+                        <div class="wip-summary"><h4>Portfolio Overview</h4><p>${data.summary ? data.summary.text : 'Analysis complete.'}</p></div>
                         ${kpis}
                         <div>
                             <h4 class="text-sm font-semibold text-gray-400 mb-3">Top Risks</h4>
                             <div class="risk-table">
-                                <div class="risk-header"><div>Job</div><div>Risk Type</div><div>Level</div><div class="text-right"><span class="text-red-400">Under</span> / <span class="text-green-400">Over</span></div></div>
+                                <div class="risk-header">
+                                    <div>Job</div>
+                                    <div>Risk Type(s)</div>
+                                    <div>Tier</div>
+                                </div>
                                 ${riskRows}
                             </div>
                         </div>
@@ -620,7 +831,6 @@
                 <td class="text-right">${fmt(r.cost_to_complete)}</td>
             </tr>`).join('');
 
-        // Append Totals Row
         if (totals) {
             trs += `
             <tr class="totals-row">
@@ -697,7 +907,6 @@
         
         const csvRows = [headers.join(',')];
         
-        // Rows
         for (const row of lastTableData) {
             const values = headers.map(header => {
                 const val = row[header];
@@ -706,7 +915,6 @@
             csvRows.push(values.join(','));
         }
         
-        // TOTALS ROW
         if (lastCalculatedTotals) {
             const totalValues = headers.map(header => {
                 if (header === 'job_id') return '"TOTALS"';
@@ -761,7 +969,7 @@
         });
     }
 
-    // === BOND WIDGET RENDERERS ===
+    // === BOND WIDGET RENDERERS (unchanged) ===
 
     function renderBondWidget1(data) {
         const p = data.parties;
