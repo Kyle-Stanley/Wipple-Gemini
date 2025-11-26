@@ -1,6 +1,7 @@
 import os
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
+from dataclasses import dataclass
 from pydantic import BaseModel, Field, computed_field
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -15,6 +16,7 @@ MODEL_NAME = "gemini-3-pro-preview"
 llm = ChatGoogleGenerativeAI(
     model=MODEL_NAME
 )
+
 # ==========================================
 # 2. DATA MODELS
 # ==========================================
@@ -44,8 +46,6 @@ class WipTotals(BaseModel):
     cost_to_complete: float = 0.0
     under_billings: float = 0.0
     over_billings: float = 0.0
-    
-    # Add computed fields for the totals row export
     uegp: float = 0.0 
 
 class CalculatedWipRow(FullWipRow):
@@ -60,17 +60,503 @@ class CalculatedWipRow(FullWipRow):
     @computed_field
     @property
     def uegp(self) -> float:
-        # Unearned Gross Profit = Est GP - GP to Date
         return self.estimated_gross_profit - self.gross_profit_to_date
 
 class WipState(BaseModel):
     file_path: str
     processed_data: List[CalculatedWipRow] = []
     totals_row: Optional[WipTotals] = None
+    calculated_totals: Optional[WipTotals] = None
+    validation_errors: List[Dict[str, Any]] = []
+    correction_suggestions: List[Dict[str, Any]] = []
+    surety_risk_context: Dict[str, Any] = {}
+    risk_rows: List[Dict[str, Any]] = []
+    widget_data: Dict[str, Any] = {}
+    narrative: str = ""
     final_json: Dict[str, Any] = {}
 
 # ==========================================
-# 3. EXTRACTOR NODE
+# 3. VALIDATION REGISTRY
+# ==========================================
+
+@dataclass
+class Validation:
+    name: str
+    requires: List[str]
+    check: Callable[[CalculatedWipRow], Optional[str]]
+    tolerance_type: str  # "absolute" or "percentage"
+    tolerance_value: float
+    category: str  # "core_math", "billing", "profitability", "completion"
+    fields_involved: List[str]  # Fields that could be the source of error
+
+def _check_billing_position(r: CalculatedWipRow) -> Optional[str]:
+    """Validates that UB/OB values match the earned revenue vs billed calculation."""
+    variance = r.revenues_earned - r.billed_to_date
+    
+    if variance > 0:
+        expected_ub, expected_ob = variance, 0
+    else:
+        expected_ub, expected_ob = 0, abs(variance)
+    
+    ub_diff = abs(r.under_billings - expected_ub)
+    ob_diff = abs(r.over_billings - expected_ob)
+    
+    if ub_diff > 100 or ob_diff > 100:
+        return f"UB/OB doesn't match variance (expected UB ${expected_ub:,.0f}, OB ${expected_ob:,.0f})"
+    return None
+
+def build_validations() -> List[Validation]:
+    return [
+        # === CORE MATH (these should always hold) ===
+        Validation(
+            name="contract_cost_gp",
+            requires=["total_contract_price", "estimated_total_costs", "estimated_gross_profit"],
+            check=lambda r: (
+                f"Contract - Est Cost ≠ Est GP (diff ${abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit):,.0f})"
+                if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 100
+                else None
+            ),
+            tolerance_type="absolute",
+            tolerance_value=100,
+            category="core_math",
+            fields_involved=["total_contract_price", "estimated_total_costs", "estimated_gross_profit"]
+        ),
+        Validation(
+            name="cost_to_complete_check",
+            requires=["estimated_total_costs", "cost_to_date", "cost_to_complete"],
+            check=lambda r: (
+                f"Est Cost - Cost to Date ≠ CTC (diff ${abs((r.estimated_total_costs - r.cost_to_date) - r.cost_to_complete):,.0f})"
+                if abs((r.estimated_total_costs - r.cost_to_date) - r.cost_to_complete) > 100
+                else None
+            ),
+            tolerance_type="absolute",
+            tolerance_value=100,
+            category="core_math",
+            fields_involved=["estimated_total_costs", "cost_to_date", "cost_to_complete"]
+        ),
+        Validation(
+            name="earned_revenue_from_gp",
+            requires=["revenues_earned", "cost_to_date", "gross_profit_to_date"],
+            check=lambda r: (
+                f"Cost + GP to Date ≠ Earned Rev (diff ${abs(r.revenues_earned - (r.cost_to_date + r.gross_profit_to_date)):,.0f})"
+                if abs(r.revenues_earned - (r.cost_to_date + r.gross_profit_to_date)) > 100
+                else None
+            ),
+            tolerance_type="absolute",
+            tolerance_value=100,
+            category="core_math",
+            fields_involved=["revenues_earned", "cost_to_date", "gross_profit_to_date"]
+        ),
+        Validation(
+            name="remaining_gp_check",
+            requires=["estimated_gross_profit", "gross_profit_to_date"],
+            check=lambda r: (
+                f"UEGP calculation mismatch"
+                if r.estimated_gross_profit > 0 and r.gross_profit_to_date > r.estimated_gross_profit * 1.05
+                else None
+            ),
+            tolerance_type="percentage",
+            tolerance_value=0.05,
+            category="core_math",
+            fields_involved=["estimated_gross_profit", "gross_profit_to_date"]
+        ),
+        
+        # === COMPLETION-BASED (POC method) ===
+        Validation(
+            name="earned_revenue_from_poc",
+            requires=["revenues_earned", "total_contract_price", "cost_to_date", "estimated_total_costs"],
+            check=lambda r: (
+                f"Earned Rev ≠ Contract × POC (diff ${abs(r.revenues_earned - (r.total_contract_price * (r.cost_to_date / r.estimated_total_costs if r.estimated_total_costs else 0))):,.0f})"
+                if r.estimated_total_costs and abs(r.revenues_earned - (r.total_contract_price * (r.cost_to_date / r.estimated_total_costs))) > max(5000, r.total_contract_price * 0.02)
+                else None
+            ),
+            tolerance_type="percentage",
+            tolerance_value=0.02,
+            category="completion",
+            fields_involved=["revenues_earned", "total_contract_price", "cost_to_date", "estimated_total_costs"]
+        ),
+        
+        # === BILLING ===
+        Validation(
+            name="underbilling_overbilling",
+            requires=["revenues_earned", "billed_to_date", "under_billings", "over_billings"],
+            check=lambda r: _check_billing_position(r),
+            tolerance_type="absolute",
+            tolerance_value=100,
+            category="billing",
+            fields_involved=["revenues_earned", "billed_to_date", "under_billings", "over_billings"]
+        ),
+        
+        # === PROFITABILITY ===
+        Validation(
+            name="gp_percentage_bounds",
+            requires=["estimated_gross_profit", "total_contract_price"],
+            check=lambda r: (
+                f"Unusually high GP% ({(r.estimated_gross_profit / r.total_contract_price * 100):.1f}%)"
+                if r.total_contract_price > 0 and r.estimated_gross_profit / r.total_contract_price > 0.50
+                else None
+            ),
+            tolerance_type="percentage",
+            tolerance_value=0.50,
+            category="profitability",
+            fields_involved=["estimated_gross_profit", "total_contract_price"]
+        ),
+    ]
+
+def run_validations(row: CalculatedWipRow, validations: List[Validation]) -> List[Dict[str, Any]]:
+    """Run all applicable validations for a row."""
+    errors = []
+    row_dict = row.model_dump()
+    
+    for v in validations:
+        required_present = all(
+            row_dict.get(field) is not None
+            for field in v.requires
+        )
+        
+        has_nonzero = any(
+            row_dict.get(field, 0) != 0
+            for field in v.requires
+        )
+        
+        if not required_present or not has_nonzero:
+            continue
+            
+        error_msg = v.check(row)
+        if error_msg:
+            errors.append({
+                "job_id": row.job_id,
+                "validation": v.name,
+                "category": v.category,
+                "message": error_msg,
+                "fields_involved": v.fields_involved
+            })
+    
+    return errors
+
+# ==========================================
+# 4. CORRECTION SUGGESTIONS
+# ==========================================
+
+@dataclass
+class CorrectionSuggestion:
+    job_id: str
+    field: str
+    current_value: float
+    suggested_value: float
+    confidence: str
+    reasoning: str
+
+def is_plausible_ocr_error(extracted: float, expected: float) -> bool:
+    """Check if the difference looks like a typical OCR mistake."""
+    if extracted == 0 or expected == 0:
+        return False
+        
+    diff = abs(extracted - expected)
+    
+    # Single digit off by power of 10
+    powers_of_10 = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000]
+    for p in powers_of_10:
+        if abs(diff - p) < 1:
+            return True
+        # Also check multiples (e.g., off by 2000000)
+        for mult in range(1, 10):
+            if abs(diff - (p * mult)) < 1:
+                return True
+    
+    # Check for transposed or single-digit differences
+    ext_str = str(int(abs(extracted)))
+    exp_str = str(int(abs(expected)))
+    if len(ext_str) == len(exp_str):
+        diffs = sum(1 for a, b in zip(ext_str, exp_str) if a != b)
+        if diffs <= 2:
+            return True
+    
+    # Missing or extra zero
+    if abs(extracted * 10 - expected) < 1 or abs(extracted - expected * 10) < 1:
+        return True
+        
+    return False
+
+def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Generate correction suggestions based on validation errors."""
+    suggestions = []
+    
+    for error in errors:
+        validation_name = error["validation"]
+        
+        if validation_name == "contract_cost_gp":
+            # Contract - Est Cost should = Est GP
+            expected_gp = row.total_contract_price - row.estimated_total_costs
+            if is_plausible_ocr_error(row.estimated_gross_profit, expected_gp):
+                suggestions.append({
+                    "job_id": row.job_id,
+                    "field": "estimated_gross_profit",
+                    "current_value": row.estimated_gross_profit,
+                    "suggested_value": expected_gp,
+                    "confidence": "high",
+                    "reasoning": f"If Est GP were ${expected_gp:,.0f}, the formula Contract - Est Cost = Est GP would hold. Difference pattern suggests OCR error."
+                })
+            
+            # Also check if est_costs might be wrong
+            expected_costs = row.total_contract_price - row.estimated_gross_profit
+            if is_plausible_ocr_error(row.estimated_total_costs, expected_costs):
+                suggestions.append({
+                    "job_id": row.job_id,
+                    "field": "estimated_total_costs",
+                    "current_value": row.estimated_total_costs,
+                    "suggested_value": expected_costs,
+                    "confidence": "medium",
+                    "reasoning": f"If Est Costs were ${expected_costs:,.0f}, the formula would hold. Alternative to GP correction."
+                })
+                
+        elif validation_name == "cost_to_complete_check":
+            # Est Cost - Cost to Date should = CTC
+            expected_ctc = row.estimated_total_costs - row.cost_to_date
+            if is_plausible_ocr_error(row.cost_to_complete, expected_ctc):
+                suggestions.append({
+                    "job_id": row.job_id,
+                    "field": "cost_to_complete",
+                    "current_value": row.cost_to_complete,
+                    "suggested_value": expected_ctc,
+                    "confidence": "high",
+                    "reasoning": f"If CTC were ${expected_ctc:,.0f}, the formula Est Cost - Cost to Date = CTC would hold."
+                })
+                
+        elif validation_name == "earned_revenue_from_gp":
+            # Cost to Date + GP to Date should = Revenues Earned
+            expected_rev = row.cost_to_date + row.gross_profit_to_date
+            if is_plausible_ocr_error(row.revenues_earned, expected_rev):
+                suggestions.append({
+                    "job_id": row.job_id,
+                    "field": "revenues_earned",
+                    "current_value": row.revenues_earned,
+                    "suggested_value": expected_rev,
+                    "confidence": "high",
+                    "reasoning": f"If Earned Rev were ${expected_rev:,.0f}, the formula Cost + GP to Date = Earned Rev would hold."
+                })
+            
+            # Check if GP to date might be wrong
+            expected_gp_to_date = row.revenues_earned - row.cost_to_date
+            if is_plausible_ocr_error(row.gross_profit_to_date, expected_gp_to_date):
+                suggestions.append({
+                    "job_id": row.job_id,
+                    "field": "gross_profit_to_date",
+                    "current_value": row.gross_profit_to_date,
+                    "suggested_value": expected_gp_to_date,
+                    "confidence": "medium",
+                    "reasoning": f"If GP to Date were ${expected_gp_to_date:,.0f}, the formula would hold."
+                })
+    
+    return suggestions
+
+# ==========================================
+# 5. SURETY RISK ANALYSIS
+# ==========================================
+
+def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> Dict[str, Any]:
+    """Build a structured risk context focused on surety concerns."""
+    
+    # Loss jobs (negative GP)
+    loss_jobs = [r for r in rows if r.estimated_gross_profit < 0]
+    total_loss_exposure = sum(abs(r.estimated_gross_profit) for r in loss_jobs)
+    
+    # Severe underbilling: UB > 10% of contract value AND material amount
+    severe_ub_jobs = [
+        r for r in rows 
+        if r.under_billings > r.total_contract_price * 0.10 
+        and r.under_billings > 50000
+    ]
+    total_ub_exposure = sum(r.under_billings for r in severe_ub_jobs)
+    
+    # Jobs with GP fade (GP to date lagging expected GP at this completion %)
+    fade_jobs = []
+    for r in rows:
+        if r.estimated_total_costs > 0 and r.estimated_gross_profit > 0:
+            poc = r.cost_to_date / r.estimated_total_costs
+            expected_gp_to_date = r.estimated_gross_profit * poc
+            if expected_gp_to_date > 1000 and r.gross_profit_to_date < expected_gp_to_date * 0.7:
+                fade_jobs.append({
+                    "job_id": r.job_id,
+                    "job_name": r.job_name,
+                    "expected_gp": expected_gp_to_date,
+                    "actual_gp": r.gross_profit_to_date,
+                    "fade_pct": 1 - (r.gross_profit_to_date / expected_gp_to_date) if expected_gp_to_date else 0,
+                    "contract": r.total_contract_price
+                })
+    
+    # Concentration: any single job > 25% of portfolio
+    concentration_jobs = [
+        r for r in rows 
+        if calc.total_contract_price > 0 and r.total_contract_price > calc.total_contract_price * 0.25
+    ]
+    
+    # Remaining margin quality
+    total_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
+    thin_margin_jobs = [r for r in rows if r.total_contract_price > 0 and r.estimated_gross_profit < r.total_contract_price * 0.05]
+    uegp_at_risk = sum(
+        r.estimated_gross_profit - r.gross_profit_to_date 
+        for r in thin_margin_jobs
+        if r.estimated_gross_profit > r.gross_profit_to_date
+    )
+    
+    # Overbilling (less critical but worth noting)
+    severe_ob_jobs = [
+        r for r in rows
+        if r.over_billings > r.total_contract_price * 0.10
+        and r.over_billings > 50000
+    ]
+    
+    return {
+        "portfolio": {
+            "total_jobs": len(rows),
+            "total_contract_value": calc.total_contract_price,
+            "aggregate_poc": calc.cost_to_date / calc.estimated_total_costs if calc.estimated_total_costs else 0,
+            "net_billing_position": calc.under_billings - calc.over_billings,
+            "total_uegp": total_uegp,
+            "total_gp_margin": calc.estimated_gross_profit / calc.total_contract_price if calc.total_contract_price else 0
+        },
+        "cash_risk": {
+            "severe_ub_count": len(severe_ub_jobs),
+            "severe_ub_jobs": [
+                {"id": r.job_id, "name": r.job_name, "ub_amount": r.under_billings, "contract": r.total_contract_price} 
+                for r in severe_ub_jobs
+            ],
+            "total_ub_exposure": total_ub_exposure
+        },
+        "loss_risk": {
+            "loss_job_count": len(loss_jobs),
+            "loss_jobs": [
+                {"id": r.job_id, "name": r.job_name, "loss_amount": abs(r.estimated_gross_profit), "contract": r.total_contract_price} 
+                for r in loss_jobs
+            ],
+            "total_loss_exposure": total_loss_exposure
+        },
+        "margin_risk": {
+            "fade_job_count": len(fade_jobs),
+            "fade_jobs": fade_jobs[:5],  # Top 5 for brevity
+            "uegp_at_risk": uegp_at_risk,
+            "uegp_at_risk_pct": uegp_at_risk / total_uegp if total_uegp > 0 else 0
+        },
+        "concentration_risk": {
+            "concentrated_jobs": [
+                {"id": r.job_id, "name": r.job_name, "contract": r.total_contract_price, "pct_of_portfolio": r.total_contract_price / calc.total_contract_price if calc.total_contract_price else 0} 
+                for r in concentration_jobs
+            ]
+        },
+        "overbilling_note": {
+            "severe_ob_count": len(severe_ob_jobs),
+            "total_ob": sum(r.over_billings for r in severe_ob_jobs)
+        }
+    }
+
+def compute_portfolio_risk_tier(risk_context: Dict[str, Any]) -> str:
+    """Compute an overall risk tier for quick triage."""
+    score = 0
+    
+    # Cash risk (most important for surety)
+    if risk_context["cash_risk"]["total_ub_exposure"] > 500000:
+        score += 4
+    elif risk_context["cash_risk"]["total_ub_exposure"] > 100000:
+        score += 2
+    
+    # Loss risk
+    if risk_context["loss_risk"]["loss_job_count"] >= 3:
+        score += 3
+    elif risk_context["loss_risk"]["loss_job_count"] >= 1:
+        score += 2
+    
+    # Margin erosion
+    if risk_context["margin_risk"]["uegp_at_risk_pct"] > 0.3:
+        score += 2
+    elif risk_context["margin_risk"]["uegp_at_risk_pct"] > 0.15:
+        score += 1
+    
+    # Concentration
+    if len(risk_context["concentration_risk"]["concentrated_jobs"]) > 0:
+        score += 1
+    
+    if score >= 6:
+        return "HIGH"
+    elif score >= 3:
+        return "MODERATE"
+    else:
+        return "LOW"
+
+def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[str, Any]]:
+    """Build risk rows for the UI, sorted by surety priority."""
+    risks = []
+    
+    for r in rows:
+        job_risks = []
+        risk_score = 0
+        
+        # Check for loss job (highest priority)
+        if r.estimated_gross_profit < 0:
+            job_risks.append("Loss Job")
+            risk_score += 50 + abs(r.estimated_gross_profit) / 1000
+        
+        # Check for severe underbilling
+        if r.under_billings > r.total_contract_price * 0.10 and r.under_billings > 50000:
+            job_risks.append("Severe Underbilling")
+            risk_score += 40 + r.under_billings / 10000
+        
+        # Check for GP fade
+        if r.estimated_total_costs > 0 and r.estimated_gross_profit > 0:
+            poc = r.cost_to_date / r.estimated_total_costs
+            expected_gp = r.estimated_gross_profit * poc
+            if expected_gp > 1000 and r.gross_profit_to_date < expected_gp * 0.7:
+                fade_pct = 1 - (r.gross_profit_to_date / expected_gp)
+                job_risks.append(f"GP Fade ({fade_pct:.0%})")
+                risk_score += 20 + fade_pct * 30
+        
+        # Check for thin margins
+        if r.total_contract_price > 0 and 0 < r.estimated_gross_profit < r.total_contract_price * 0.05:
+            job_risks.append("Thin Margin")
+            risk_score += 10
+        
+        # Moderate: overbilling (less critical but worth flagging)
+        if r.over_billings > r.total_contract_price * 0.15 and r.over_billings > 50000:
+            job_risks.append("Heavy Overbilling")
+            risk_score += 5
+        
+        # Check concentration (handled at portfolio level, but flag the job)
+        if calc.total_contract_price > 0 and r.total_contract_price > calc.total_contract_price * 0.25:
+            job_risks.append("Concentration Risk")
+            risk_score += 15
+        
+        if job_risks:
+            # Determine risk level
+            if risk_score >= 50:
+                risk_level = "high"
+            elif risk_score >= 20:
+                risk_level = "medium"
+            else:
+                risk_level = "low"
+            
+            poc = r.cost_to_date / r.estimated_total_costs if r.estimated_total_costs else 0
+            
+            risks.append({
+                "jobId": r.job_id,
+                "jobName": r.job_name,
+                "riskTags": ", ".join(job_risks),
+                "riskLevel": risk_level,
+                "riskLevelLabel": risk_level.capitalize(),
+                "riskScore": risk_score,
+                "contractValue": f"${r.total_contract_price:,.0f}",
+                "estimatedGP": f"${r.estimated_gross_profit:,.0f}",
+                "underBillings": f"${r.under_billings:,.0f}",
+                "overBillings": f"${r.over_billings:,.0f}",
+                "percentComplete": f"{poc:.1%}"
+            })
+    
+    # Sort by risk score descending
+    risks.sort(key=lambda x: x["riskScore"], reverse=True)
+    
+    return risks
+
+# ==========================================
+# 6. EXTRACTOR NODE (unchanged from original)
 # ==========================================
 
 def extractor_node(state: WipState):
@@ -126,7 +612,6 @@ def extractor_node(state: WipState):
     """
 
     try:
-        # FIX: Removed temperature=0.0 to prevent looping
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), prompt],
@@ -140,7 +625,8 @@ def extractor_node(state: WipState):
         if data.get("totals"):
             try:
                 totals = WipTotals(**data["totals"])
-            except: pass
+            except Exception as e:
+                print(f"Warning: Could not parse totals row: {e}")
         
         return {"processed_data": rows, "totals_row": totals}
         
@@ -149,7 +635,7 @@ def extractor_node(state: WipState):
         return {"processed_data": [], "totals_row": None}
 
 # ==========================================
-# 4. ANALYST NODE (MATH & LOGIC)
+# 7. ANALYST NODE
 # ==========================================
 
 def analyst_node(state: WipState):
@@ -158,16 +644,23 @@ def analyst_node(state: WipState):
     extracted_totals = state.totals_row
     
     if not rows:
-        return {"final_json": {"error": "No data found"}}
-    calc = WipTotals()
-    billing_logic_errors = [] # For UB/OB math mismatches
-    basic_math_errors = []    # For Contract/Cost/GP math mismatches
+        return {
+            "final_json": {"error": "No data found"},
+            "validation_errors": [],
+            "correction_suggestions": [],
+            "surety_risk_context": {},
+            "risk_rows": [],
+            "widget_data": {}
+        }
     
-    # overwrite the extracted UB/OB with calculated versions to ensure the "validated" table is mathematically perfect
+    calc = WipTotals()
+    validations = build_validations()
+    all_validation_errors = []
+    all_correction_suggestions = []
+    
+    # Recalculate UB/OB to ensure mathematical consistency
     for r in rows:
-        # Calculate Variance
         variance = r.revenues_earned - r.billed_to_date
-        
         if variance > 0:
             r.under_billings = variance
             r.over_billings = 0.0
@@ -175,8 +668,9 @@ def analyst_node(state: WipState):
             r.under_billings = 0.0
             r.over_billings = abs(variance)
 
-    # MAIN LOOP: AGGREGATION & VALIDATION
+    # AGGREGATION & VALIDATION
     for r in rows:
+        # Aggregate totals
         calc.total_contract_price += r.total_contract_price
         calc.estimated_total_costs += r.estimated_total_costs
         calc.estimated_gross_profit += r.estimated_gross_profit
@@ -187,170 +681,222 @@ def analyst_node(state: WipState):
         calc.cost_to_complete += r.cost_to_complete
         calc.under_billings += r.under_billings
         calc.over_billings += r.over_billings
-        calc.uegp += r.uegp 
+        calc.uegp += r.uegp
         
-        # B. Calculate Core Metrics from scratch
-        # 1. Percent Complete
-        calc_poc = 0.0
-        if r.estimated_total_costs and r.estimated_total_costs != 0:
-            calc_poc = r.cost_to_date / r.estimated_total_costs
+        # Run validations
+        row_errors = run_validations(r, validations)
+        all_validation_errors.extend(row_errors)
         
-        # 2. Expected Earned Revenue
-        calc_earned_rev = calc_poc * r.total_contract_price
-        
-        # 3. Expected Variance (UB/OB) position
-        calc_variance = calc_earned_rev - r.billed_to_date
-        calc_ub = max(0, calc_variance)
-        calc_ob = max(0, -calc_variance)
-        
-        # 4. Cost to Complete
-        calc_ctc = r.estimated_total_costs - r.cost_to_date
-        
-        # --- VALIDATION 1: Column Math Integrity ---
-        # Check 1: Does Revenue match POC * Contract?
-        rev_diff = abs(r.revenues_earned - calc_earned_rev)
-        if rev_diff > 5000 and r.revenues_earned > 0: # $5k tolerance for stored materials/rounding
-             basic_math_errors.append({
-                 "id": r.job_id, 
-                 "msg": f"Rev Mismatch: Rpt ${r.revenues_earned:,.0f} vs Calc ${calc_earned_rev:,.0f}"
-             })
+        # Generate correction suggestions
+        if row_errors:
+            suggestions = suggest_corrections(r, row_errors)
+            all_correction_suggestions.extend(suggestions)
 
-        # Check 2: Does CTC match Est Cost - Cost to Date?
-        ctc_diff = abs(r.cost_to_complete - calc_ctc)
-        if ctc_diff > 100: 
-             basic_math_errors.append({
-                 "id": r.job_id,
-                 "msg": f"CTC Math Error (Diff ${ctc_diff:,.0f})"
-             })
-             
-        # Check 3: Basic Contract Math (Contract - Est Cost = Est GP)
-        gp_diff = abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit)
-        if gp_diff > 100:
-            basic_math_errors.append({
-                "id": r.job_id,
-                "msg": f"Est GP Math Error (Diff ${gp_diff:,.0f})"
-            })
+    # --- BUILD SURETY RISK CONTEXT ---
+    surety_risk_context = build_surety_risk_context(rows, calc)
+    surety_risk_context["risk_tier"] = compute_portfolio_risk_tier(surety_risk_context)
+    
+    # --- BUILD RISK ROWS ---
+    risk_rows = build_risk_rows(rows, calc)
 
-    # --- 2. KPIs ---
+    # --- KPIs (preserved from original) ---
     t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
     gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
     
     net_ub_ob = calc.under_billings - calc.over_billings
     net_ub_ob_label = f"Under ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Over ${abs(net_ub_ob)/1000:.0f}k"
 
+    # --- STRUCTURAL VALIDATION ---
     struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
     struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
     
-    total_failures = len(basic_math_errors)
-    formula_pass = total_failures == 0
+    # --- FORMULAIC VALIDATION SUMMARY ---
+    # Group errors by job for display
+    errors_by_job = {}
+    for e in all_validation_errors:
+        job_id = e["job_id"]
+        if job_id not in errors_by_job:
+            errors_by_job[job_id] = []
+        errors_by_job[job_id].append(e)
     
+    formula_errors_display = []
+    for job_id, errors in errors_by_job.items():
+        for e in errors:
+            formula_errors_display.append({
+                "id": job_id,
+                "msg": e["message"]
+            })
+    
+    formula_pass = len(all_validation_errors) == 0
     if formula_pass:
         formula_msg = "Column Math Validated"
     else:
-        formula_msg = f"Column Math Issues ({len(basic_math_errors)} rows)"
+        formula_msg = f"Column Math Issues ({len(errors_by_job)} rows)"
 
-    # Totals Validation
+    # --- TOTALS VALIDATION ---
     totals_pass = False
     totals_msg = "No Totals Row"
     totals_details = []
     if extracted_totals:
         diff = abs(calc.revenues_earned - extracted_totals.revenues_earned)
-        if diff < 1000.0: # $1k tolerance for rounding
+        if diff < 1000.0:
             totals_pass = True
             totals_msg = "Sum matches Report Total"
         else:
             totals_msg = f"Sum Mismatch (${diff:,.0f})"
-            totals_details.append({"id": "TOTALS", "msg": f"Calc Earned ${calc.revenues_earned:,.0f} vs Report ${extracted_totals.revenues_earned:,.0f}"})
-
-    # --- 4. RISK ANALYSIS ---
-    risks = []
-    
-    for r in rows:
-        # Re-calculate these locally for risk logic
-        poc = (r.cost_to_date / r.estimated_total_costs) if r.estimated_total_costs else 0
-        expected_revenue = poc * r.total_contract_price
-        
-        # Actual variance: What is actually happening (Billed - Revenue)
-        # Positive = Billed More (OB), Negative = Billed Less (UB)
-        variance_actual = r.billed_to_date - expected_revenue
-        
-        # ALLOWABLE TOLERANCE
-        # Tolerance tightens as job gets closer to 100%
-        # At 0% complete, high tolerance. At 100% complete, near zero tolerance.
-        # Base tolerance: 10% of contract value, scaled down by POC.
-        # Plus a floor of $5,000 to avoid flagging small jobs.
-        
-        cone_width_factor = max(0.02, 0.10 * (1.0 - min(poc, 1.0))) # 10% tapering to 2%
-        allowable_variance = (r.total_contract_price * cone_width_factor) + 5000
-        diff_from_tolerance = abs(variance_actual) - allowable_variance
-        
-        if diff_from_tolerance > 0:
-            # It is a risk
-            is_ob = variance_actual > 0
-            severity = "high" if diff_from_tolerance > 50000 else "medium"
-            
-            risk_type = "Aggressive Billing" if is_ob else "Underbilling Lag"
-            
-            analysis_text = (
-                f"Billings are {'over' if is_ob else 'under'} revenue by ${abs(variance_actual):,.0f}, "
-                f"exceeding the allowable risk tolerance (based on {poc*100:.0f}% completion) by ${diff_from_tolerance:,.0f}."
-            )
-            
-            risks.append({
-                "jobId": r.job_id,
-                "jobName": r.job_name,
-                "riskTags": risk_type,
-                "riskLevel": severity,
-                "riskLevelLabel": severity.capitalize(),
-                "amountAbs": f"${abs(variance_actual):,.0f}", # Show the full variance amount
-                "ubobType": "OB" if is_ob else "UB",
-                "percentComplete": f"{poc:.1%}",
-                "analysis": analysis_text
+            totals_details.append({
+                "id": "TOTALS", 
+                "msg": f"Calc Earned ${calc.revenues_earned:,.0f} vs Report ${extracted_totals.revenues_earned:,.0f}"
             })
 
-    # Sort risks by severity (amount exceeding tolerance)
-    risks.sort(key=lambda x: float(x['amountAbs'].replace('$','').replace(',','')), reverse=True)
-    top_risks = risks
+    # --- CORRECTION SUGGESTIONS SUMMARY ---
+    corrections_display = []
+    for s in all_correction_suggestions:
+        corrections_display.append({
+            "id": s["job_id"],
+            "field": s["field"],
+            "current": f"${s['current_value']:,.0f}",
+            "suggested": f"${s['suggested_value']:,.0f}",
+            "confidence": s["confidence"],
+            "reasoning": s["reasoning"]
+        })
 
-    # --- 5. PORTFOLIO NARRATIVE ---
-    total_jobs = len(rows)
-    risky_job_count = len(risks)
-    portfolio_poc = (calc.cost_to_date / calc.estimated_total_costs) if calc.estimated_total_costs else 0
-    
-    summary_text = (
-        f"This portfolio contains {total_jobs} active jobs with a Total Contract Value of ${calc.total_contract_price/1000000:.1f}M. "
-        f"Aggregate progress is {portfolio_poc:.1%} complete. "
-        f"The overall financial position is Net {net_ub_ob_label}. "
-        f"However, {risky_job_count} jobs have been flagged for billing variances that exceed standard risk tolerances."
-    )
-
-    payload = {
-        "clean_table": [r.model_dump() for r in rows],
-        "calculated_totals": calc.model_dump(), 
-        "widget_data": {
-            "summary": {"text": summary_text},
-            "validations": {
-                "structural": {"passed": struct_pass, "message": struct_msg, "details": []},
-                "formulaic": {"passed": formula_pass, "message": formula_msg, "details": basic_math_errors},
-                "totals": {"passed": totals_pass, "message": totals_msg, "details": totals_details}
-            },
-            "metrics": {
-                "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},
-                "row1_2": {"label": "UEGP", "value": f"${t_uegp/1000000:.2f}M"},
-                "row1_3": {"label": "CTC", "value": f"${calc.cost_to_complete/1000000:.2f}M"},
-                "row2_1": {"label": "Earned Rev", "value": f"${calc.revenues_earned/1000000:.2f}M"},
-                "row2_2": {"label": "GP %", "value": f"{gp_percent:.1f}%"},
-                "row2_3": {"label": "Net UB / OB", "value": net_ub_ob_label}
-            },
-            "riskRowsAll": top_risks
-        }
+    # --- BUILD WIDGET DATA ---
+    widget_data = {
+        "validations": {
+            "structural": {"passed": struct_pass, "message": struct_msg, "details": []},
+            "formulaic": {"passed": formula_pass, "message": formula_msg, "details": formula_errors_display},
+            "totals": {"passed": totals_pass, "message": totals_msg, "details": totals_details}
+        },
+        "corrections": {
+            "count": len(corrections_display),
+            "suggestions": corrections_display
+        },
+        "metrics": {
+            "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},
+            "row1_2": {"label": "UEGP", "value": f"${t_uegp/1000000:.2f}M"},
+            "row1_3": {"label": "CTC", "value": f"${calc.cost_to_complete/1000000:.2f}M"},
+            "row2_1": {"label": "Earned Rev", "value": f"${calc.revenues_earned/1000000:.2f}M"},
+            "row2_2": {"label": "GP %", "value": f"{gp_percent:.1f}%"},
+            "row2_3": {"label": "Net UB / OB", "value": net_ub_ob_label}
+        },
+        "riskTier": surety_risk_context["risk_tier"],
+        "riskRowsAll": risk_rows
     }
+
+    return {
+        "calculated_totals": calc,
+        "validation_errors": all_validation_errors,
+        "correction_suggestions": all_correction_suggestions,
+        "surety_risk_context": surety_risk_context,
+        "risk_rows": risk_rows,
+        "widget_data": widget_data
+    }
+
+# ==========================================
+# 8. NARRATIVE NODE
+# ==========================================
+
+SURETY_NARRATIVE_PROMPT = """
+You are a surety underwriting analyst writing a brief summary for a senior underwriter.
+
+CONTEXT: We bonded this contractor. If they default, we need to recover what we're owed. Our concerns, in priority order:
+
+1. CASH POSITION — Severe underbilling means work done but cash not collected. This is our biggest concern because it directly impacts recovery.
+2. LOSS JOBS — Negative margin jobs burn cash and reduce their ability to pay us.
+3. MARGIN EROSION — Jobs where profit is fading signal estimating problems or emerging losses.
+4. CONCENTRATION — One big job going bad can sink everything.
+
+Overbilling is less urgent—it means they've collected ahead of work, which is actually better for our recovery position (though it can mask problems). Mention it only if extreme.
+
+INSTRUCTIONS:
+- Write 3-4 sentences maximum
+- Lead with the most important concern for recovery risk
+- Use plain language, no jargon
+- Be direct about problems; don't soften bad news
+- If the portfolio looks healthy, say so briefly and note any minor watch items
+- Include specific dollar amounts and job counts where relevant
+
+RISK ASSESSMENT:
+{risk_context}
+
+SUMMARY:"""
+
+def narrative_node(state: WipState):
+    print("--- GENERATING NARRATIVE ---")
+    
+    risk_context = state.surety_risk_context
+    
+    if not risk_context:
+        return {"narrative": "Unable to generate narrative: no risk context available."}
+    
+    try:
+        prompt = SURETY_NARRATIVE_PROMPT.format(risk_context=json.dumps(risk_context, indent=2))
+        
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[prompt],
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=250
+            )
+        )
+        
+        narrative = response.text.strip()
+        
+        # Update widget_data with narrative
+        widget_data = state.widget_data.copy()
+        widget_data["summary"] = {"text": narrative}
+        
+        return {"narrative": narrative, "widget_data": widget_data}
+        
+    except Exception as e:
+        print(f"Narrative generation error: {e}")
+        # Fallback to basic summary
+        portfolio = risk_context.get("portfolio", {})
+        fallback = (
+            f"Portfolio contains {portfolio.get('total_jobs', 0)} jobs with "
+            f"${portfolio.get('total_contract_value', 0)/1000000:.1f}M total contract value. "
+            f"Risk tier: {risk_context.get('risk_tier', 'Unknown')}."
+        )
+        
+        widget_data = state.widget_data.copy()
+        widget_data["summary"] = {"text": fallback}
+        
+        return {"narrative": fallback, "widget_data": widget_data}
+
+# ==========================================
+# 9. OUTPUT NODE
+# ==========================================
+
+def output_node(state: WipState):
+    print("--- BUILDING FINAL OUTPUT ---")
+    
+    payload = {
+        "clean_table": [r.model_dump() for r in state.processed_data],
+        "calculated_totals": state.calculated_totals.model_dump() if state.calculated_totals else {},
+        "validation_errors": state.validation_errors,
+        "correction_suggestions": state.correction_suggestions,
+        "surety_risk_context": state.surety_risk_context,
+        "widget_data": state.widget_data
+    }
+    
     return {"final_json": payload}
+
+# ==========================================
+# 10. WORKFLOW
+# ==========================================
 
 workflow = StateGraph(WipState)
 workflow.add_node("extract", extractor_node)
 workflow.add_node("analyze", analyst_node)
+workflow.add_node("narrative", narrative_node)
+workflow.add_node("output", output_node)
+
 workflow.set_entry_point("extract")
 workflow.add_edge("extract", "analyze")
-workflow.add_edge("analyze", END)
+workflow.add_edge("analyze", "narrative")
+workflow.add_edge("narrative", "output")
+workflow.add_edge("output", END)
+
 app = workflow.compile()
