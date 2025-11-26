@@ -1,5 +1,6 @@
 import os
 import json
+import traceback
 from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass
 from pydantic import BaseModel, Field, computed_field
@@ -488,18 +489,30 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
     risks = []
     
     for r in rows:
-        job_risks = []
+        job_risk_tags = []
+        risk_details = []  # Detailed breakdown for dropdown
         risk_score = 0
         
         # Check for loss job (highest priority)
         if r.estimated_gross_profit < 0:
-            job_risks.append("Loss Job")
+            job_risk_tags.append("Loss Job")
             risk_score += 50 + abs(r.estimated_gross_profit) / 1000
+            risk_details.append({
+                "tag": "Loss Job",
+                "summary": f"Estimated GP: -${abs(r.estimated_gross_profit):,.0f}",
+                "detail": "This job is projected to lose money. Every dollar of loss reduces the contractor's capacity to pay obligations."
+            })
         
         # Check for severe underbilling
         if r.under_billings > r.total_contract_price * 0.10 and r.under_billings > 50000:
-            job_risks.append("Severe Underbilling")
+            job_risk_tags.append("Severe Underbilling")
             risk_score += 40 + r.under_billings / 10000
+            ub_pct = (r.under_billings / r.total_contract_price * 100) if r.total_contract_price else 0
+            risk_details.append({
+                "tag": "Severe Underbilling",
+                "summary": f"${r.under_billings:,.0f} underbilled ({ub_pct:.0f}% of contract)",
+                "detail": "Work completed but cash not collected. If default occurs, this represents money that may never be recovered."
+            })
         
         # Check for GP fade
         if r.estimated_total_costs > 0 and r.estimated_gross_profit > 0:
@@ -507,47 +520,70 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
             expected_gp = r.estimated_gross_profit * poc
             if expected_gp > 1000 and r.gross_profit_to_date < expected_gp * 0.7:
                 fade_pct = 1 - (r.gross_profit_to_date / expected_gp)
-                job_risks.append(f"GP Fade ({fade_pct:.0%})")
+                job_risk_tags.append(f"GP Fade ({fade_pct:.0%})")
                 risk_score += 20 + fade_pct * 30
+                risk_details.append({
+                    "tag": f"GP Fade ({fade_pct:.0%})",
+                    "summary": f"Expected GP: ${expected_gp:,.0f} | Actual: ${r.gross_profit_to_date:,.0f}",
+                    "detail": "Profit is lagging behind where it should be at this completion percentage. May indicate cost overruns or estimating problems."
+                })
         
         # Check for thin margins
         if r.total_contract_price > 0 and 0 < r.estimated_gross_profit < r.total_contract_price * 0.05:
-            job_risks.append("Thin Margin")
+            margin_pct = (r.estimated_gross_profit / r.total_contract_price * 100)
+            job_risk_tags.append("Thin Margin")
             risk_score += 10
+            risk_details.append({
+                "tag": "Thin Margin",
+                "summary": f"GP margin only {margin_pct:.1f}% of contract value",
+                "detail": "Very little buffer for cost increases or unforeseen issues. Small problems could push this job into loss territory."
+            })
         
         # Moderate: overbilling (less critical but worth flagging)
         if r.over_billings > r.total_contract_price * 0.15 and r.over_billings > 50000:
-            job_risks.append("Heavy Overbilling")
+            job_risk_tags.append("Heavy Overbilling")
             risk_score += 5
+            ob_pct = (r.over_billings / r.total_contract_price * 100) if r.total_contract_price else 0
+            risk_details.append({
+                "tag": "Heavy Overbilling",
+                "summary": f"${r.over_billings:,.0f} overbilled ({ob_pct:.0f}% of contract)",
+                "detail": "Cash collected ahead of work performed. Good for recovery position, but can mask underlying problems."
+            })
         
         # Check concentration (handled at portfolio level, but flag the job)
         if calc.total_contract_price > 0 and r.total_contract_price > calc.total_contract_price * 0.25:
-            job_risks.append("Concentration Risk")
+            concentration_pct = (r.total_contract_price / calc.total_contract_price * 100)
+            job_risk_tags.append("Concentration Risk")
             risk_score += 15
+            risk_details.append({
+                "tag": "Concentration Risk",
+                "summary": f"Represents {concentration_pct:.0f}% of total portfolio value",
+                "detail": "A single large job going bad could significantly impact the contractor's overall financial position."
+            })
         
-        if job_risks:
-            # Determine risk level
+        if job_risk_tags:
+            # Determine risk tier
             if risk_score >= 50:
-                risk_level = "high"
+                risk_tier = "HIGH"
             elif risk_score >= 20:
-                risk_level = "medium"
+                risk_tier = "MEDIUM"
             else:
-                risk_level = "low"
+                risk_tier = "LOW"
             
             poc = r.cost_to_date / r.estimated_total_costs if r.estimated_total_costs else 0
             
             risks.append({
                 "jobId": r.job_id,
                 "jobName": r.job_name,
-                "riskTags": ", ".join(job_risks),
-                "riskLevel": risk_level,
-                "riskLevelLabel": risk_level.capitalize(),
+                "riskTags": ", ".join(job_risk_tags),
+                "riskTier": risk_tier,
                 "riskScore": risk_score,
-                "contractValue": f"${r.total_contract_price:,.0f}",
-                "estimatedGP": f"${r.estimated_gross_profit:,.0f}",
-                "underBillings": f"${r.under_billings:,.0f}",
-                "overBillings": f"${r.over_billings:,.0f}",
-                "percentComplete": f"{poc:.1%}"
+                "riskDetails": risk_details,
+                "percentComplete": f"{poc:.1%}",
+                # Keep raw values for potential use
+                "contractValue": r.total_contract_price,
+                "underBillings": r.under_billings,
+                "overBillings": r.over_billings
             })
     
     # Sort by risk score descending
@@ -640,158 +676,210 @@ def extractor_node(state: WipState):
 
 def analyst_node(state: WipState):
     print("--- RUNNING VALIDATIONS & ANALYSIS ---")
-    rows = state.processed_data
-    extracted_totals = state.totals_row
     
-    if not rows:
+    try:
+        rows = state.processed_data
+        extracted_totals = state.totals_row
+        
+        if not rows:
+            return {
+                "final_json": {"error": "No data found"},
+                "validation_errors": [],
+                "correction_suggestions": [],
+                "surety_risk_context": {},
+                "risk_rows": [],
+                "widget_data": {}
+            }
+        
+        calc = WipTotals()
+        validations = build_validations()
+        all_validation_errors = []
+        all_correction_suggestions = []
+    
+        # Recalculate UB/OB to ensure mathematical consistency
+        for r in rows:
+            variance = r.revenues_earned - r.billed_to_date
+            if variance > 0:
+                r.under_billings = variance
+                r.over_billings = 0.0
+            else:
+                r.under_billings = 0.0
+                r.over_billings = abs(variance)
+
+        # AGGREGATION & VALIDATION
+        for r in rows:
+            # Aggregate totals
+            calc.total_contract_price += r.total_contract_price
+            calc.estimated_total_costs += r.estimated_total_costs
+            calc.estimated_gross_profit += r.estimated_gross_profit
+            calc.revenues_earned += r.revenues_earned
+            calc.cost_to_date += r.cost_to_date
+            calc.gross_profit_to_date += r.gross_profit_to_date
+            calc.billed_to_date += r.billed_to_date
+            calc.cost_to_complete += r.cost_to_complete
+            calc.under_billings += r.under_billings
+            calc.over_billings += r.over_billings
+            calc.uegp += r.uegp
+            
+            # Run validations
+            row_errors = run_validations(r, validations)
+            all_validation_errors.extend(row_errors)
+            
+            # Generate correction suggestions
+            if row_errors:
+                suggestions = suggest_corrections(r, row_errors)
+                all_correction_suggestions.extend(suggestions)
+
+        # --- BUILD SURETY RISK CONTEXT ---
+        surety_risk_context = build_surety_risk_context(rows, calc)
+        surety_risk_context["risk_tier"] = compute_portfolio_risk_tier(surety_risk_context)
+        
+        # --- BUILD RISK ROWS ---
+        risk_rows = build_risk_rows(rows, calc)
+
+        # --- KPIs (preserved from original) ---
+        t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
+        gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
+        
+        net_ub_ob = calc.under_billings - calc.over_billings
+        net_ub_ob_label = f"Under ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Over ${abs(net_ub_ob)/1000:.0f}k"
+
+        # --- STRUCTURAL VALIDATION ---
+        struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
+        struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
+        
+        # --- FORMULAIC VALIDATION SUMMARY ---
+        # Group errors by job for display
+        errors_by_job = {}
+        for e in all_validation_errors:
+            job_id = e["job_id"]
+            if job_id not in errors_by_job:
+                errors_by_job[job_id] = []
+            errors_by_job[job_id].append(e)
+        
+        formula_errors_display = []
+        for job_id, errors in errors_by_job.items():
+            for e in errors:
+                formula_errors_display.append({
+                    "id": job_id,
+                    "msg": e["message"]
+                })
+        
+        formula_pass = len(all_validation_errors) == 0
+        if formula_pass:
+            formula_msg = "Column Math Validated"
+        else:
+            formula_msg = f"Column Math Issues ({len(errors_by_job)} rows)"
+
+        # --- TOTALS VALIDATION ---
+        totals_pass = False
+        totals_msg = "No Totals Row"
+        totals_details = []
+        if extracted_totals:
+            diff = abs(calc.revenues_earned - extracted_totals.revenues_earned)
+            if diff < 1000.0:
+                totals_pass = True
+                totals_msg = "Sum matches Report Total"
+            else:
+                totals_msg = f"Sum Mismatch (${diff:,.0f})"
+                totals_details.append({
+                    "id": "TOTALS", 
+                    "msg": f"Calc Earned ${calc.revenues_earned:,.0f} vs Report ${extracted_totals.revenues_earned:,.0f}"
+                })
+
+        # --- CORRECTION SUGGESTIONS SUMMARY (grouped by job) ---
+        # Group errors and corrections by job for unified display
+        jobs_with_issues = {}
+        
+        for e in all_validation_errors:
+            job_id = e["job_id"]
+            if job_id not in jobs_with_issues:
+                jobs_with_issues[job_id] = {"errors": [], "corrections": []}
+            jobs_with_issues[job_id]["errors"].append({
+                "validation": e["validation"],
+                "message": e["message"],
+                "category": e["category"]
+            })
+        
+        for s in all_correction_suggestions:
+            job_id = s["job_id"]
+            if job_id not in jobs_with_issues:
+                jobs_with_issues[job_id] = {"errors": [], "corrections": []}
+            jobs_with_issues[job_id]["corrections"].append({
+                "field": s["field"],
+                "current": f"${s['current_value']:,.0f}",
+                "suggested": f"${s['suggested_value']:,.0f}",
+                "confidence": s["confidence"],
+                "reasoning": s["reasoning"]
+            })
+        
+        # Convert to list format for frontend
+        corrections_display = []
+        for job_id, data in jobs_with_issues.items():
+            corrections_display.append({
+                "jobId": job_id,
+                "errors": data["errors"],
+                "corrections": data["corrections"]
+            })
+
+        # --- BUILD WIDGET DATA ---
+        widget_data = {
+            "validations": {
+                "structural": {"passed": struct_pass, "message": struct_msg, "details": []},
+                "formulaic": {"passed": formula_pass, "message": formula_msg, "details": formula_errors_display, "jobIssues": corrections_display},
+                "totals": {"passed": totals_pass, "message": totals_msg, "details": totals_details}
+            },
+            "metrics": {
+                "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},
+                "row1_2": {"label": "UEGP", "value": f"${t_uegp/1000000:.2f}M"},
+                "row1_3": {"label": "CTC", "value": f"${calc.cost_to_complete/1000000:.2f}M"},
+                "row2_1": {"label": "Earned Rev", "value": f"${calc.revenues_earned/1000000:.2f}M"},
+                "row2_2": {"label": "GP %", "value": f"{gp_percent:.1f}%"},
+                "row2_3": {"label": "Net UB / OB", "value": net_ub_ob_label}
+            },
+            "riskTier": surety_risk_context["risk_tier"],
+            "riskRowsAll": risk_rows
+        }
+
         return {
-            "final_json": {"error": "No data found"},
-            "validation_errors": [],
-            "correction_suggestions": [],
-            "surety_risk_context": {},
-            "risk_rows": [],
-            "widget_data": {}
+            "calculated_totals": calc,
+            "validation_errors": all_validation_errors,
+            "correction_suggestions": all_correction_suggestions,
+            "surety_risk_context": surety_risk_context,
+            "risk_rows": risk_rows,
+            "widget_data": widget_data
         }
     
-    calc = WipTotals()
-    validations = build_validations()
-    all_validation_errors = []
-    all_correction_suggestions = []
-    
-    # Recalculate UB/OB to ensure mathematical consistency
-    for r in rows:
-        variance = r.revenues_earned - r.billed_to_date
-        if variance > 0:
-            r.under_billings = variance
-            r.over_billings = 0.0
-        else:
-            r.under_billings = 0.0
-            r.over_billings = abs(variance)
-
-    # AGGREGATION & VALIDATION
-    for r in rows:
-        # Aggregate totals
-        calc.total_contract_price += r.total_contract_price
-        calc.estimated_total_costs += r.estimated_total_costs
-        calc.estimated_gross_profit += r.estimated_gross_profit
-        calc.revenues_earned += r.revenues_earned
-        calc.cost_to_date += r.cost_to_date
-        calc.gross_profit_to_date += r.gross_profit_to_date
-        calc.billed_to_date += r.billed_to_date
-        calc.cost_to_complete += r.cost_to_complete
-        calc.under_billings += r.under_billings
-        calc.over_billings += r.over_billings
-        calc.uegp += r.uegp
-        
-        # Run validations
-        row_errors = run_validations(r, validations)
-        all_validation_errors.extend(row_errors)
-        
-        # Generate correction suggestions
-        if row_errors:
-            suggestions = suggest_corrections(r, row_errors)
-            all_correction_suggestions.extend(suggestions)
-
-    # --- BUILD SURETY RISK CONTEXT ---
-    surety_risk_context = build_surety_risk_context(rows, calc)
-    surety_risk_context["risk_tier"] = compute_portfolio_risk_tier(surety_risk_context)
-    
-    # --- BUILD RISK ROWS ---
-    risk_rows = build_risk_rows(rows, calc)
-
-    # --- KPIs (preserved from original) ---
-    t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
-    gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
-    
-    net_ub_ob = calc.under_billings - calc.over_billings
-    net_ub_ob_label = f"Under ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Over ${abs(net_ub_ob)/1000:.0f}k"
-
-    # --- STRUCTURAL VALIDATION ---
-    struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
-    struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
-    
-    # --- FORMULAIC VALIDATION SUMMARY ---
-    # Group errors by job for display
-    errors_by_job = {}
-    for e in all_validation_errors:
-        job_id = e["job_id"]
-        if job_id not in errors_by_job:
-            errors_by_job[job_id] = []
-        errors_by_job[job_id].append(e)
-    
-    formula_errors_display = []
-    for job_id, errors in errors_by_job.items():
-        for e in errors:
-            formula_errors_display.append({
-                "id": job_id,
-                "msg": e["message"]
-            })
-    
-    formula_pass = len(all_validation_errors) == 0
-    if formula_pass:
-        formula_msg = "Column Math Validated"
-    else:
-        formula_msg = f"Column Math Issues ({len(errors_by_job)} rows)"
-
-    # --- TOTALS VALIDATION ---
-    totals_pass = False
-    totals_msg = "No Totals Row"
-    totals_details = []
-    if extracted_totals:
-        diff = abs(calc.revenues_earned - extracted_totals.revenues_earned)
-        if diff < 1000.0:
-            totals_pass = True
-            totals_msg = "Sum matches Report Total"
-        else:
-            totals_msg = f"Sum Mismatch (${diff:,.0f})"
-            totals_details.append({
-                "id": "TOTALS", 
-                "msg": f"Calc Earned ${calc.revenues_earned:,.0f} vs Report ${extracted_totals.revenues_earned:,.0f}"
-            })
-
-    # --- CORRECTION SUGGESTIONS SUMMARY ---
-    corrections_display = []
-    for s in all_correction_suggestions:
-        corrections_display.append({
-            "id": s["job_id"],
-            "field": s["field"],
-            "current": f"${s['current_value']:,.0f}",
-            "suggested": f"${s['suggested_value']:,.0f}",
-            "confidence": s["confidence"],
-            "reasoning": s["reasoning"]
-        })
-
-    # --- BUILD WIDGET DATA ---
-    widget_data = {
-        "validations": {
-            "structural": {"passed": struct_pass, "message": struct_msg, "details": []},
-            "formulaic": {"passed": formula_pass, "message": formula_msg, "details": formula_errors_display},
-            "totals": {"passed": totals_pass, "message": totals_msg, "details": totals_details}
-        },
-        "corrections": {
-            "count": len(corrections_display),
-            "suggestions": corrections_display
-        },
-        "metrics": {
-            "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},
-            "row1_2": {"label": "UEGP", "value": f"${t_uegp/1000000:.2f}M"},
-            "row1_3": {"label": "CTC", "value": f"${calc.cost_to_complete/1000000:.2f}M"},
-            "row2_1": {"label": "Earned Rev", "value": f"${calc.revenues_earned/1000000:.2f}M"},
-            "row2_2": {"label": "GP %", "value": f"{gp_percent:.1f}%"},
-            "row2_3": {"label": "Net UB / OB", "value": net_ub_ob_label}
-        },
-        "riskTier": surety_risk_context["risk_tier"],
-        "riskRowsAll": risk_rows
-    }
-
-    return {
-        "calculated_totals": calc,
-        "validation_errors": all_validation_errors,
-        "correction_suggestions": all_correction_suggestions,
-        "surety_risk_context": surety_risk_context,
-        "risk_rows": risk_rows,
-        "widget_data": widget_data
-    }
+    except Exception as e:
+        print(f"ANALYST NODE ERROR: {e}")
+        print(traceback.format_exc())
+        # Return minimal valid response so pipeline continues
+        return {
+            "calculated_totals": WipTotals(),
+            "validation_errors": [],
+            "correction_suggestions": [],
+            "surety_risk_context": {"risk_tier": "UNKNOWN", "error": str(e)},
+            "risk_rows": [],
+            "widget_data": {
+                "validations": {
+                    "structural": {"passed": False, "message": f"Error: {str(e)}", "details": []},
+                    "formulaic": {"passed": False, "message": "Error during analysis", "details": [], "jobIssues": []},
+                    "totals": {"passed": False, "message": "Error during analysis", "details": []}
+                },
+                "metrics": {
+                    "row1_1": {"label": "Contract Value", "value": "$0.00M"},
+                    "row1_2": {"label": "UEGP", "value": "$0.00M"},
+                    "row1_3": {"label": "CTC", "value": "$0.00M"},
+                    "row2_1": {"label": "Earned Rev", "value": "$0.00M"},
+                    "row2_2": {"label": "GP %", "value": "0.0%"},
+                    "row2_3": {"label": "Net UB / OB", "value": "Error"}
+                },
+                "riskTier": "UNKNOWN",
+                "riskRowsAll": [],
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+        }
 
 # ==========================================
 # 8. NARRATIVE NODE
@@ -825,12 +913,22 @@ SUMMARY:"""
 def narrative_node(state: WipState):
     print("--- GENERATING NARRATIVE ---")
     
-    risk_context = state.surety_risk_context
-    
-    if not risk_context:
-        return {"narrative": "Unable to generate narrative: no risk context available."}
-    
     try:
+        risk_context = state.surety_risk_context
+        
+        if not risk_context:
+            print("No risk context available for narrative")
+            widget_data = state.widget_data.copy() if state.widget_data else {}
+            widget_data["summary"] = {"text": "Unable to generate narrative: no risk context available."}
+            return {"narrative": "Unable to generate narrative: no risk context available.", "widget_data": widget_data}
+        
+        # Check for error in risk context (from analyst node failure)
+        if "error" in risk_context:
+            print(f"Risk context contains error: {risk_context.get('error')}")
+            widget_data = state.widget_data.copy() if state.widget_data else {}
+            widget_data["summary"] = {"text": f"Analysis error: {risk_context.get('error')}"}
+            return {"narrative": f"Analysis error: {risk_context.get('error')}", "widget_data": widget_data}
+        
         prompt = SURETY_NARRATIVE_PROMPT.format(risk_context=json.dumps(risk_context, indent=2))
         
         response = client.models.generate_content(
@@ -845,23 +943,31 @@ def narrative_node(state: WipState):
         narrative = response.text.strip()
         
         # Update widget_data with narrative
-        widget_data = state.widget_data.copy()
+        widget_data = state.widget_data.copy() if state.widget_data else {}
         widget_data["summary"] = {"text": narrative}
         
         return {"narrative": narrative, "widget_data": widget_data}
         
     except Exception as e:
-        print(f"Narrative generation error: {e}")
-        # Fallback to basic summary
-        portfolio = risk_context.get("portfolio", {})
-        fallback = (
-            f"Portfolio contains {portfolio.get('total_jobs', 0)} jobs with "
-            f"${portfolio.get('total_contract_value', 0)/1000000:.1f}M total contract value. "
-            f"Risk tier: {risk_context.get('risk_tier', 'Unknown')}."
-        )
+        print(f"NARRATIVE NODE ERROR: {e}")
+        print(traceback.format_exc())
         
-        widget_data = state.widget_data.copy()
+        # Fallback to basic summary
+        try:
+            risk_context = state.surety_risk_context or {}
+            portfolio = risk_context.get("portfolio", {})
+            total_value = portfolio.get('total_contract_value', 0)
+            fallback = (
+                f"Portfolio contains {portfolio.get('total_jobs', 0)} jobs with "
+                f"${total_value/1000000:.1f}M total contract value. "
+                f"Risk tier: {risk_context.get('risk_tier', 'Unknown')}."
+            )
+        except:
+            fallback = "Error generating narrative summary."
+        
+        widget_data = state.widget_data.copy() if state.widget_data else {}
         widget_data["summary"] = {"text": fallback}
+        widget_data["narrative_error"] = str(e)
         
         return {"narrative": fallback, "widget_data": widget_data}
 
@@ -872,16 +978,33 @@ def narrative_node(state: WipState):
 def output_node(state: WipState):
     print("--- BUILDING FINAL OUTPUT ---")
     
-    payload = {
-        "clean_table": [r.model_dump() for r in state.processed_data],
-        "calculated_totals": state.calculated_totals.model_dump() if state.calculated_totals else {},
-        "validation_errors": state.validation_errors,
-        "correction_suggestions": state.correction_suggestions,
-        "surety_risk_context": state.surety_risk_context,
-        "widget_data": state.widget_data
-    }
+    try:
+        payload = {
+            "clean_table": [r.model_dump() for r in state.processed_data] if state.processed_data else [],
+            "calculated_totals": state.calculated_totals.model_dump() if state.calculated_totals else {},
+            "validation_errors": state.validation_errors or [],
+            "correction_suggestions": state.correction_suggestions or [],
+            "surety_risk_context": state.surety_risk_context or {},
+            "widget_data": state.widget_data or {}
+        }
+        
+        return {"final_json": payload}
     
-    return {"final_json": payload}
+    except Exception as e:
+        print(f"OUTPUT NODE ERROR: {e}")
+        print(traceback.format_exc())
+        return {
+            "final_json": {
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "clean_table": [],
+                "calculated_totals": {},
+                "validation_errors": [],
+                "correction_suggestions": [],
+                "surety_risk_context": {},
+                "widget_data": {"error": str(e)}
+            }
+        }
 
 # ==========================================
 # 10. WORKFLOW
