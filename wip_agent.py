@@ -369,7 +369,8 @@ def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> 
         # Find the best fix among candidates
         if candidates:
             best = find_best_fix(candidates)
-            if best and best["digit_changes"] <= 6:  # Only suggest if reasonably small change
+            # Only suggest if it's a small change (1-2 digits) - likely OCR error
+            if best and best["digit_changes"] <= 2:
                 suggestions.append({
                     "job_id": row.job_id,
                     "field": best["field"],
@@ -648,14 +649,28 @@ def extractor_node(state: WipState):
     1. Extract every job row with all financial columns, Job Name, and Job ID.
     2. Extract the "TOTALS" row from the bottom of the report.
 
-    CRITICAL: UNDER vs OVER BILLINGS
-    - UNDER BILLINGS (UB) happens when: Cost to Date > Billed to Date
-      Column headers: "Costs in Excess of Billings" OR "Billings in Excess of Revenues" OR similar
-      Formula: Cost to Date - Billed to Date (when positive)
-      
-    - OVER BILLINGS (OB) happens when: Billed to Date > Cost to Date  
-      Column headers: "In Excess of Billings" OR "Earnings in Excess of Costs" OR similar
-      Formula: Billed to Date - Cost to Date (when positive)
+    CRITICAL COLUMN IDENTIFICATION:
+    
+    1. COST TO DATE (cost_to_date): Money ALREADY SPENT on the job.
+       - Column headers: "Cost to Date", "Costs to Date", "Costs Incurred", "Actual Costs"
+       - This is cumulative costs incurred so far
+       - Usually a LARGER number than Cost to Complete for jobs in progress
+       
+    2. COST TO COMPLETE (cost_to_complete): Money STILL NEEDED to finish the job.
+       - Column headers: "Cost to Complete", "CTC", "Estimated Cost to Complete", "Remaining Costs"
+       - This is how much more needs to be spent
+       - Formula: Estimated Total Costs - Cost to Date = Cost to Complete
+       - For completed jobs (100% done), this should be 0 or near 0
+       
+    3. ESTIMATED TOTAL COSTS (estimated_total_costs): Total expected cost when job is done.
+       - Column headers: "Estimated Cost", "Total Est Cost", "Est Total Costs"
+       - Formula: Cost to Date + Cost to Complete = Estimated Total Costs
+
+    VALIDATION: For each row, verify: Cost to Date + Cost to Complete ≈ Estimated Total Costs
+    
+    UNDER vs OVER BILLINGS:
+    - UNDER BILLINGS (UB): Earned Revenue > Billed to Date (work done but not yet billed)
+    - OVER BILLINGS (OB): Billed to Date > Earned Revenue (billed ahead of work)
 
     Return JSON:
     {
@@ -683,7 +698,7 @@ def extractor_node(state: WipState):
     RULES:
     - (100) in parens is negative -100.
     - Empty fields are 0.
-    - Match column headers to the definitions above carefully
+    - Double-check Cost to Date vs Cost to Complete - they are different columns!
     """
 
     try:
