@@ -248,105 +248,136 @@ class CorrectionSuggestion:
     confidence: str
     reasoning: str
 
-def is_plausible_ocr_error(extracted: float, expected: float) -> bool:
-    """Check if the difference looks like a typical OCR mistake."""
-    if extracted == 0 or expected == 0:
-        return False
-        
-    diff = abs(extracted - expected)
+def digit_change_score(current: float, target: float) -> int:
+    """
+    Score how many digit changes are needed to go from current to target.
+    Lower score = easier fix = more likely the error source.
+    """
+    if current == 0 and target == 0:
+        return 0
+    if current == 0 or target == 0:
+        return 100  # Big change if one is zero
     
-    # Single digit off by power of 10
-    powers_of_10 = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000]
-    for p in powers_of_10:
-        if abs(diff - p) < 1:
-            return True
-        # Also check multiples (e.g., off by 2000000)
-        for mult in range(1, 10):
-            if abs(diff - (p * mult)) < 1:
-                return True
+    # Normalize to positive
+    curr_str = str(int(abs(current)))
+    targ_str = str(int(abs(target)))
     
-    # Check for transposed or single-digit differences
-    ext_str = str(int(abs(extracted)))
-    exp_str = str(int(abs(expected)))
-    if len(ext_str) == len(exp_str):
-        diffs = sum(1 for a, b in zip(ext_str, exp_str) if a != b)
-        if diffs <= 2:
-            return True
+    # Sign change is a big deal
+    sign_penalty = 50 if (current < 0) != (target < 0) else 0
     
-    # Missing or extra zero
-    if abs(extracted * 10 - expected) < 1 or abs(extracted - expected * 10) < 1:
-        return True
-        
-    return False
+    # If lengths differ significantly, it's a bigger change
+    len_diff = abs(len(curr_str) - len(targ_str))
+    if len_diff > 1:
+        return 30 + len_diff * 10 + sign_penalty
+    
+    # Pad to same length
+    max_len = max(len(curr_str), len(targ_str))
+    curr_str = curr_str.zfill(max_len)
+    targ_str = targ_str.zfill(max_len)
+    
+    # Count digit differences
+    digit_diffs = sum(1 for a, b in zip(curr_str, targ_str) if a != b)
+    
+    return digit_diffs + sign_penalty
+
+def find_best_fix(candidates: List[Dict]) -> Optional[Dict]:
+    """
+    Given multiple possible fixes, return the one requiring fewest digit changes.
+    Each candidate: {"field": str, "current": float, "suggested": float, "formula": str}
+    """
+    if not candidates:
+        return None
+    
+    scored = []
+    for c in candidates:
+        score = digit_change_score(c["current"], c["suggested"])
+        scored.append((score, c))
+    
+    scored.sort(key=lambda x: x[0])
+    best_score, best = scored[0]
+    
+    # Add score info for confidence
+    best["digit_changes"] = best_score
+    best["confidence"] = "high" if best_score <= 2 else "medium" if best_score <= 4 else "low"
+    
+    return best
 
 def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Generate correction suggestions based on validation errors."""
+    """Generate correction suggestions based on validation errors - picks the smallest fix."""
     suggestions = []
     
     for error in errors:
         validation_name = error["validation"]
+        candidates = []
         
         if validation_name == "contract_cost_gp":
-            # Contract - Est Cost should = Est GP
+            # Formula: Contract - Est Cost = Est GP
+            # Three possible fixes:
             expected_gp = row.total_contract_price - row.estimated_total_costs
-            if is_plausible_ocr_error(row.estimated_gross_profit, expected_gp):
-                suggestions.append({
-                    "job_id": row.job_id,
-                    "field": "estimated_gross_profit",
-                    "current_value": row.estimated_gross_profit,
-                    "suggested_value": expected_gp,
-                    "confidence": "high",
-                    "reasoning": f"If Est GP were ${expected_gp:,.0f}, the formula Contract - Est Cost = Est GP would hold. Difference pattern suggests OCR error."
-                })
+            expected_cost = row.total_contract_price - row.estimated_gross_profit
+            expected_contract = row.estimated_total_costs + row.estimated_gross_profit
             
-            # Also check if est_costs might be wrong
-            expected_costs = row.total_contract_price - row.estimated_gross_profit
-            if is_plausible_ocr_error(row.estimated_total_costs, expected_costs):
-                suggestions.append({
-                    "job_id": row.job_id,
-                    "field": "estimated_total_costs",
-                    "current_value": row.estimated_total_costs,
-                    "suggested_value": expected_costs,
-                    "confidence": "medium",
-                    "reasoning": f"If Est Costs were ${expected_costs:,.0f}, the formula would hold. Alternative to GP correction."
-                })
+            candidates = [
+                {"field": "estimated_gross_profit", "current": row.estimated_gross_profit, 
+                 "suggested": expected_gp, "formula": "Contract - Est Cost = Est GP"},
+                {"field": "estimated_total_costs", "current": row.estimated_total_costs,
+                 "suggested": expected_cost, "formula": "Contract - Est Cost = Est GP"},
+                {"field": "total_contract_price", "current": row.total_contract_price,
+                 "suggested": expected_contract, "formula": "Contract - Est Cost = Est GP"},
+            ]
                 
         elif validation_name == "cost_to_complete_check":
-            # Est Cost - Cost to Date should = CTC
+            # Formula: Est Cost - Cost to Date = CTC
             expected_ctc = row.estimated_total_costs - row.cost_to_date
-            if is_plausible_ocr_error(row.cost_to_complete, expected_ctc):
-                suggestions.append({
-                    "job_id": row.job_id,
-                    "field": "cost_to_complete",
-                    "current_value": row.cost_to_complete,
-                    "suggested_value": expected_ctc,
-                    "confidence": "high",
-                    "reasoning": f"If CTC were ${expected_ctc:,.0f}, the formula Est Cost - Cost to Date = CTC would hold."
-                })
+            expected_cost = row.cost_to_complete + row.cost_to_date
+            expected_ctd = row.estimated_total_costs - row.cost_to_complete
+            
+            candidates = [
+                {"field": "cost_to_complete", "current": row.cost_to_complete,
+                 "suggested": expected_ctc, "formula": "Est Cost - Cost to Date = CTC"},
+                {"field": "estimated_total_costs", "current": row.estimated_total_costs,
+                 "suggested": expected_cost, "formula": "Est Cost - Cost to Date = CTC"},
+                {"field": "cost_to_date", "current": row.cost_to_date,
+                 "suggested": expected_ctd, "formula": "Est Cost - Cost to Date = CTC"},
+            ]
                 
         elif validation_name == "earned_revenue_from_gp":
-            # Cost to Date + GP to Date should = Revenues Earned
+            # Formula: Cost to Date + GP to Date = Revenues Earned
             expected_rev = row.cost_to_date + row.gross_profit_to_date
-            if is_plausible_ocr_error(row.revenues_earned, expected_rev):
-                suggestions.append({
-                    "job_id": row.job_id,
-                    "field": "revenues_earned",
-                    "current_value": row.revenues_earned,
-                    "suggested_value": expected_rev,
-                    "confidence": "high",
-                    "reasoning": f"If Earned Rev were ${expected_rev:,.0f}, the formula Cost + GP to Date = Earned Rev would hold."
-                })
+            expected_gp_td = row.revenues_earned - row.cost_to_date
+            expected_ctd = row.revenues_earned - row.gross_profit_to_date
             
-            # Check if GP to date might be wrong
-            expected_gp_to_date = row.revenues_earned - row.cost_to_date
-            if is_plausible_ocr_error(row.gross_profit_to_date, expected_gp_to_date):
+            candidates = [
+                {"field": "revenues_earned", "current": row.revenues_earned,
+                 "suggested": expected_rev, "formula": "Cost to Date + GP to Date = Earned Rev"},
+                {"field": "gross_profit_to_date", "current": row.gross_profit_to_date,
+                 "suggested": expected_gp_td, "formula": "Cost to Date + GP to Date = Earned Rev"},
+                {"field": "cost_to_date", "current": row.cost_to_date,
+                 "suggested": expected_ctd, "formula": "Cost to Date + GP to Date = Earned Rev"},
+            ]
+        
+        elif validation_name == "earned_revenue_from_poc":
+            # Formula: Earned Rev = Contract × POC
+            if row.estimated_total_costs > 0:
+                poc = row.cost_to_date / row.estimated_total_costs
+                expected_rev = row.total_contract_price * poc
+                candidates = [
+                    {"field": "revenues_earned", "current": row.revenues_earned,
+                     "suggested": expected_rev, "formula": "Earned Rev = Contract × POC"},
+                ]
+        
+        # Find the best fix among candidates
+        if candidates:
+            best = find_best_fix(candidates)
+            if best and best["digit_changes"] <= 6:  # Only suggest if reasonably small change
                 suggestions.append({
                     "job_id": row.job_id,
-                    "field": "gross_profit_to_date",
-                    "current_value": row.gross_profit_to_date,
-                    "suggested_value": expected_gp_to_date,
-                    "confidence": "medium",
-                    "reasoning": f"If GP to Date were ${expected_gp_to_date:,.0f}, the formula would hold."
+                    "field": best["field"],
+                    "current_value": best["current"],
+                    "suggested_value": best["suggested"],
+                    "confidence": best["confidence"],
+                    "digit_changes": best["digit_changes"],
+                    "reasoning": f"Changing {best['field']} from ${best['current']:,.0f} to ${best['suggested']:,.0f} ({best['digit_changes']} digit change) would fix: {best['formula']}"
                 })
     
     return suggestions
