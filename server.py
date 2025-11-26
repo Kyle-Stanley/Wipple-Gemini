@@ -117,16 +117,40 @@ async def detect_document_type(file_path: str) -> str:
 
 async def run_wip_stream(inputs):
     """Handles the WIP agent stream events."""
-    for chunk in wip_app.stream(inputs, stream_mode="updates"):
-        if "extract" in chunk:
-            row_count = len(chunk["extract"]["processed_data"])
-            yield format_sse("status", f"Extracted {row_count} rows. Validating math...")
-        
-        if "analyze" in chunk:
-            yield format_sse("status", "Analysis complete.")
-            final_data = chunk["analyze"]["final_json"]
-            payload = {"type": "WIP", "data": final_data}
-            yield format_sse("result_wip", json.dumps(payload))
+    try:
+        for chunk in wip_app.stream(inputs, stream_mode="updates"):
+            print(f"WIP STREAM CHUNK KEYS: {chunk.keys()}")  # Debug logging
+            
+            if "extract" in chunk:
+                extract_data = chunk["extract"]
+                processed = extract_data.get("processed_data", [])
+                row_count = len(processed) if processed else 0
+                yield format_sse("status", f"Extracted {row_count} rows. Validating math...")
+            
+            if "analyze" in chunk:
+                yield format_sse("status", "Analysis complete. Generating summary...")
+            
+            if "narrative" in chunk:
+                yield format_sse("status", "Summary generated. Preparing output...")
+            
+            if "output" in chunk:
+                output_data = chunk["output"]
+                final_data = output_data.get("final_json", {})
+                
+                # Check for errors in the output
+                if "error" in final_data:
+                    print(f"WIP WORKFLOW ERROR: {final_data.get('error')}")
+                    if "traceback" in final_data:
+                        print(f"TRACEBACK: {final_data.get('traceback')}")
+                
+                payload = {"type": "WIP", "data": final_data}
+                yield format_sse("result_wip", json.dumps(payload))
+                
+    except Exception as e:
+        import traceback
+        print(f"RUN_WIP_STREAM ERROR: {e}")
+        print(traceback.format_exc())
+        yield format_sse("error", str(e))
 
 async def run_bond_stream(inputs):
     """Handles the Bond agent stream events."""
@@ -164,24 +188,27 @@ async def processing_generator(temp_filename: str):
         
         # 1. ROUTER
         doc_type = await detect_document_type(temp_filename)
-        yield format_sse("status", f"Detected document type: {doc_type}")
         
         inputs = {"file_path": temp_filename}
 
         # 2. BRANCH: WIP
         if doc_type == "WIP":
+            yield format_sse("status", "Processing WIP schedule...")
             yield format_sse("router", "WIP")
             async for chunk in run_wip_stream(inputs):
                 yield chunk
 
         # 3. BRANCH: BOND
         else:
+            yield format_sse("status", "Processing bond form...")
             yield format_sse("router", "BOND")
             async for chunk in run_bond_stream(inputs):
                 yield chunk
 
     except Exception as e:
-        print(f"STREAM ERROR: {e}")
+        import traceback
+        print(f"PROCESSING GENERATOR ERROR: {e}")
+        print(traceback.format_exc())
         yield format_sse("error", str(e))
     finally:
         if os.path.exists(temp_filename):
