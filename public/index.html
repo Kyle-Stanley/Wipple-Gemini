@@ -453,7 +453,11 @@
         sendButton.disabled = true;
         statusStep = 0;
         
-        addMessage(`Uploaded ${uploadedFile.name}`, 'user');
+        const fileName = uploadedFile.name;
+        chatInput.value = '';
+        chatInput.placeholder = "Processing...";
+        
+        addMessage(`Uploaded ${fileName}`, 'user');
         addMessage(agentStatusMessages[0], 'agent-status');
         statusStep = 1;
         showLoading();
@@ -494,8 +498,8 @@
                                 addMessage("Error processing file.", 'error');
                             }
                             else if (type === 'router') {
+                                // Router type already shown in status message, no need to repeat
                                 removeLoading();
-                                addMessage(`Document identified as <strong>${dataStr}</strong>.`, 'agent-status');
                                 showLoading();
                             }
                             else if (type === 'bond_step_1') {
@@ -572,7 +576,7 @@
         fileInput.value = ''; 
         uploadedFile = null;
         chatInput.value = '';
-        chatInput.placeholder = "Analysis complete.";
+        chatInput.placeholder = "Message Wipple";
         uploadButton.disabled = false;
         chatInput.disabled = false;
     }
