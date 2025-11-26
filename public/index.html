@@ -103,64 +103,58 @@
         .val-expand-icon { transition: transform 0.2s; margin-left: 8px; }
         .val-expand-icon.rotated { transform: rotate(180deg); }
 
-        /* Job issue item styling */
-        .job-issue-item { 
+        /* Job issue item styling - FLAT layout */
+        .job-issue-flat { 
             border-bottom: 1px solid rgba(255,255,255,0.1); 
             padding: 12px 0; 
         }
-        .job-issue-item:last-child { border-bottom: none; }
-        .job-issue-header { 
+        .job-issue-flat:last-child { border-bottom: none; }
+        .job-issue-header-flat { 
             display: flex; 
             align-items: center; 
-            cursor: pointer;
             padding: 4px 0;
+            margin-bottom: 8px;
         }
-        .job-issue-header:hover { background: rgba(255,255,255,0.02); }
         .job-issue-id { 
             font-weight: 700; 
             color: #ffffff; 
-            font-size: 0.875rem;
-            min-width: 80px;
+            font-size: 0.9rem;
+            min-width: 90px;
         }
         .job-issue-summary { 
-            color: #d1d5db; 
-            font-size: 0.75rem; 
+            color: #9ca3af; 
+            font-size: 0.8rem; 
             flex: 1;
         }
-        .job-issue-details { 
-            max-height: 0; 
-            overflow: hidden; 
-            transition: max-height 0.3s ease-out;
-            padding-left: 80px;
-        }
-        .job-issue-details.open { 
-            max-height: 400px; 
-            padding-top: 8px;
+        .job-issue-content {
+            padding-left: 0;
         }
         .error-line { 
             color: #f87171; 
             font-size: 0.8rem; 
             padding: 4px 0;
-            display: flex;
-            align-items: flex-start;
-        }
-        .error-line::before {
-            content: "✗";
-            margin-right: 8px;
-            flex-shrink: 0;
+            padding-left: 12px;
         }
         .correction-line { 
             color: #38bdf8; 
             font-size: 0.8rem; 
-            padding: 6px 0;
-            padding-left: 16px;
+            padding: 8px 12px;
             border-left: 2px solid #38bdf8;
-            margin: 6px 0;
+            margin: 8px 0;
             background: rgba(56, 189, 248, 0.05);
         }
-        .correction-label {
+        .correction-arrow {
             font-weight: 600;
-            color: #38bdf8;
+            margin-right: 6px;
+        }
+        .correction-text {
+            display: inline;
+        }
+        .correction-reasoning {
+            margin-top: 6px; 
+            color: #8e8ea0; 
+            font-size: 0.75rem;
+            line-height: 1.4;
         }
         .confidence-badge {
             font-size: 0.65rem;
@@ -617,7 +611,6 @@
             if (!jobIssues || jobIssues.length === 0) return '';
             
             return jobIssues.map((job, idx) => {
-                const jobId = genId();
                 const errorCount = job.errors.length;
                 const correctionCount = job.corrections.length;
                 const summaryParts = [];
@@ -625,7 +618,7 @@
                 if (correctionCount > 0) summaryParts.push(`${correctionCount} suggested fix${correctionCount > 1 ? 'es' : ''}`);
                 
                 const errorsHtml = job.errors.map(e => 
-                    `<div class="error-line">${e.message}</div>`
+                    `<div class="error-line">✗ ${e.message}</div>`
                 ).join('');
                 
                 const correctionsHtml = job.corrections.map(c => {
@@ -633,22 +626,24 @@
                                            c.confidence === 'medium' ? 'confidence-medium' : 'confidence-low';
                     return `
                         <div class="correction-line">
-                            <span class="correction-label">→ Suggested:</span> 
-                            ${c.field} should be ${c.suggested}
-                            <span class="confidence-badge ${confidenceClass}">${c.confidence}</span>
-                            <div style="margin-top: 4px; color: #8e8ea0; font-size: 0.75rem;">${c.reasoning}</div>
+                            <span class="correction-arrow">→</span>
+                            <span class="correction-text">
+                                <strong>Suggested fix:</strong> Change ${c.field} from ${c.current} to ${c.suggested}
+                                <span class="confidence-badge ${confidenceClass}">${c.confidence}</span>
+                            </span>
+                            <div class="correction-reasoning">${c.reasoning}</div>
                         </div>
                     `;
                 }).join('');
                 
+                // Flat structure - no nested expand
                 return `
-                    <div class="job-issue-item">
-                        <div class="job-issue-header" onclick="toggleJobIssue('${jobId}')">
+                    <div class="job-issue-flat">
+                        <div class="job-issue-header-flat">
                             <span class="job-issue-id">${job.jobId}</span>
                             <span class="job-issue-summary">${summaryParts.join(', ')}</span>
-                            <svg id="${jobId}-icon" class="val-expand-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                         </div>
-                        <div id="${jobId}-details" class="job-issue-details">
+                        <div class="job-issue-content">
                             ${errorsHtml}
                             ${correctionsHtml}
                         </div>
