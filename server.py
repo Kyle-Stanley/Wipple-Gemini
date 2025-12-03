@@ -2,6 +2,8 @@ import shutil
 import os
 import json
 import re
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -15,6 +17,9 @@ from model_client import get_client, get_supported_models, DEFAULT_MODEL, SUPPOR
 # Import Agents
 from wip_agent import app as wip_app
 from bond_agent import app as bond_app
+
+# Thread pool for running sync LangGraph agents without blocking
+executor = ThreadPoolExecutor(max_workers=4)
 
 # --- Config ---
 if "GOOGLE_API_KEY" not in os.environ:
@@ -106,8 +111,8 @@ async def detect_document_type(file_path: str, model_name: str = DEFAULT_MODEL) 
 
 # --- Stream Handlers ---
 
-async def run_wip_stream(inputs):
-    """Handles the WIP agent stream events."""
+def run_wip_sync(inputs, queue):
+    """Runs WIP agent synchronously in a thread, pushing results to queue."""
     try:
         for chunk in wip_app.stream(inputs, stream_mode="updates"):
             print(f"WIP STREAM CHUNK KEYS: {chunk.keys()}")
@@ -116,13 +121,13 @@ async def run_wip_stream(inputs):
                 extract_data = chunk["extract"]
                 processed = extract_data.get("processed_data", [])
                 row_count = len(processed) if processed else 0
-                yield format_sse("status", f"Extracted {row_count} rows. Validating math...")
+                queue.put(("status", f"Extracted {row_count} rows. Validating math..."))
             
             if "analyze" in chunk:
-                yield format_sse("status", "Analysis complete. Generating summary...")
+                queue.put(("status", "Analysis complete. Generating summary..."))
             
             if "narrative" in chunk:
-                yield format_sse("status", "Summary generated. Preparing output...")
+                queue.put(("status", "Summary generated. Preparing output..."))
             
             if "output" in chunk:
                 output_data = chunk["output"]
@@ -134,41 +139,89 @@ async def run_wip_stream(inputs):
                         print(f"TRACEBACK: {final_data.get('traceback')}")
                 
                 payload = {"type": "WIP", "data": final_data}
-                yield format_sse("result_wip", json.dumps(payload))
+                queue.put(("result_wip", json.dumps(payload)))
                 
     except Exception as e:
         import traceback
         print(f"RUN_WIP_STREAM ERROR: {e}")
         print(traceback.format_exc())
-        yield format_sse("error", str(e))
+        queue.put(("error", str(e)))
+    finally:
+        queue.put(None)  # Signal completion
+
+def run_bond_sync(inputs, queue):
+    """Runs Bond agent synchronously in a thread, pushing results to queue."""
+    try:
+        for chunk in bond_app.stream(inputs, stream_mode="updates"):
+            if "extract" in chunk:
+                queue.put(("status", "Core extraction complete. Searching legal statutes..."))
+                partial = {
+                    "parties": chunk["extract"]["parties"].model_dump() if chunk["extract"].get("parties") else {},
+                    "risks": chunk["extract"]["risks"].model_dump() if chunk["extract"].get("risks") else {}
+                }
+                queue.put(("bond_step_1", json.dumps(partial)))
+                
+            if "research" in chunk:
+                queue.put(("status", "Statute research complete. Synthesizing opinion..."))
+                stats = [s.model_dump() for s in chunk["research"]["researched_statutes"]]
+                queue.put(("bond_step_2", json.dumps(stats)))
+
+            if "opinion" in chunk:
+                queue.put(("status", "Underwriting opinion generated."))
+                if chunk["opinion"].get("opinion"):
+                    op = chunk["opinion"]["opinion"].model_dump()
+                    queue.put(("bond_step_3", json.dumps(op)))
+                
+                final = chunk["opinion"]["final_json"]
+                queue.put(("result_bond_final", json.dumps(final)))
+    except Exception as e:
+        import traceback
+        print(f"RUN_BOND_STREAM ERROR: {e}")
+        print(traceback.format_exc())
+        queue.put(("error", str(e)))
+    finally:
+        queue.put(None)  # Signal completion
+
+async def run_wip_stream(inputs):
+    """Async wrapper that runs WIP agent in thread pool."""
+    import queue
+    q = queue.Queue()
+    
+    # Start the sync function in a thread
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(executor, run_wip_sync, inputs, q)
+    
+    # Yield results as they come in
+    while True:
+        # Check queue with small timeout to allow other async tasks to run
+        try:
+            result = await loop.run_in_executor(None, lambda: q.get(timeout=0.1))
+            if result is None:  # Completion signal
+                break
+            event_type, data = result
+            yield format_sse(event_type, data)
+        except queue.Empty:
+            await asyncio.sleep(0.05)  # Brief yield to event loop
 
 async def run_bond_stream(inputs):
-    """Handles the Bond agent stream events."""
-    for chunk in bond_app.stream(inputs, stream_mode="updates"):
-        # Step 1: Extract
-        if "extract" in chunk:
-            yield format_sse("status", "Core extraction complete. Searching legal statutes...")
-            partial = {
-                "parties": chunk["extract"]["parties"].model_dump() if chunk["extract"].get("parties") else {},
-                "risks": chunk["extract"]["risks"].model_dump() if chunk["extract"].get("risks") else {}
-            }
-            yield format_sse("bond_step_1", json.dumps(partial))
-            
-        # Step 2: Research
-        if "research" in chunk:
-            yield format_sse("status", "Statute research complete. Synthesizing opinion...")
-            stats = [s.model_dump() for s in chunk["research"]["researched_statutes"]]
-            yield format_sse("bond_step_2", json.dumps(stats))
-
-        # Step 3: Opinion
-        if "opinion" in chunk:
-            yield format_sse("status", "Underwriting opinion generated.")
-            if chunk["opinion"].get("opinion"):
-                op = chunk["opinion"]["opinion"].model_dump()
-                yield format_sse("bond_step_3", json.dumps(op))
-            
-            final = chunk["opinion"]["final_json"]
-            yield format_sse("result_bond_final", json.dumps(final))
+    """Async wrapper that runs Bond agent in thread pool."""
+    import queue
+    q = queue.Queue()
+    
+    # Start the sync function in a thread
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(executor, run_bond_sync, inputs, q)
+    
+    # Yield results as they come in
+    while True:
+        try:
+            result = await loop.run_in_executor(None, lambda: q.get(timeout=0.1))
+            if result is None:
+                break
+            event_type, data = result
+            yield format_sse(event_type, data)
+        except queue.Empty:
+            await asyncio.sleep(0.05)
 
 # --- Main Generator ---
 
