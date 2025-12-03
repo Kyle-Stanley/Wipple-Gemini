@@ -276,6 +276,10 @@ class ModelClient:
                 }
             })
         
+        # If JSON response is expected, add explicit instruction
+        if response_mime_type == "application/json":
+            prompt = prompt + "\n\nIMPORTANT: Return ONLY valid JSON with no markdown formatting, no ```json blocks, and no text before or after the JSON."
+        
         content.append({
             "type": "text",
             "text": prompt,
@@ -291,10 +295,6 @@ class ModelClient:
         if temperature is not None:
             request_kwargs["temperature"] = temperature
         
-        # Handle JSON response format
-        # Anthropic doesn't have response_mime_type, but we can instruct via prompt
-        # The caller should already include JSON instructions in the prompt
-        
         response = self.anthropic_client.messages.create(**request_kwargs)
         
         # Extract text from response
@@ -303,12 +303,31 @@ class ModelClient:
             if hasattr(block, 'text'):
                 text += block.text
         
+        # Clean JSON if that's what was requested
+        if response_mime_type == "application/json":
+            text = self._clean_json_response(text)
+        
         return ModelResponse(
             text=text,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             model_id=config.model_id,
         )
+    
+    def _clean_json_response(self, text: str) -> str:
+        """Strip markdown code blocks and other formatting from JSON responses."""
+        text = text.strip()
+        
+        # Remove ```json ... ``` blocks
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        
+        if text.endswith("```"):
+            text = text[:-3]
+        
+        return text.strip()
 
 
 # Module-level singleton for convenience
