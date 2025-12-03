@@ -959,12 +959,15 @@ CONTEXT: We bonded this contractor. If they default, we need to recover what we'
 Overbilling is less urgent - it means they've collected ahead of work, which is actually better for our recovery position (though it can mask problems). Mention it only if extreme.
 
 INSTRUCTIONS:
-- Write 3-4 sentences maximum
-- Lead with the most important concern for recovery risk
-- Use plain language, no jargon
-- Be direct about problems; don't soften bad news
-- If the portfolio looks healthy, say so briefly and note any minor watch items
-- Include specific dollar amounts and job counts where relevant
+- Write 3-4 sentences maximum as a single paragraph
+- DO NOT repeat basic stats like job count, total contract value, or risk tier - those are already displayed separately
+- Focus on INSIGHT: What patterns do you see? What should the underwriter watch? What's the "so what"?
+- Connect the dots between data points (e.g., "underbilling combined with thin margins means...")
+- Be specific with dollar amounts when discussing concerns
+- If the portfolio is healthy, explain WHY it's healthy, don't just say it is
+
+BAD example: "Portfolio contains 28 jobs with $38M total contract value. Risk tier: MODERATE."
+GOOD example: "Six jobs show severe underbilling totaling $708K—work done but not yet billed, which is our primary recovery concern. Margins are holding at 16% with $3.4M remaining profit providing cushion, but watch the billing lag closely."
 
 RISK ASSESSMENT:
 {risk_context}
