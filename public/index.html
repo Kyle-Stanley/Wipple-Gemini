@@ -537,7 +537,7 @@
             justify-content: space-between;
             align-items: center;
             border-bottom: 1px solid rgba(62, 62, 78, 0.5);
-            background: rgba(33, 33, 33, 0.8);
+            background: #212121;
             position: sticky;
             top: 64px;
             z-index: 10;
@@ -557,7 +557,8 @@
         .compare-panel-content {
             flex: 1;
             overflow-y: auto;
-            padding: 16px 24px;
+            padding: 20px 24px;
+            padding-top: 16px;
         }
         .compare-panel-content .widget-card {
             margin: 12px 0;
@@ -914,14 +915,22 @@
             }
         };
         
-        // Start both streams
-        startCompareStream('a', modelA, checkComplete);
-        startCompareStream('b', modelB, checkComplete);
+        // Read file into memory so we can send it twice
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const fileBytes = e.target.result;
+            const fileBlob = new Blob([fileBytes], { type: uploadedFile.type });
+            
+            // Start both streams with independent file copies
+            startCompareStream('a', modelA, new File([fileBlob], uploadedFile.name, { type: uploadedFile.type }), checkComplete);
+            startCompareStream('b', modelB, new File([fileBlob], uploadedFile.name, { type: uploadedFile.type }), checkComplete);
+        };
+        reader.readAsArrayBuffer(uploadedFile);
     }
 
-    function startCompareStream(panel, model, onComplete) {
+    function startCompareStream(panel, model, file, onComplete) {
         const formData = new FormData();
-        formData.append('file', uploadedFile);
+        formData.append('file', file);
         formData.append('model', model);
         
         fetch(API_ENDPOINT, { method: 'POST', body: formData })
