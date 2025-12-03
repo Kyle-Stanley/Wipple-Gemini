@@ -277,8 +277,6 @@
         .icon-button { color: #8e8ea0; padding: 8px; border-radius: 50%; }
         .icon-button:hover:not(:disabled) { background-color: rgba(255,255,255,0.1); color: white; }
         
-        .welcome-message { text-align: center; color: #00BFFF; margin-bottom: 14px; transition: all 0.3s; }
-        .welcome-message.hidden { opacity: 0; height: 0; margin: 0; overflow: hidden; }
         .collapse-icon { transition: transform 0.3s; }
         .collapse-icon.collapsed { transform: rotate(-90deg); }
 
@@ -414,6 +412,164 @@
             letter-spacing: 0.3px;
             opacity: 0.8;
         }
+
+        /* COMPARE MODE */
+        .controls-row {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 16px;
+            padding: 12px 0;
+            margin-bottom: 8px;
+        }
+
+        .mode-toggle {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .mode-toggle-btn {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid #3e3e4e;
+            background: transparent;
+            color: #8e8ea0;
+        }
+        .mode-toggle-btn.active {
+            background: rgba(0, 191, 255, 0.15);
+            border-color: #00BFFF;
+            color: #00BFFF;
+        }
+        .mode-toggle-btn:hover:not(.active) {
+            border-color: #565869;
+            color: #ececec;
+        }
+
+        .model-selectors {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .model-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .model-group label {
+            color: #8e8ea0;
+            font-size: 0.75rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .model-group select {
+            background-color: #1a1a1a;
+            border: 1px solid #3e3e4e;
+            border-radius: 6px;
+            color: #ececec;
+            padding: 6px 28px 6px 10px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            outline: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238e8ea0' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            transition: all 0.2s;
+        }
+        .model-group select:hover {
+            border-color: #565869;
+        }
+
+        /* Model B - hidden by default, slides in */
+        .model-group-b {
+            overflow: hidden;
+            max-width: 0;
+            opacity: 0;
+            transition: max-width 0.3s ease, opacity 0.3s ease, margin 0.3s ease;
+            margin-left: 0;
+            white-space: nowrap;
+        }
+        body.compare-mode .model-group-b {
+            max-width: 250px;
+            opacity: 1;
+            margin-left: 16px;
+        }
+
+        /* View fade transitions */
+        .messages-container {
+            animation: fadeIn 0.25s ease;
+        }
+        #compare-view {
+            animation: fadeIn 0.25s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        /* Compare layout */
+        .compare-container {
+            display: grid;
+            grid-template-columns: 1fr 1px 1fr;
+            gap: 0;
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 0;
+            min-height: calc(100vh - 200px);
+        }
+        .compare-divider {
+            background: #3e3e4e;
+            width: 1px;
+        }
+        .compare-panel {
+            display: flex;
+            flex-direction: column;
+            min-height: 400px;
+            overflow: hidden;
+        }
+        .compare-panel-header {
+            padding: 12px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(62, 62, 78, 0.5);
+            background: rgba(33, 33, 33, 0.8);
+            position: sticky;
+            top: 64px;
+            z-index: 10;
+        }
+        .compare-panel-title {
+            font-weight: 600;
+            color: #8e8ea0;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .compare-panel-model {
+            color: #ececec;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .compare-panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 24px;
+        }
+        .compare-panel-content .widget-card {
+            margin: 12px 0;
+        }
+        .compare-panel-content .agent-status {
+            margin: 8px 0;
+        }
+
+        /* Hide/show based on mode */
+        body.compare-mode .messages-container { display: none; }
+        body.compare-mode #compare-view { display: grid; }
+        #compare-view { display: none; }
     </style>
     <!-- Firebase Libraries -->
     <script type="module">
@@ -472,34 +628,69 @@
     <div id="modal-backdrop"></div>
     
     <!-- Header -->
-    <header class="h-16 flex items-center px-6 sticky top-0 z-30 bg-[#212121]" style="padding-top: 8px;">
+    <header class="h-16 flex items-center px-6 sticky top-0 z-30 bg-[#212121]" style="padding-top: 22px;">
         <img src="logo2_bw.png" alt="Wipple" class="h-14" onerror="this.style.display='none'">
     </header>
 
     <!-- Chat Window -->
     <div id="messages-window" class="messages-container p-6"></div>
 
+    <!-- Compare View (hidden by default) -->
+    <div id="compare-view" class="compare-container">
+        <div class="compare-panel panel-a">
+            <div class="compare-panel-header">
+                <span class="compare-panel-title">Model A</span>
+                <span class="compare-panel-model" id="compare-model-a-name">-</span>
+            </div>
+            <div class="compare-panel-content" id="compare-panel-a"></div>
+        </div>
+        <div class="compare-divider"></div>
+        <div class="compare-panel panel-b">
+            <div class="compare-panel-header">
+                <span class="compare-panel-title">Model B</span>
+                <span class="compare-panel-model" id="compare-model-b-name">-</span>
+            </div>
+            <div class="compare-panel-content" id="compare-panel-b"></div>
+        </div>
+    </div>
+
     <!-- Input Area -->
     <div class="fixed bottom-0 left-0 right-0 z-30 p-4 bg-[#212121]">
         <div class="max-w-3xl mx-auto">
-            <div id="welcome-message" class="welcome-message">
-                Welcome to Wipple. Upload a WIP Schedule or Bond Form to begin.
+            <!-- Unified Controls Row -->
+            <div class="controls-row">
+                <div class="mode-toggle">
+                    <button id="mode-single" class="mode-toggle-btn active">Single</button>
+                    <button id="mode-compare" class="mode-toggle-btn">Compare</button>
+                </div>
+                <div class="model-selectors">
+                    <div class="model-group">
+                        <label id="model-a-label">Model</label>
+                        <select id="model-select-a">
+                            <option value="gemini-3-pro">Gemini 3 Pro</option>
+                            <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
+                            <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+                            <option value="claude-opus-4-5">Claude Opus 4.5</option>
+                        </select>
+                    </div>
+                    <div class="model-group model-group-b">
+                        <label>Model B</label>
+                        <select id="model-select-b">
+                            <option value="claude-sonnet-4-5" selected>Claude Sonnet 4.5</option>
+                            <option value="gemini-3-pro">Gemini 3 Pro</option>
+                            <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+                            <option value="claude-opus-4-5">Claude Opus 4.5</option>
+                        </select>
+                    </div>
+                </div>
             </div>
+
             <div class="input-container flex items-center">
                 <input type="file" id="file-input" accept="application/pdf" class="hidden">
                 <button id="upload-button" class="icon-button ml-2">
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                 </button>
                 <input type="text" id="chat-input" placeholder="Message Wipple" disabled>
-                <div class="model-selector">
-                    <label for="model-select">Model</label>
-                    <select id="model-select">
-                        <option value="gemini-3-pro">Gemini 3 Pro</option>
-                        <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
-                        <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
-                        <option value="claude-opus-4-5">Claude Opus 4.5</option>
-                    </select>
-                </div>
                 <button id="send-button" class="icon-button mr-2" disabled>
                     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13L22 2L15 22L11 13L2 9L22 2Z" stroke-linejoin="round" stroke-linecap="round"/></svg>
                 </button>
@@ -516,8 +707,15 @@
     const uploadButton = document.getElementById('upload-button');
     const sendButton = document.getElementById('send-button');
     const chatInput = document.getElementById('chat-input');
-    const welcomeMessage = document.getElementById('welcome-message');
-    const modelSelect = document.getElementById('model-select');
+    const modelSelectA = document.getElementById('model-select-a');
+    const modelSelectB = document.getElementById('model-select-b');
+    const modelALabel = document.getElementById('model-a-label');
+    const modeSingleBtn = document.getElementById('mode-single');
+    const modeCompareBtn = document.getElementById('mode-compare');
+    const comparePanelA = document.getElementById('compare-panel-a');
+    const comparePanelB = document.getElementById('compare-panel-b');
+    const compareModelAName = document.getElementById('compare-model-a-name');
+    const compareModelBName = document.getElementById('compare-model-b-name');
 
     let uploadedFile = null;
     let isProcessing = false;
@@ -526,6 +724,23 @@
     let lastCalculatedTotals = null;
     let fullAnalysisContext = null;
     let selectedModel = 'gemini-3-pro';
+    let compareMode = false;
+
+    function setCompareMode(enabled) {
+        if (isProcessing) return;
+        compareMode = enabled;
+        if (enabled) {
+            document.body.classList.add('compare-mode');
+            modeCompareBtn.classList.add('active');
+            modeSingleBtn.classList.remove('active');
+            modelALabel.textContent = 'Model A';
+        } else {
+            document.body.classList.remove('compare-mode');
+            modeSingleBtn.classList.add('active');
+            modeCompareBtn.classList.remove('active');
+            modelALabel.textContent = 'Model';
+        }
+    }
 
     const agentStatusMessages = [
         "OCR Agent is scanning the document now...",
@@ -542,7 +757,12 @@
 
     window.onload = () => { uploadButton.disabled = false; chatInput.disabled = false; };
     uploadButton.addEventListener('click', () => !isProcessing && fileInput.click());
-    modelSelect.addEventListener('change', (e) => { selectedModel = e.target.value; });
+    modelSelectA.addEventListener('change', (e) => { selectedModel = e.target.value; });
+    
+    // Mode toggle handlers
+    modeSingleBtn.addEventListener('click', () => setCompareMode(false));
+    modeCompareBtn.addEventListener('click', () => setCompareMode(true));
+
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length) {
             uploadedFile = e.target.files[0];
@@ -554,7 +774,6 @@
 
     function handleSend() {
         if (!uploadedFile || isProcessing) return;
-        welcomeMessage.classList.add('hidden');
         isProcessing = true;
         sendButton.disabled = true;
         statusStep = 0;
@@ -562,7 +781,15 @@
         const fileName = uploadedFile.name;
         chatInput.value = '';
         chatInput.placeholder = "Processing...";
-        
+
+        if (compareMode) {
+            handleCompareMode(fileName);
+        } else {
+            handleSingleMode(fileName);
+        }
+    }
+
+    function handleSingleMode(fileName) {
         addMessage(`Uploaded ${fileName}`, 'user');
         addMessage(agentStatusMessages[0], 'agent-status');
         statusStep = 1;
@@ -570,7 +797,7 @@
 
         const formData = new FormData();
         formData.append('file', uploadedFile);
-        formData.append('model', selectedModel);
+        formData.append('model', modelSelectA.value);
 
         fetch(API_ENDPOINT, { method: 'POST', body: formData })
         .then(response => {
@@ -605,7 +832,6 @@
                                 addMessage("Error processing file.", 'error');
                             }
                             else if (type === 'router') {
-                                // Router type already shown in status message, no need to repeat
                                 removeLoading();
                                 showLoading();
                             }
@@ -623,7 +849,6 @@
                             }
                             else if (type === 'result_bond_final') {
                                 fullAnalysisContext = JSON.parse(dataStr);
-                                // Render metrics widget for bond
                                 if (fullAnalysisContext.metrics) {
                                     const metricsDiv = document.createElement('div');
                                     metricsDiv.className = 'mb-4';
@@ -654,6 +879,286 @@
             }
             read();
         });
+    }
+
+    function handleCompareMode(fileName) {
+        // Clear previous compare results
+        comparePanelA.innerHTML = '';
+        comparePanelB.innerHTML = '';
+        
+        const modelA = modelSelectA.value;
+        const modelB = modelSelectB.value;
+        
+        // Update header names
+        const modelNames = {
+            'gemini-3-pro': 'Gemini 3 Pro',
+            'claude-sonnet-4-5': 'Claude Sonnet 4.5',
+            'claude-haiku-4-5': 'Claude Haiku 4.5',
+            'claude-opus-4-5': 'Claude Opus 4.5'
+        };
+        compareModelAName.textContent = modelNames[modelA] || modelA;
+        compareModelBName.textContent = modelNames[modelB] || modelB;
+        
+        // Show initial status in both panels
+        addCompareMessage('a', 'Starting analysis...', 'agent-status');
+        addCompareMessage('b', 'Starting analysis...', 'agent-status');
+        showCompareLoading('a');
+        showCompareLoading('b');
+        
+        let completedCount = 0;
+        const checkComplete = () => {
+            completedCount++;
+            if (completedCount >= 2) {
+                isProcessing = false;
+                resetUI();
+            }
+        };
+        
+        // Start both streams
+        startCompareStream('a', modelA, checkComplete);
+        startCompareStream('b', modelB, checkComplete);
+    }
+
+    function startCompareStream(panel, model, onComplete) {
+        const formData = new FormData();
+        formData.append('file', uploadedFile);
+        formData.append('model', model);
+        
+        fetch(API_ENDPOINT, { method: 'POST', body: formData })
+        .then(response => {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            function read() {
+                reader.read().then(({done, value}) => {
+                    if (done) {
+                        removeCompareLoading(panel);
+                        onComplete();
+                        return;
+                    }
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop();
+
+                    lines.forEach(line => {
+                        if (line.startsWith('event: ')) {
+                            const type = line.split('\n')[0].replace('event: ', '').trim();
+                            const dataStr = line.split('data: ')[1];
+                            
+                            if (type === 'status') {
+                                removeCompareLoading(panel);
+                                addCompareMessage(panel, dataStr, 'agent-status');
+                                showCompareLoading(panel);
+                            }
+                            else if (type === 'error') {
+                                removeCompareLoading(panel);
+                                addCompareMessage(panel, "Error processing file.", 'error');
+                            }
+                            else if (type === 'bond_step_1') {
+                                const data = JSON.parse(dataStr);
+                                renderCompareBondWidget1(panel, data);
+                            }
+                            else if (type === 'bond_step_2') {
+                                const data = JSON.parse(dataStr);
+                                renderCompareBondWidget2(panel, data);
+                            }
+                            else if (type === 'bond_step_3') {
+                                const data = JSON.parse(dataStr);
+                                renderCompareBondWidget3(panel, data);
+                            }
+                            else if (type === 'result_bond_final') {
+                                const result = JSON.parse(dataStr);
+                                if (result.metrics) {
+                                    addCompareWidget(panel, renderMetricsWidget(result.metrics));
+                                }
+                            }
+                            else if (type === 'result_wip') {
+                                removeCompareLoading(panel);
+                                const payload = JSON.parse(dataStr);
+                                const data = payload.data;
+                                renderCompareResults(panel, data);
+                            }
+                        }
+                    });
+                    read();
+                });
+            }
+            read();
+        });
+    }
+
+    // Compare mode helper functions
+    function getComparePanel(panel) {
+        return panel === 'a' ? comparePanelA : comparePanelB;
+    }
+
+    function addCompareMessage(panel, text, type) {
+        const container = getComparePanel(panel);
+        const div = document.createElement('div');
+        div.className = 'mb-2';
+        if (type === 'agent-status') {
+            div.innerHTML = `<div class="agent-status">${text}</div>`;
+        } else {
+            div.innerHTML = `<div class="ai-message">${text}</div>`;
+        }
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function addCompareWidget(panel, html) {
+        const container = getComparePanel(panel);
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+    }
+
+    let compareLoadingA = null;
+    let compareLoadingB = null;
+
+    function showCompareLoading(panel) {
+        const container = getComparePanel(panel);
+        const loadingDiv = document.createElement('div');
+        loadingDiv.className = 'agent-status mb-2 compare-loading';
+        loadingDiv.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+        container.appendChild(loadingDiv);
+        container.scrollTop = container.scrollHeight;
+        
+        if (panel === 'a') compareLoadingA = loadingDiv;
+        else compareLoadingB = loadingDiv;
+    }
+
+    function removeCompareLoading(panel) {
+        const loadingDiv = panel === 'a' ? compareLoadingA : compareLoadingB;
+        if (loadingDiv) {
+            loadingDiv.remove();
+            if (panel === 'a') compareLoadingA = null;
+            else compareLoadingB = null;
+        }
+    }
+
+    function renderCompareResults(panel, data) {
+        const container = getComparePanel(panel);
+        const wd = data.widget_data;
+        const m = wd.metrics;
+
+        // Validation Widget
+        const valDiv = document.createElement('div');
+        valDiv.innerHTML = renderValidationWidget(wd.validations);
+        container.appendChild(valDiv);
+
+        // Dashboard Widget
+        const dashDiv = document.createElement('div');
+        dashDiv.innerHTML = renderDashboardWidget(wd, m);
+        container.appendChild(dashDiv);
+
+        // Metrics Widget
+        if (data.metrics) {
+            const metricsDiv = document.createElement('div');
+            metricsDiv.innerHTML = renderMetricsWidget(data.metrics);
+            container.appendChild(metricsDiv);
+        }
+
+        setupCollapsibles();
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function renderCompareBondWidget1(panel, data) {
+        const container = getComparePanel(panel);
+        const p = data.parties;
+        const r = data.risks;
+        
+        const html = `
+        <div class="widget-card">
+            <div class="widget-header">
+                <span class="font-semibold">Bond Analysis</span>
+                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="widget-content">
+                <div style="padding: 16px;">
+                    <div class="bond-grid">
+                        <div class="bond-cell">
+                            <div class="bond-label">Principal</div>
+                            <div class="bond-value" style="font-size: 0.85rem;">${p.principal_name}</div>
+                        </div>
+                        <div class="bond-cell">
+                            <div class="bond-label">Obligee</div>
+                            <div class="bond-value" style="font-size: 0.85rem;">${p.obligee_name}</div>
+                        </div>
+                        <div class="bond-cell">
+                            <div class="bond-label">Penal Sum</div>
+                            <div class="bond-value" style="font-size: 0.85rem;">${p.penal_sum}</div>
+                        </div>
+                        <div class="bond-cell">
+                            <div class="bond-label">Bond Type</div>
+                            <div class="bond-value" style="font-size: 0.85rem;">${r.bond_type}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+        
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        container.appendChild(div);
+        setupCollapsibles();
+    }
+
+    function renderCompareBondWidget2(panel, statutes) {
+        const container = getComparePanel(panel);
+        if (!statutes || statutes.length === 0) return;
+        
+        const html = `
+        <div class="widget-card">
+            <div class="widget-header">
+                <span class="font-semibold">Statutes (${statutes.length})</span>
+                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="widget-content">
+                <div style="padding: 16px; font-size: 0.85rem; color: #d1d5db;">
+                    ${statutes.map(s => s.citation).join(', ')}
+                </div>
+            </div>
+        </div>`;
+        
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        container.appendChild(div);
+        setupCollapsibles();
+    }
+
+    function renderCompareBondWidget3(panel, op) {
+        const container = getComparePanel(panel);
+        
+        const html = `
+        <div class="widget-card">
+            <div class="widget-header">
+                <span class="font-semibold">Opinion: ${op.recommendation}</span>
+                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="widget-content">
+                <div style="padding: 16px;">
+                    <div style="margin-bottom: 12px;">
+                        <div class="bond-label">Bond Description</div>
+                        <div class="bond-value" style="font-size: 0.85rem;">${op.bond_description}</div>
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <div class="bond-label">Who Must Post</div>
+                        <div class="bond-value-sm">${op.who_must_post}</div>
+                    </div>
+                    <div>
+                        <div class="bond-label">Cancellation</div>
+                        <div class="bond-value-sm">${op.cancellation_summary}</div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+        
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        container.appendChild(div);
+        setupCollapsibles();
     }
 
     function addMessage(text, type) {
