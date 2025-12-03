@@ -1,21 +1,18 @@
 import os
 import json
+import re
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
-from google import genai
-from google.genai import types
+
+# Model client abstraction
+from model_client import get_client, MetricsTracker, DEFAULT_MODEL
 
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
 
-if "GOOGLE_API_KEY" not in os.environ:
-    os.environ["GOOGLE_API_KEY"] = "" 
-
-# Primary client for extraction & opinion
-client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-MODEL_NAME = "gemini-3-pro-preview"
+# No longer need direct client initialization - handled by model_client
 
 # ==========================================
 # 2. DATA MODELS
@@ -71,6 +68,9 @@ class UnderwritingOpinion(BaseModel):
 
 class BondState(BaseModel):
     file_path: str
+    model_name: str = DEFAULT_MODEL
+    # Metrics tracker stored as dict for Pydantic serialization
+    metrics_data: Dict[str, Any] = {}
     # Step 1 Data
     parties: Optional[BondParties] = None
     risks: Optional[RiskClauses] = None
@@ -89,14 +89,18 @@ class BondState(BaseModel):
 def extraction_node(state: BondState):
     """Step 1: Extract hard data and identify citations."""
     print(f"--- BOND AGENT: EXTRACTING DATA ---")
+    print(f"--- USING MODEL: {state.model_name} ---")
+    
+    # Initialize metrics tracker
+    tracker = MetricsTracker(model_name=state.model_name)
+    client = get_client()
     
     try:
         with open(state.file_path, "rb") as f:
             file_bytes = f.read()
     except:
-        return {}
+        return {"metrics_data": tracker.get_metrics()}
 
-    # Standard string (no f-string needed here)
     prompt = """
     Analyze this Bond Form/Contract. Extract the following:
     1. The Parties (Principal, Obligee, Surety) and Penal Sum.
@@ -135,11 +139,12 @@ def extraction_node(state: BondState):
     """
 
     try:
-        # FIX: Removed temperature=0.0 to prevent looping
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), prompt],
-            config=types.GenerateContentConfig(response_mime_type="application/json")
+        response = client.generate_content(
+            prompt=prompt,
+            model_name=state.model_name,
+            pdf_bytes=file_bytes,
+            response_mime_type="application/json",
+            tracker=tracker,
         )
         
         data = json.loads(response.text)
@@ -147,65 +152,101 @@ def extraction_node(state: BondState):
         return {
             "parties": BondParties(**data.get("parties", {})),
             "risks": RiskClauses(**data.get("risks", {})),
-            "identified_citations": data.get("identified_citations", [])
+            "identified_citations": data.get("identified_citations", []),
+            "metrics_data": tracker.get_metrics(),
         }
     except Exception as e:
         print(f"Extraction Error: {e}")
-        return {}
+        return {"metrics_data": tracker.get_metrics()}
 
 def research_node(state: BondState):
     """Step 2: Use Google Search to look up the identified statutes."""
     print(f"--- BOND AGENT: RESEARCHING STATUTES ---")
+    print(f"--- USING MODEL: {state.model_name} ---")
+    
+    # Rebuild tracker from stored metrics
+    prev_metrics = state.metrics_data or {}
+    tracker = MetricsTracker(model_name=state.model_name)
+    tracker.total_input_tokens = prev_metrics.get("tokens", {}).get("input", 0)
+    tracker.total_output_tokens = prev_metrics.get("tokens", {}).get("output", 0)
+    tracker.call_count = prev_metrics.get("api_calls", 0)
+    
+    client = get_client()
     
     citations = state.identified_citations
     if not citations:
-        return {"researched_statutes": []}
+        return {"researched_statutes": [], "metrics_data": tracker.get_metrics()}
 
     # Search for each statute individually to ensure grounding
     researched = []
     
+    # Note: Google Search grounding only works with Gemini models
+    # For Anthropic models, we'll skip the search and mark as not found
+    is_google_model = state.model_name.startswith("gemini")
+    
     for citation in citations:
         print(f"Searching for: {citation}")
         
-        # REFACTORED: Use standard string with .replace() to avoid f-string syntax errors
-        # This fixes the "Line 185" commenting issue.
-        search_prompt_template = """
-        Find information about this legal statute: "CITATION_PLACEHOLDER"
+        search_prompt = f"""
+        Find information about this legal statute: "{citation}"
         
         Use Google Search to find the official statute text.
         
         Return ONLY information you can verify from search results. If you cannot find it, set "found": false.
         
         Return JSON:
-        {
-            "citation": "CITATION_PLACEHOLDER",
+        {{
+            "citation": "{citation}",
             "name": "Official name of the statute/act",
             "verbatim_text": "2-3 sentence excerpt from the official source you found",
             "plain_summary": "1 sentence plain summary",
             "source_link": "The actual URL from search results",
             "found": true or false
-        }
+        }}
         """
         
-        search_prompt = search_prompt_template.replace("CITATION_PLACEHOLDER", citation)
-        
         try:
-            # FIX: Removed temperature=0.0 to prevent looping
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=search_prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    response_mime_type="application/json"
+            if is_google_model:
+                # Use Google Search grounding
+                response = client.generate_content(
+                    prompt=search_prompt,
+                    model_name=state.model_name,
+                    response_mime_type="application/json",
+                    use_google_search=True,
+                    tracker=tracker,
                 )
-            )
+            else:
+                # For non-Google models, provide context that search isn't available
+                no_search_prompt = f"""
+                I need information about this legal statute: "{citation}"
+                
+                Based on your knowledge, provide what you know about this statute.
+                If you're not certain, set "found": false.
+                
+                Return JSON:
+                {{
+                    "citation": "{citation}",
+                    "name": "Official name of the statute/act if known",
+                    "verbatim_text": "General description of what this statute covers",
+                    "plain_summary": "1 sentence plain summary",
+                    "source_link": null,
+                    "found": false
+                }}
+                
+                Note: Set found to false since we cannot verify with live search.
+                """
+                response = client.generate_content(
+                    prompt=no_search_prompt,
+                    model_name=state.model_name,
+                    response_mime_type="application/json",
+                    tracker=tracker,
+                )
             
             # Robust JSON parsing
             try:
                 data = json.loads(response.text)
             except json.JSONDecodeError:
                 # Fallback: Try to find JSON within the response text if it's mixed with markdown
-                import re
                 json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
                 if json_match:
                     data = json.loads(json_match.group(0))
@@ -224,7 +265,7 @@ def research_node(state: BondState):
 
             # Validate: if found=true but no source_link, mark as suspicious
             if citation_data['found'] and not citation_data['source_link']:
-                print(f"  ⚠ WARNING: Marked as found but no source link provided")
+                print(f"  WARNING: Marked as found but no source link provided")
                 citation_data['found'] = False
                 citation_data['verbatim_text'] = "Statute identified but could not retrieve official text"
                 citation_data['plain_summary'] = "Unable to verify statute details"
@@ -242,29 +283,37 @@ def research_node(state: BondState):
                 found=False
             ))
     
-    return {"researched_statutes": researched}
+    return {"researched_statutes": researched, "metrics_data": tracker.get_metrics()}
 
 def opinion_node(state: BondState):
     """Step 3: Synthesize the Underwriting Opinion."""
     print(f"--- BOND AGENT: SYNTHESIZING OPINION ---")
+    print(f"--- USING MODEL: {state.model_name} ---")
+    
+    # Rebuild tracker from stored metrics
+    prev_metrics = state.metrics_data or {}
+    tracker = MetricsTracker(model_name=state.model_name)
+    tracker.total_input_tokens = prev_metrics.get("tokens", {}).get("input", 0)
+    tracker.total_output_tokens = prev_metrics.get("tokens", {}).get("output", 0)
+    tracker.call_count = prev_metrics.get("api_calls", 0)
+    
+    client = get_client()
     
     # Prepare context
     parties_txt = state.parties.model_dump_json() if state.parties else ""
     risks_txt = state.risks.model_dump_json() if state.risks else ""
     statutes_txt = json.dumps([s.model_dump() for s in state.researched_statutes])
 
-    # REFACTORED: Use standard string with .replace() to avoid f-string syntax errors
-    # This fixes the "Line 223" docstring highlighting issue.
-    prompt_template = """
+    prompt = f"""
     Generate a Commercial Underwriting Opinion for this bond in the exact structured format required.
     
     Data Available:
-    Parties: PARTIES_PLACEHOLDER
-    Risks: RISKS_PLACEHOLDER
-    Statutory Research: STATUTES_PLACEHOLDER
+    Parties: {parties_txt}
+    Risks: {risks_txt}
+    Statutory Research: {statutes_txt}
     
     Generate JSON with ALL fields:
-    {
+    {{
         "risk_state": "State inferred from obligee/statutes",
         "obligee": "Name of obligee from parties data",
         "bond_description": "Brief purpose/type of bond",
@@ -284,21 +333,18 @@ def opinion_node(state: BondState):
         "cancellation_summary": "Plain language summary of notice period",
         
         "recommendation": "Approve / Decline / Refer - with brief reasoning"
-    }
+    }}
     
     Be thorough and specific. Use the researched statutes to inform the legal opinion components.
     """
-    
-    prompt = prompt_template.replace("PARTIES_PLACEHOLDER", parties_txt)
-    prompt = prompt.replace("RISKS_PLACEHOLDER", risks_txt)
-    prompt = prompt.replace("STATUTES_PLACEHOLDER", statutes_txt)
 
     try:
-        # FIX: Adjusted temperature to 0.2 for creativity in opinion
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2)
+        response = client.generate_content(
+            prompt=prompt,
+            model_name=state.model_name,
+            response_mime_type="application/json",
+            temperature=0.2,
+            tracker=tracker,
         )
         
         data = json.loads(response.text)
@@ -316,14 +362,15 @@ def opinion_node(state: BondState):
             },
             "step_3": {
                 "opinion": opinion.model_dump()
-            }
+            },
+            "metrics": tracker.get_metrics(),
         }
         
-        return {"opinion": opinion, "final_json": final_payload}
+        return {"opinion": opinion, "final_json": final_payload, "metrics_data": tracker.get_metrics()}
 
     except Exception as e:
         print(f"Opinion Error: {e}")
-        return {"final_json": {"error": str(e)}}
+        return {"final_json": {"error": str(e), "metrics": tracker.get_metrics()}, "metrics_data": tracker.get_metrics()}
 
 # ==========================================
 # 4. GRAPH SETUP
