@@ -255,6 +255,8 @@ async def analyze_stream(
         file: The PDF document to analyze
         model: Model key from SUPPORTED_MODELS (e.g., "claude-sonnet-4-5", "gemini-3-pro")
     """
+    import uuid
+    
     print(f"--- RECEIVING FILE: {file.filename} ---")
     print(f"--- SELECTED MODEL: {model} ---")
     
@@ -263,7 +265,9 @@ async def analyze_stream(
         print(f"WARNING: Unknown model '{model}', falling back to {DEFAULT_MODEL}")
         model = DEFAULT_MODEL
     
-    temp_filename = f"temp_{file.filename}"
+    # Use unique temp filename to prevent race conditions with parallel requests
+    unique_id = uuid.uuid4().hex[:8]
+    temp_filename = f"temp_{unique_id}_{file.filename}"
     with open(temp_filename, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
@@ -279,12 +283,15 @@ async def analyze_wip_stream_legacy(
     model: str = Form(default=DEFAULT_MODEL)
 ):
     """Legacy endpoint - redirects to new unified endpoint"""
+    import uuid
+    
     print(f"--- LEGACY ENDPOINT CALLED: {file.filename} ---")
     
     if model not in SUPPORTED_MODELS:
         model = DEFAULT_MODEL
     
-    temp_filename = f"temp_{file.filename}"
+    unique_id = uuid.uuid4().hex[:8]
+    temp_filename = f"temp_{unique_id}_{file.filename}"
     with open(temp_filename, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
