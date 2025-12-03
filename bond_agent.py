@@ -170,6 +170,7 @@ def research_node(state: BondState):
     tracker.total_input_tokens = prev_metrics.get("tokens", {}).get("input", 0)
     tracker.total_output_tokens = prev_metrics.get("tokens", {}).get("output", 0)
     tracker.call_count = prev_metrics.get("api_calls", 0)
+    tracker.start_time = prev_metrics.get("_start_time", tracker.start_time)
     
     client = get_client()
     
@@ -296,6 +297,7 @@ def opinion_node(state: BondState):
     tracker.total_input_tokens = prev_metrics.get("tokens", {}).get("input", 0)
     tracker.total_output_tokens = prev_metrics.get("tokens", {}).get("output", 0)
     tracker.call_count = prev_metrics.get("api_calls", 0)
+    tracker.start_time = prev_metrics.get("_start_time", tracker.start_time)
     
     client = get_client()
     
