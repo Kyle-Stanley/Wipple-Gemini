@@ -626,7 +626,7 @@
     <div id="modal-backdrop"></div>
     
     <!-- Header -->
-    <header class="h-16 flex items-center px-6 sticky top-0 z-30 bg-[#212121]" style="padding-top: 22px;">
+    <header class="h-16 flex items-center px-6 sticky top-0 z-30 bg-[#212121]" style="padding-top: 12px;">
         <img src="logo2_bw.png" alt="Wipple" class="h-14" onerror="this.style.display='none'">
     </header>
 
@@ -932,6 +932,9 @@
         
         fetch(API_ENDPOINT, { method: 'POST', body: formData })
         .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
@@ -991,6 +994,12 @@
                 });
             }
             read();
+        })
+        .catch(err => {
+            console.error(`Stream ${panel} error:`, err);
+            removeCompareLoading(panel);
+            addCompareMessage(panel, `Error: ${err.message}`, 'error');
+            onComplete();
         });
     }
 
