@@ -113,6 +113,7 @@ class MetricsTracker:
             "model_name": self.model_name,
             "model_display_name": display_name,
             "total_time_seconds": round(elapsed, 2),
+            "_start_time": self.start_time,  # Preserve for accumulation across nodes
             "tokens": {
                 "input": self.total_input_tokens,
                 "output": self.total_output_tokens,
