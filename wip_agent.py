@@ -5,18 +5,15 @@ from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass
 from pydantic import BaseModel, Field, computed_field
 from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
-from google import genai
-from google.genai import types
+
+# Model client abstraction
+from model_client import get_client, MetricsTracker, DEFAULT_MODEL
 
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-MODEL_NAME = "gemini-3-pro-preview"
-llm = ChatGoogleGenerativeAI(
-    model=MODEL_NAME
-)
+
+# No longer need direct client initialization - handled by model_client
 
 # ==========================================
 # 2. DATA MODELS
@@ -65,6 +62,9 @@ class CalculatedWipRow(FullWipRow):
 
 class WipState(BaseModel):
     file_path: str
+    model_name: str = DEFAULT_MODEL
+    # Metrics tracker stored as dict for Pydantic serialization
+    metrics_data: Dict[str, Any] = {}
     processed_data: List[CalculatedWipRow] = []
     totals_row: Optional[WipTotals] = None
     calculated_totals: Optional[WipTotals] = None
@@ -113,7 +113,7 @@ def build_validations() -> List[Validation]:
             name="contract_cost_gp",
             requires=["total_contract_price", "estimated_total_costs", "estimated_gross_profit"],
             check=lambda r: (
-                f"Contract - Est Cost ≠ Est GP (diff ${abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit):,.0f})"
+                f"Contract - Est Cost != Est GP (diff ${abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit):,.0f})"
                 if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 100
                 else None
             ),
@@ -126,7 +126,7 @@ def build_validations() -> List[Validation]:
             name="cost_to_complete_check",
             requires=["estimated_total_costs", "cost_to_date", "cost_to_complete"],
             check=lambda r: (
-                f"Est Cost - Cost to Date ≠ CTC (diff ${abs((r.estimated_total_costs - r.cost_to_date) - r.cost_to_complete):,.0f})"
+                f"Est Cost - Cost to Date != CTC (diff ${abs((r.estimated_total_costs - r.cost_to_date) - r.cost_to_complete):,.0f})"
                 if abs((r.estimated_total_costs - r.cost_to_date) - r.cost_to_complete) > 100
                 else None
             ),
@@ -139,7 +139,7 @@ def build_validations() -> List[Validation]:
             name="earned_revenue_from_gp",
             requires=["revenues_earned", "cost_to_date", "gross_profit_to_date"],
             check=lambda r: (
-                f"Cost + GP to Date ≠ Earned Rev (diff ${abs(r.revenues_earned - (r.cost_to_date + r.gross_profit_to_date)):,.0f})"
+                f"Cost + GP to Date != Earned Rev (diff ${abs(r.revenues_earned - (r.cost_to_date + r.gross_profit_to_date)):,.0f})"
                 if abs(r.revenues_earned - (r.cost_to_date + r.gross_profit_to_date)) > 100
                 else None
             ),
@@ -167,7 +167,7 @@ def build_validations() -> List[Validation]:
             name="earned_revenue_from_poc",
             requires=["revenues_earned", "total_contract_price", "cost_to_date", "estimated_total_costs"],
             check=lambda r: (
-                f"Earned Rev ≠ Contract × POC (diff ${abs(r.revenues_earned - (r.total_contract_price * (r.cost_to_date / r.estimated_total_costs if r.estimated_total_costs else 0))):,.0f})"
+                f"Earned Rev != Contract x POC (diff ${abs(r.revenues_earned - (r.total_contract_price * (r.cost_to_date / r.estimated_total_costs if r.estimated_total_costs else 0))):,.0f})"
                 if r.estimated_total_costs and abs(r.revenues_earned - (r.total_contract_price * (r.cost_to_date / r.estimated_total_costs))) > max(5000, r.total_contract_price * 0.02)
                 else None
             ),
@@ -357,13 +357,13 @@ def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> 
             ]
         
         elif validation_name == "earned_revenue_from_poc":
-            # Formula: Earned Rev = Contract × POC
+            # Formula: Earned Rev = Contract x POC
             if row.estimated_total_costs > 0:
                 poc = row.cost_to_date / row.estimated_total_costs
                 expected_rev = row.total_contract_price * poc
                 candidates = [
                     {"field": "revenues_earned", "current": row.revenues_earned,
-                     "suggested": expected_rev, "formula": "Earned Rev = Contract × POC"},
+                     "suggested": expected_rev, "formula": "Earned Rev = Contract x POC"},
                 ]
         
         # Find the best fix among candidates
@@ -632,17 +632,22 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
     return risks
 
 # ==========================================
-# 6. EXTRACTOR NODE (unchanged from original)
+# 6. EXTRACTOR NODE
 # ==========================================
 
 def extractor_node(state: WipState):
     print(f"\n--- EXTRACTING DATA FROM: {state.file_path} ---")
+    print(f"--- USING MODEL: {state.model_name} ---")
+    
+    # Initialize metrics tracker
+    tracker = MetricsTracker(model_name=state.model_name)
+    client = get_client()
     
     try:
         with open(state.file_path, "rb") as f:
             file_bytes = f.read()
     except FileNotFoundError:
-        return {"processed_data": [], "totals_row": None}
+        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics()}
 
     prompt = """
     Extract the WIP Schedule table.
@@ -666,7 +671,7 @@ def extractor_node(state: WipState):
        - Column headers: "Estimated Cost", "Total Est Cost", "Est Total Costs"
        - Formula: Cost to Date + Cost to Complete = Estimated Total Costs
 
-    VALIDATION: For each row, verify: Cost to Date + Cost to Complete ≈ Estimated Total Costs
+    VALIDATION: For each row, verify: Cost to Date + Cost to Complete = Estimated Total Costs
     
     UNDER vs OVER BILLINGS:
     - UNDER BILLINGS (UB): Earned Revenue > Billed to Date (work done but not yet billed)
@@ -702,10 +707,12 @@ def extractor_node(state: WipState):
     """
 
     try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), prompt],
-            config=types.GenerateContentConfig(response_mime_type="application/json")
+        response = client.generate_content(
+            prompt=prompt,
+            model_name=state.model_name,
+            pdf_bytes=file_bytes,
+            response_mime_type="application/json",
+            tracker=tracker,
         )
         
         data = json.loads(response.text)
@@ -718,11 +725,11 @@ def extractor_node(state: WipState):
             except Exception as e:
                 print(f"Warning: Could not parse totals row: {e}")
         
-        return {"processed_data": rows, "totals_row": totals}
+        return {"processed_data": rows, "totals_row": totals, "metrics_data": tracker.get_metrics()}
         
     except Exception as e:
         print(f"Extraction Error: {e}")
-        return {"processed_data": [], "totals_row": None}
+        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics()}
 
 # ==========================================
 # 7. ANALYST NODE
@@ -944,12 +951,12 @@ You are a surety underwriting analyst writing a brief summary for a senior under
 
 CONTEXT: We bonded this contractor. If they default, we need to recover what we're owed. Our concerns, in priority order:
 
-1. CASH POSITION — Severe underbilling means work done but cash not collected. This is our biggest concern because it directly impacts recovery.
-2. LOSS JOBS — Negative margin jobs burn cash and reduce their ability to pay us.
-3. MARGIN EROSION — Jobs where profit is fading signal estimating problems or emerging losses.
-4. CONCENTRATION — One big job going bad can sink everything.
+1. CASH POSITION - Severe underbilling means work done but cash not collected. This is our biggest concern because it directly impacts recovery.
+2. LOSS JOBS - Negative margin jobs burn cash and reduce their ability to pay us.
+3. MARGIN EROSION - Jobs where profit is fading signal estimating problems or emerging losses.
+4. CONCENTRATION - One big job going bad can sink everything.
 
-Overbilling is less urgent—it means they've collected ahead of work, which is actually better for our recovery position (though it can mask problems). Mention it only if extreme.
+Overbilling is less urgent - it means they've collected ahead of work, which is actually better for our recovery position (though it can mask problems). Mention it only if extreme.
 
 INSTRUCTIONS:
 - Write 3-4 sentences maximum
@@ -966,6 +973,17 @@ SUMMARY:"""
 
 def narrative_node(state: WipState):
     print("--- GENERATING NARRATIVE ---")
+    print(f"--- USING MODEL: {state.model_name} ---")
+    
+    # Rebuild tracker from stored metrics and continue accumulating
+    prev_metrics = state.metrics_data or {}
+    tracker = MetricsTracker(model_name=state.model_name)
+    tracker.total_input_tokens = prev_metrics.get("tokens", {}).get("input", 0)
+    tracker.total_output_tokens = prev_metrics.get("tokens", {}).get("output", 0)
+    tracker.call_count = prev_metrics.get("api_calls", 0)
+    tracker.start_time = prev_metrics.get("_start_time", tracker.start_time)
+    
+    client = get_client()
     
     try:
         risk_context = state.surety_risk_context
@@ -974,24 +992,23 @@ def narrative_node(state: WipState):
             print("No risk context available for narrative")
             widget_data = state.widget_data.copy() if state.widget_data else {}
             widget_data["summary"] = {"text": "Unable to generate narrative: no risk context available."}
-            return {"narrative": "Unable to generate narrative: no risk context available.", "widget_data": widget_data}
+            return {"narrative": "Unable to generate narrative: no risk context available.", "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
         
         # Check for error in risk context (from analyst node failure)
         if "error" in risk_context:
             print(f"Risk context contains error: {risk_context.get('error')}")
             widget_data = state.widget_data.copy() if state.widget_data else {}
             widget_data["summary"] = {"text": f"Analysis error: {risk_context.get('error')}"}
-            return {"narrative": f"Analysis error: {risk_context.get('error')}", "widget_data": widget_data}
+            return {"narrative": f"Analysis error: {risk_context.get('error')}", "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
         
         prompt = SURETY_NARRATIVE_PROMPT.format(risk_context=json.dumps(risk_context, indent=2))
         
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[prompt],
-            config=types.GenerateContentConfig(
-                temperature=0.3,
-                max_output_tokens=250
-            )
+        response = client.generate_content(
+            prompt=prompt,
+            model_name=state.model_name,
+            temperature=0.3,
+            max_tokens=250,
+            tracker=tracker,
         )
         
         narrative = response.text.strip()
@@ -1000,7 +1017,7 @@ def narrative_node(state: WipState):
         widget_data = state.widget_data.copy() if state.widget_data else {}
         widget_data["summary"] = {"text": narrative}
         
-        return {"narrative": narrative, "widget_data": widget_data}
+        return {"narrative": narrative, "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
         
     except Exception as e:
         print(f"NARRATIVE NODE ERROR: {e}")
@@ -1023,7 +1040,7 @@ def narrative_node(state: WipState):
         widget_data["summary"] = {"text": fallback}
         widget_data["narrative_error"] = str(e)
         
-        return {"narrative": fallback, "widget_data": widget_data}
+        return {"narrative": fallback, "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
 
 # ==========================================
 # 9. OUTPUT NODE
@@ -1039,7 +1056,8 @@ def output_node(state: WipState):
             "validation_errors": state.validation_errors or [],
             "correction_suggestions": state.correction_suggestions or [],
             "surety_risk_context": state.surety_risk_context or {},
-            "widget_data": state.widget_data or {}
+            "widget_data": state.widget_data or {},
+            "metrics": state.metrics_data or {},
         }
         
         return {"final_json": payload}
@@ -1056,7 +1074,8 @@ def output_node(state: WipState):
                 "validation_errors": [],
                 "correction_suggestions": [],
                 "surety_risk_context": {},
-                "widget_data": {"error": str(e)}
+                "widget_data": {"error": str(e)},
+                "metrics": state.metrics_data or {},
             }
         }
 
