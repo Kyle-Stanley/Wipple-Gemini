@@ -316,6 +316,104 @@
         .opinion-subsection:last-child { border-bottom: none; padding-bottom: 0; }
         .opinion-label { color: #8e8ea0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
         .opinion-text { color: #ececec; font-size: 0.9rem; line-height: 1.6; }
+
+        /* MODEL SELECTOR */
+        .model-selector {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-right: 12px;
+        }
+        .model-selector label {
+            color: #8e8ea0;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .model-selector select {
+            background-color: #1a1a1a;
+            border: 1px solid #3e3e4e;
+            border-radius: 6px;
+            color: #ececec;
+            padding: 6px 28px 6px 10px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            outline: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238e8ea0' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            transition: all 0.2s;
+        }
+        .model-selector select:hover {
+            border-color: #565869;
+        }
+        .model-selector select:focus {
+            border-color: #00BFFF;
+        }
+
+        /* METRICS WIDGET */
+        .metrics-widget {
+            background: linear-gradient(180deg, #1a1a1a 0%, #151515 100%);
+            border: 1px solid #3e3e4e;
+            border-radius: 10px;
+            padding: 14px 18px;
+            margin: 16px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+        }
+        .metrics-widget-title {
+            color: #8e8ea0;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .metrics-model-name {
+            color: #00BFFF;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+        .metrics-stats {
+            display: flex;
+            gap: 24px;
+        }
+        .metrics-stat {
+            text-align: center;
+        }
+        .metrics-stat-value {
+            color: #ececec;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+        .metrics-stat-label {
+            color: #8e8ea0;
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-top: 2px;
+        }
+        .metrics-cost {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 6px;
+            padding: 8px 14px;
+            text-align: center;
+        }
+        .metrics-cost-value {
+            color: #10b981;
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+        .metrics-cost-label {
+            color: #10b981;
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            opacity: 0.8;
+        }
     </style>
     <!-- Firebase Libraries -->
     <script type="module">
@@ -374,7 +472,7 @@
     <div id="modal-backdrop"></div>
     
     <!-- Header -->
-    <header class="h-16 flex items-center px-6 sticky top-0 z-30 bg-[#212121]">
+    <header class="h-16 flex items-center px-6 sticky top-0 z-30 bg-[#212121]" style="padding-top: 8px;">
         <img src="logo2_bw.png" alt="Wipple" class="h-14" onerror="this.style.display='none'">
     </header>
 
@@ -393,6 +491,15 @@
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                 </button>
                 <input type="text" id="chat-input" placeholder="Message Wipple" disabled>
+                <div class="model-selector">
+                    <label for="model-select">Model</label>
+                    <select id="model-select">
+                        <option value="gemini-3-pro">Gemini 3 Pro</option>
+                        <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
+                        <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+                        <option value="claude-opus-4-5">Claude Opus 4.5</option>
+                    </select>
+                </div>
                 <button id="send-button" class="icon-button mr-2" disabled>
                     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13L22 2L15 22L11 13L2 9L22 2Z" stroke-linejoin="round" stroke-linecap="round"/></svg>
                 </button>
@@ -410,6 +517,7 @@
     const sendButton = document.getElementById('send-button');
     const chatInput = document.getElementById('chat-input');
     const welcomeMessage = document.getElementById('welcome-message');
+    const modelSelect = document.getElementById('model-select');
 
     let uploadedFile = null;
     let isProcessing = false;
@@ -417,6 +525,7 @@
     let lastTableData = [];
     let lastCalculatedTotals = null;
     let fullAnalysisContext = null;
+    let selectedModel = 'gemini-3-pro';
 
     const agentStatusMessages = [
         "OCR Agent is scanning the document now...",
@@ -433,6 +542,7 @@
 
     window.onload = () => { uploadButton.disabled = false; chatInput.disabled = false; };
     uploadButton.addEventListener('click', () => !isProcessing && fileInput.click());
+    modelSelect.addEventListener('change', (e) => { selectedModel = e.target.value; });
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length) {
             uploadedFile = e.target.files[0];
@@ -460,6 +570,7 @@
 
         const formData = new FormData();
         formData.append('file', uploadedFile);
+        formData.append('model', selectedModel);
 
         fetch(API_ENDPOINT, { method: 'POST', body: formData })
         .then(response => {
@@ -512,6 +623,14 @@
                             }
                             else if (type === 'result_bond_final') {
                                 fullAnalysisContext = JSON.parse(dataStr);
+                                // Render metrics widget for bond
+                                if (fullAnalysisContext.metrics) {
+                                    const metricsDiv = document.createElement('div');
+                                    metricsDiv.className = 'mb-4';
+                                    metricsDiv.innerHTML = renderMetricsWidget(fullAnalysisContext.metrics);
+                                    messagesWindow.appendChild(metricsDiv);
+                                    messagesWindow.scrollTop = messagesWindow.scrollHeight;
+                                }
                                 if(window.saveAnalysis) window.saveAnalysis(fullAnalysisContext);
                             }
                             else if (type === 'result_wip') {
@@ -577,6 +696,46 @@
         chatInput.disabled = false;
     }
 
+    function renderMetricsWidget(metrics) {
+        if (!metrics || !metrics.model_name) return '';
+        
+        const time = metrics.total_time_seconds || 0;
+        const tokens = metrics.tokens || {};
+        const cost = metrics.cost_usd || 0;
+        const calls = metrics.api_calls || 0;
+        
+        const timeStr = time < 60 ? `${time.toFixed(1)}s` : `${(time / 60).toFixed(1)}m`;
+        const tokensStr = (tokens.total || 0).toLocaleString();
+        const costStr = cost < 0.01 ? `$${(cost * 100).toFixed(2)}c` : `$${cost.toFixed(4)}`;
+        
+        return `
+            <div class="metrics-widget">
+                <div>
+                    <div class="metrics-widget-title">Analyzed with</div>
+                    <div class="metrics-model-name">${metrics.model_display_name || metrics.model_name}</div>
+                </div>
+                <div class="metrics-stats">
+                    <div class="metrics-stat">
+                        <div class="metrics-stat-value">${timeStr}</div>
+                        <div class="metrics-stat-label">Time</div>
+                    </div>
+                    <div class="metrics-stat">
+                        <div class="metrics-stat-value">${tokensStr}</div>
+                        <div class="metrics-stat-label">Tokens</div>
+                    </div>
+                    <div class="metrics-stat">
+                        <div class="metrics-stat-value">${calls}</div>
+                        <div class="metrics-stat-label">API Calls</div>
+                    </div>
+                </div>
+                <div class="metrics-cost">
+                    <div class="metrics-cost-value">${costStr}</div>
+                    <div class="metrics-cost-label">Cost</div>
+                </div>
+            </div>
+        `;
+    }
+
     function renderResults(data) {
         const wd = data.widget_data;
         const m = wd.metrics;
@@ -597,6 +756,13 @@
         const tableDiv = document.createElement('div');
         tableDiv.innerHTML = renderTableWidget(data.clean_table, lastCalculatedTotals);
         messagesWindow.appendChild(tableDiv);
+
+        // 4. Metrics Widget
+        if (data.metrics) {
+            const metricsDiv = document.createElement('div');
+            metricsDiv.innerHTML = renderMetricsWidget(data.metrics);
+            messagesWindow.appendChild(metricsDiv);
+        }
         
         setupCollapsibles();
     }
