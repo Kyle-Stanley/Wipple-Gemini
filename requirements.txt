@@ -21,3 +21,4 @@ starlette
 
 typing-extensions
 
+anthropic
