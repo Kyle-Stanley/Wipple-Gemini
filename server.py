@@ -2,14 +2,15 @@ import shutil
 import os
 import json
 import re
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from typing import Optional
 import uvicorn
 
-from google import genai
-from google.genai import types
+# Model client for unified model access
+from model_client import get_client, get_supported_models, DEFAULT_MODEL, SUPPORTED_MODELS
 
 # Import Agents
 from wip_agent import app as wip_app
@@ -18,11 +19,6 @@ from bond_agent import app as bond_app
 # --- Config ---
 if "GOOGLE_API_KEY" not in os.environ:
     os.environ["GOOGLE_API_KEY"] = ""
-
-client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-
-# 1. UNIFIED MODEL DEFINITION
-MODEL_NAME = "gemini-3-pro-preview"
 
 app = FastAPI()
 
@@ -54,28 +50,25 @@ def format_sse(event_type: str, data: str) -> str:
 
 def clean_json_text(text: str) -> str:
     """Strips markdown code blocks and non-JSON prefixes from LLM response."""
-    # Robustly handle cases where model returns raw JSON without markdown
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0]
     elif "```" in text:
         text = text.split("```")[1].split("```")[0]
     
-    # Aggressive cleaning
     text = text.strip()
     return text
 
-async def detect_document_type(file_path: str) -> str:
-    """Reads the ENTIRE file and uses Gemini 3 Pro to classify it using JSON."""
+async def detect_document_type(file_path: str, model_name: str = DEFAULT_MODEL) -> str:
+    """Reads the ENTIRE file and uses the specified model to classify it using JSON."""
     try:
         with open(file_path, "rb") as f:
             file_bytes = f.read() 
             
-        # SIMPLE PROMPT: Just visual structure
         prompt = """
         Look at this document. Is it mainly a TABLE/SPREADSHEET or is it mainly TEXT/PARAGRAPHS?
         
-        - If it's dominated by TABLES with rows and columns of data → classify as "WIP"
-        - If it's dominated by TEXT in paragraphs (like a contract or form) → classify as "BOND"
+        - If it's dominated by TABLES with rows and columns of data -> classify as "WIP"
+        - If it's dominated by TEXT in paragraphs (like a contract or form) -> classify as "BOND"
         
         Return JSON:
         {
@@ -84,24 +77,22 @@ async def detect_document_type(file_path: str) -> str:
         }
         """
         
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"), prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json", 
-                # Gemini 3 requires default temperature (approx 1.0) for best reasoning
-            )
+        client = get_client()
+        response = client.generate_content(
+            prompt=prompt,
+            model_name=model_name,
+            pdf_bytes=file_bytes,
+            response_mime_type="application/json",
         )
         
-        # CRITICAL FIX: Clean the LLM output before json.loads()
+        # Clean the LLM output before json.loads()
         raw_text = response.text
         cleaned_text = clean_json_text(raw_text)
         
         data = json.loads(cleaned_text)
         doc_type = data.get("document_type", "WIP").upper()
         
-        # SIMPLE LOGGING
-        print(f"\n🔍 ROUTER: {doc_type}")
+        print(f"\nROUTER: {doc_type}")
         print(f"   Why: {data.get('reasoning', 'N/A')}\n")
         
         if doc_type == "BOND":
@@ -119,7 +110,7 @@ async def run_wip_stream(inputs):
     """Handles the WIP agent stream events."""
     try:
         for chunk in wip_app.stream(inputs, stream_mode="updates"):
-            print(f"WIP STREAM CHUNK KEYS: {chunk.keys()}")  # Debug logging
+            print(f"WIP STREAM CHUNK KEYS: {chunk.keys()}")
             
             if "extract" in chunk:
                 extract_data = chunk["extract"]
@@ -137,7 +128,6 @@ async def run_wip_stream(inputs):
                 output_data = chunk["output"]
                 final_data = output_data.get("final_json", {})
                 
-                # Check for errors in the output
                 if "error" in final_data:
                     print(f"WIP WORKFLOW ERROR: {final_data.get('error')}")
                     if "traceback" in final_data:
@@ -159,8 +149,8 @@ async def run_bond_stream(inputs):
         if "extract" in chunk:
             yield format_sse("status", "Core extraction complete. Searching legal statutes...")
             partial = {
-                "parties": chunk["extract"]["parties"].model_dump(),
-                "risks": chunk["extract"]["risks"].model_dump()
+                "parties": chunk["extract"]["parties"].model_dump() if chunk["extract"].get("parties") else {},
+                "risks": chunk["extract"]["risks"].model_dump() if chunk["extract"].get("risks") else {}
             }
             yield format_sse("bond_step_1", json.dumps(partial))
             
@@ -173,34 +163,41 @@ async def run_bond_stream(inputs):
         # Step 3: Opinion
         if "opinion" in chunk:
             yield format_sse("status", "Underwriting opinion generated.")
-            op = chunk["opinion"]["opinion"].model_dump()
-            yield format_sse("bond_step_3", json.dumps(op))
+            if chunk["opinion"].get("opinion"):
+                op = chunk["opinion"]["opinion"].model_dump()
+                yield format_sse("bond_step_3", json.dumps(op))
             
             final = chunk["opinion"]["final_json"]
             yield format_sse("result_bond_final", json.dumps(final))
 
 # --- Main Generator ---
 
-async def processing_generator(temp_filename: str):
+async def processing_generator(temp_filename: str, model_name: str = DEFAULT_MODEL):
     """Orchestrates the detection and agent execution."""
     try:
-        yield format_sse("status", "Analyzing document structure...")
+        # Send selected model info to frontend
+        model_config = SUPPORTED_MODELS.get(model_name)
+        model_display = model_config.display_name if model_config else model_name
+        yield format_sse("model_selected", json.dumps({"model": model_name, "display_name": model_display}))
+        
+        yield format_sse("status", f"Analyzing document structure with {model_display}...")
         
         # 1. ROUTER
-        doc_type = await detect_document_type(temp_filename)
+        doc_type = await detect_document_type(temp_filename, model_name)
         
-        inputs = {"file_path": temp_filename}
+        # Pass model_name to agents via inputs
+        inputs = {"file_path": temp_filename, "model_name": model_name}
 
         # 2. BRANCH: WIP
         if doc_type == "WIP":
-            yield format_sse("status", "Processing WIP schedule...")
+            yield format_sse("status", f"Processing WIP schedule with {model_display}...")
             yield format_sse("router", "WIP")
             async for chunk in run_wip_stream(inputs):
                 yield chunk
 
         # 3. BRANCH: BOND
         else:
-            yield format_sse("status", "Processing bond form...")
+            yield format_sse("status", f"Processing bond form with {model_display}...")
             yield format_sse("router", "BOND")
             async for chunk in run_bond_stream(inputs):
                 yield chunk
@@ -218,7 +215,13 @@ async def processing_generator(temp_filename: str):
 
 class ChatRequest(BaseModel):
     message: str
-    context: str 
+    context: str
+    model: Optional[str] = DEFAULT_MODEL
+
+@app.get("/models")
+async def list_models():
+    """Returns list of available models for frontend dropdown."""
+    return {"models": get_supported_models(), "default": DEFAULT_MODEL}
 
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
@@ -231,37 +234,62 @@ async def chat_endpoint(req: ChatRequest):
             "Answer clearly and concisely based strictly on the provided context."
         )
         
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt
+        client = get_client()
+        response = client.generate_content(
+            prompt=prompt,
+            model_name=req.model or DEFAULT_MODEL,
         )
         return {"reply": response.text}
     except Exception as e:
         return {"reply": "I'm having trouble connecting to the chat service right now."}
 
 @app.post("/analyze-stream")
-async def analyze_stream(file: UploadFile = File(...)):
+async def analyze_stream(
+    file: UploadFile = File(...),
+    model: str = Form(default=DEFAULT_MODEL)
+):
+    """
+    Main analysis endpoint.
+    
+    Args:
+        file: The PDF document to analyze
+        model: Model key from SUPPORTED_MODELS (e.g., "claude-sonnet-4-5", "gemini-3-pro")
+    """
     print(f"--- RECEIVING FILE: {file.filename} ---")
+    print(f"--- SELECTED MODEL: {model} ---")
+    
+    # Validate model selection
+    if model not in SUPPORTED_MODELS:
+        print(f"WARNING: Unknown model '{model}', falling back to {DEFAULT_MODEL}")
+        model = DEFAULT_MODEL
+    
     temp_filename = f"temp_{file.filename}"
     with open(temp_filename, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
     return StreamingResponse(
-        processing_generator(temp_filename), 
+        processing_generator(temp_filename, model), 
         media_type="text/event-stream"
     )
 
 # BACKWARD COMPATIBILITY
 @app.post("/analyze-wip-stream")
-async def analyze_wip_stream_legacy(file: UploadFile = File(...)):
+async def analyze_wip_stream_legacy(
+    file: UploadFile = File(...),
+    model: str = Form(default=DEFAULT_MODEL)
+):
     """Legacy endpoint - redirects to new unified endpoint"""
     print(f"--- LEGACY ENDPOINT CALLED: {file.filename} ---")
+    
+    if model not in SUPPORTED_MODELS:
+        model = DEFAULT_MODEL
+    
     temp_filename = f"temp_{file.filename}"
     with open(temp_filename, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
     return StreamingResponse(
-        processing_generator(temp_filename), 
+        processing_generator(temp_filename, model), 
         media_type="text/event-stream"
     )
 
