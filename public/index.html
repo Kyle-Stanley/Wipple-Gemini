@@ -1055,18 +1055,22 @@
 
     function renderCompareResults(panel, data) {
         const container = getComparePanel(panel);
-        const wd = data.widget_data;
-        const m = wd.metrics;
+        const wd = data.widget_data || {};
+        const m = wd.metrics || {};
 
         // Validation Widget
-        const valDiv = document.createElement('div');
-        valDiv.innerHTML = renderValidationWidget(wd.validations);
-        container.appendChild(valDiv);
+        if (wd.validations) {
+            const valDiv = document.createElement('div');
+            valDiv.innerHTML = renderValidationWidget(wd.validations);
+            container.appendChild(valDiv);
+        }
 
-        // Dashboard Widget
-        const dashDiv = document.createElement('div');
-        dashDiv.innerHTML = renderDashboardWidget(wd, m);
-        container.appendChild(dashDiv);
+        // Dashboard Widget - only render if we have the KPI metrics
+        if (m.row1_1) {
+            const dashDiv = document.createElement('div');
+            dashDiv.innerHTML = renderDashboardWidget(wd, m);
+            container.appendChild(dashDiv);
+        }
 
         // Metrics Widget
         if (data.metrics) {
@@ -1224,7 +1228,15 @@
         const cost = metrics.cost_usd || 0;
         const calls = metrics.api_calls || 0;
         
-        const timeStr = time < 60 ? `${time.toFixed(1)}s` : `${(time / 60).toFixed(1)}m`;
+        // Format time as "1m 16s" for times over 60s, otherwise just seconds
+        let timeStr;
+        if (time < 60) {
+            timeStr = `${time.toFixed(1)}s`;
+        } else {
+            const mins = Math.floor(time / 60);
+            const secs = Math.round(time % 60);
+            timeStr = secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+        }
         const tokensStr = (tokens.total || 0).toLocaleString();
         const costStr = cost < 0.01 ? `$${(cost * 100).toFixed(2)}c` : `$${cost.toFixed(4)}`;
         
