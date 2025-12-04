@@ -38,13 +38,29 @@
         }
         .user-message-anim { animation: slideInRight 0.3s ease-out forwards; }
         
-        .typing-dots span {
-            display: inline-block; width: 6px; height: 6px; border-radius: 50%; background-color: #8e8ea0;
-            margin: 0 2px; animation: blink 1.4s infinite both;
+        /* Wipple Logo Loading Animation */
+        .wipple-loader {
+            position: relative;
+            width: 32px;
+            height: 19px;
+            display: inline-block;
+            vertical-align: middle;
         }
-        .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-        .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
-        @keyframes blink { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }
+        .wipple-loader img {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .wipple-loader .logo-blue { animation: fadeBlue 3s ease-in-out infinite; }
+        .wipple-loader .logo-green { animation: fadeGreen 3s ease-in-out infinite; }
+        .wipple-loader .logo-red { animation: fadeRed 3s ease-in-out infinite; }
+        
+        @keyframes fadeBlue { 0%, 100% { opacity: 1; } 33%, 66% { opacity: 0; } }
+        @keyframes fadeGreen { 0%, 100% { opacity: 0; } 33% { opacity: 1; } 66% { opacity: 0; } }
+        @keyframes fadeRed { 0%, 33% { opacity: 0; } 66% { opacity: 1; } 100% { opacity: 0; } }
 
         /* WIDGETS */
         .widget-card { background: linear-gradient(180deg, #262626 0%, #212121 100%); border: 1px solid #3e3e4e; border-radius: 12px; margin: 16px 0; overflow: hidden; transition: all 0.3s ease; position: relative; z-index: 10; }
@@ -724,6 +740,15 @@
     let selectedModel = 'gemini-3-pro';
     let compareMode = false;
 
+    // Loading animation HTML generator
+    function getLoadingHtml() {
+        return `<div class="wipple-loader">
+            <img src="wipple-blue.png" alt="" class="logo-blue">
+            <img src="wipple-green.png" alt="" class="logo-green">
+            <img src="wipple-red.png" alt="" class="logo-red">
+        </div>`;
+    }
+
     function setCompareMode(enabled) {
         if (isProcessing) return;
         compareMode = enabled;
@@ -1036,7 +1061,7 @@
         const container = getComparePanel(panel);
         const loadingDiv = document.createElement('div');
         loadingDiv.className = 'agent-status mb-2 compare-loading';
-        loadingDiv.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+        loadingDiv.innerHTML = getLoadingHtml();
         container.appendChild(loadingDiv);
         container.scrollTop = container.scrollHeight;
         
@@ -1199,7 +1224,7 @@
         if (currentLoadingDiv) return;
         currentLoadingDiv = document.createElement('div');
         currentLoadingDiv.className = 'agent-status mb-4';
-        currentLoadingDiv.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+        currentLoadingDiv.innerHTML = getLoadingHtml();
         messagesWindow.appendChild(currentLoadingDiv);
         messagesWindow.scrollTop = messagesWindow.scrollHeight;
     }
