@@ -38,29 +38,40 @@
         }
         .user-message-anim { animation: slideInRight 0.3s ease-out forwards; }
         
-        /* Wipple Logo Loading Animation */
-        .wipple-loader {
-            position: relative;
-            width: 32px;
-            height: 19px;
-            display: inline-block;
-            vertical-align: middle;
-        }
-        .wipple-loader img {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-        .wipple-loader .logo-blue { animation: fadeBlue 3s ease-in-out infinite; }
-        .wipple-loader .logo-green { animation: fadeGreen 3s ease-in-out infinite; }
-        .wipple-loader .logo-red { animation: fadeRed 3s ease-in-out infinite; }
-        
-        @keyframes fadeBlue { 0%, 100% { opacity: 1; } 33%, 66% { opacity: 0; } }
-        @keyframes fadeGreen { 0%, 100% { opacity: 0; } 33% { opacity: 1; } 66% { opacity: 0; } }
-        @keyframes fadeRed { 0%, 33% { opacity: 0; } 66% { opacity: 1; } 100% { opacity: 0; } }
+    /* Wipple Logo Loading Animation */
+    .wipple-loader-container {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .wipple-loader-text {
+        color: #8e8ea0;
+        font-size: 0.85rem;
+    }
+    .wipple-loader {
+        position: relative;
+        width: 24px;
+        height: 14px;
+        display: inline-block;
+        vertical-align: middle;
+        animation: pulse 1.5s ease-in-out infinite;
+    }
+    .wipple-loader img {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+    }
+    .wipple-loader .logo-blue { animation: fadeBlue 3s ease-in-out infinite; }
+    .wipple-loader .logo-green { animation: fadeGreen 3s ease-in-out infinite; }
+    .wipple-loader .logo-red { animation: fadeRed 3s ease-in-out infinite; }
+    
+    @keyframes fadeBlue { 0%, 100% { opacity: 1; } 33%, 66% { opacity: 0; } }
+    @keyframes fadeGreen { 0%, 100% { opacity: 0; } 33% { opacity: 1; } 66% { opacity: 0; } }
+    @keyframes fadeRed { 0%, 33% { opacity: 0; } 66% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(0.92); } }
 
         /* WIDGETS */
         .widget-card { background: linear-gradient(180deg, #262626 0%, #212121 100%); border: 1px solid #3e3e4e; border-radius: 12px; margin: 16px 0; overflow: hidden; transition: all 0.3s ease; position: relative; z-index: 10; }
@@ -742,10 +753,13 @@
 
     // Loading animation HTML generator
     function getLoadingHtml() {
-        return `<div class="wipple-loader">
-            <img src="wipple-blue.png" alt="" class="logo-blue">
-            <img src="wipple-green.png" alt="" class="logo-green">
-            <img src="wipple-red.png" alt="" class="logo-red">
+        return `<div class="wipple-loader-container">
+            <span class="wipple-loader-text">One moment</span>
+            <div class="wipple-loader">
+                <img src="wipple-blue.png" alt="" class="logo-blue">
+                <img src="wipple-green.png" alt="" class="logo-green">
+                <img src="wipple-red.png" alt="" class="logo-red">
+            </div>
         </div>`;
     }
 
