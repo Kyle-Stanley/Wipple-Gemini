@@ -68,8 +68,8 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
     model_id="gemini-3-flash-preview",
     provider=ModelProvider.GOOGLE,
     display_name="Gemini 3 Flash (Preview)",
-    input_price_per_million=0.075,  # Likely same as 2.5 Flash
-    output_price_per_million=0.30,
+    input_price_per_million=0.50,
+    output_price_per_million=3.00,
 ),
 }
 
