@@ -65,11 +65,11 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         output_price_per_million=10.0,
     ),
     "gemini-3-flash": ModelConfig(
-    model_id="gemini-3-flash-preview",
-    provider=ModelProvider.GOOGLE,
-    display_name="Gemini 3 Flash (Preview)",
-    input_price_per_million=0.50,
-    output_price_per_million=3.00,
+        model_id="gemini-3-flash-preview",
+        provider=ModelProvider.GOOGLE,
+        display_name="Gemini 3 Flash (Preview)",
+        input_price_per_million=0.50,
+        output_price_per_million=3.00,
 ),
 }
 
