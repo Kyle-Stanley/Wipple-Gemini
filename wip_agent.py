@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import traceback
 from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from model_client import (
     DEFAULT_MODEL,
     parse_json_safely,
 )
+
+logger = logging.getLogger(__name__)
 
 # ==========================================
 # 2. DATA MODELS
@@ -258,15 +261,6 @@ def run_validations(row: CalculatedWipRow, validations: List[Validation]) -> Lis
 # ==========================================
 # 4. CORRECTION SUGGESTIONS (unchanged)
 # ==========================================
-
-@dataclass
-class CorrectionSuggestion:
-    job_id: str
-    field: str
-    current_value: float
-    suggested_value: float
-    confidence: str
-    reasoning: str
 
 def digit_change_score(current: float, target: float) -> int:
     if current == 0 and target == 0:
@@ -654,8 +648,19 @@ def extractor_node(state: WipState):
     CRITICAL COLUMN IDENTIFICATION:
 
     1. COST TO DATE (cost_to_date): Money ALREADY SPENT on the job.
+       - Column headers: "Cost to Date", "Costs to Date", "Costs Incurred", "Actual Costs"
+       - This is cumulative costs incurred so far
+       - Usually a LARGER number than Cost to Complete for jobs in progress
+
     2. COST TO COMPLETE (cost_to_complete): Money STILL NEEDED to finish the job.
+       - Column headers: "Cost to Complete", "CTC", "Estimated Cost to Complete", "Remaining Costs"
+       - This is how much more needs to be spent
+       - Formula: Estimated Total Costs - Cost to Date = Cost to Complete
+       - For completed jobs (100% done), this should be 0 or near 0
+
     3. ESTIMATED TOTAL COSTS (estimated_total_costs): Total expected cost when job is done.
+       - Column headers: "Estimated Cost", "Total Est Cost", "Est Total Costs"
+       - Formula: Cost to Date + Cost to Complete = Estimated Total Costs
 
     VALIDATION: For each row, verify: Cost to Date + Cost to Complete = Estimated Total Costs
 
@@ -665,8 +670,26 @@ def extractor_node(state: WipState):
 
     Return JSON:
     {
-        "rows": [ ... ],
-        "totals": { ... }
+        "rows": [
+            {
+                "job_id": "string",
+                "job_name": "string",
+                "total_contract_price": number,
+                "estimated_total_costs": number,
+                "estimated_gross_profit": number,
+                "revenues_earned": number,
+                "cost_to_date": number,
+                "gross_profit_to_date": number,
+                "billed_to_date": number,
+                "cost_to_complete": number,
+                "under_billings": number,
+                "over_billings": number
+            }
+        ],
+        "totals": {
+            "total_contract_price": number,
+            ... (same fields as rows)
+        }
     }
     RULES:
     - (100) in parens is negative -100.
@@ -961,8 +984,8 @@ def narrative_node(state: WipState):
                 f"${total_value/1000000:.1f}M total contract value. "
                 f"Risk tier: {rc.get('risk_tier', 'Unknown')}."
             )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug("Narrative fallback construction failed: %s", _e, exc_info=True)
 
         widget_data = dict(state.widget_data or {})
         widget_data["summary"] = {"text": fallback}
