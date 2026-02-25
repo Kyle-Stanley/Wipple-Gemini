@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import asyncio
 import shutil
 import time
@@ -167,12 +168,138 @@ def normalize_model_or_default(model: Optional[str]) -> str:
         return default
     return model
 
-def detect_document_type_sync(file_path: str, model_name: str) -> str:
+def extract_pdf_text_snippet(file_path: str, max_pages: int = 3, max_chars: int = 20000) -> str:
     """
-    Sync router (safe to run in thread).
-    Reads entire file, calls model, returns "WIP" or "BOND".
+    Extract text from the first N pages of a PDF for routing/classification.
+    Avoids loading and base64-encoding the entire PDF for the router.
+
+    Returns "" if extraction fails (scanned PDFs, encrypted, etc.).
     """
     try:
+        from pypdf import PdfReader  # optional dependency
+        reader = PdfReader(file_path)
+
+        # Best-effort decrypt for empty-password PDFs
+        if getattr(reader, "is_encrypted", False):
+            try:
+                reader.decrypt("")  # may fail; that's OK
+            except Exception:
+                return ""
+
+        parts = []
+        total = 0
+        page_count = min(max_pages, len(reader.pages))
+        for i in range(page_count):
+            try:
+                t = reader.pages[i].extract_text() or ""
+            except Exception:
+                t = ""
+            if t:
+                parts.append(t)
+                total += len(t)
+                if total >= max_chars:
+                    break
+
+        return ("\n".join(parts))[:max_chars]
+    except Exception:
+        return ""
+
+
+def heuristic_document_type(snippet: str) -> Optional[str]:
+    """
+    Fast heuristic classifier. Returns "WIP" / "BOND" / None (uncertain).
+    """
+    if not snippet:
+        return None
+
+    s = snippet.lower()
+
+    bond_terms = [
+        "obligee", "principal", "surety", "penal sum", "bond", "performance bond", "payment bond",
+        "cancellation", "indemnity", "whereas", "hereby", "rider", "obligor",
+    ]
+    wip_terms = [
+        "work in progress", "wip", "schedule of contracts", "contract price", "cost to date",
+        "cost to complete", "billed to date", "earned revenue", "gross profit", "percent complete",
+        "retainage", "under bill", "over bill",
+    ]
+
+    bond_hits = sum(1 for t in bond_terms if t in s)
+    wip_hits = sum(1 for t in wip_terms if t in s)
+
+    digit_ratio = sum(ch.isdigit() for ch in snippet) / max(len(snippet), 1)
+    lines = snippet.splitlines()
+    table_like_lines = 0
+    for line in lines[:250]:
+        nums = re.findall(r"\d[\d,]*", line)
+        if len(nums) >= 3:
+            table_like_lines += 1
+
+    # Strong keyword signals
+    if bond_hits >= 3 and wip_hits == 0:
+        return "BOND"
+    if wip_hits >= 3 and bond_hits == 0:
+        return "WIP"
+
+    # Structure / numeric density signals
+    if table_like_lines >= 6 or digit_ratio > 0.16:
+        return "WIP"
+    if bond_hits >= 2 and digit_ratio < 0.08 and table_like_lines <= 2:
+        return "BOND"
+
+    return None
+
+
+def detect_document_type_sync(file_path: str, model_name: str) -> str:
+    """
+    Sync router (safe to run in a thread).
+    Tries:
+      1) extract first N pages text and classify via heuristics
+      2) if uncertain, ask model using text snippet (no PDF bytes)
+      3) if text extraction fails (scanned/encrypted), fall back to PDF-bytes routing
+    """
+    client = get_client()
+
+    try:
+        snippet = extract_pdf_text_snippet(file_path, max_pages=3, max_chars=20000)
+
+        # If we got enough text, try heuristics first
+        if snippet and len(snippet) >= 400:
+            heur = heuristic_document_type(snippet)
+            if heur:
+                logger.info("ROUTER(heuristic): %s", heur)
+                return heur
+
+            prompt = f"""
+            Classify the document based on extracted text (first pages).
+            - If it's dominated by table/spreadsheet numeric rows/columns -> "WIP"
+            - If it's dominated by contract/form paragraphs -> "BOND"
+
+            Return JSON:
+            {{
+              "document_type": "WIP" or "BOND",
+              "reasoning": "One sentence"
+            }}
+
+            EXTRACTED TEXT:
+            ```text
+            {snippet}
+            ```
+            """
+
+            response = client.generate_content(
+                prompt=prompt,
+                model_name=model_name,
+                response_mime_type="application/json",
+                system_prompt="You are a strict router. Output JSON only.",
+            )
+
+            data = parse_json_safely(response.text)
+            doc_type = (data.get("document_type") or "WIP").upper()
+            logger.info("ROUTER(text+llm): %s | Why: %s", doc_type, data.get("reasoning", "N/A"))
+            return "BOND" if doc_type == "BOND" else "WIP"
+
+        # If no text extracted (likely scanned), fall back to routing on the PDF bytes
         with open(file_path, "rb") as f:
             file_bytes = f.read()
 
@@ -189,7 +316,6 @@ def detect_document_type_sync(file_path: str, model_name: str) -> str:
         }
         """
 
-        client = get_client()
         response = client.generate_content(
             prompt=prompt,
             model_name=model_name,
@@ -200,9 +326,7 @@ def detect_document_type_sync(file_path: str, model_name: str) -> str:
 
         data = parse_json_safely(response.text)
         doc_type = (data.get("document_type") or "WIP").upper()
-
-        logger.info("ROUTER: %s | Why: %s", doc_type, data.get("reasoning", "N/A"))
-
+        logger.info("ROUTER(pdf+llm): %s | Why: %s", doc_type, data.get("reasoning", "N/A"))
         return "BOND" if doc_type == "BOND" else "WIP"
 
     except Exception as e:
