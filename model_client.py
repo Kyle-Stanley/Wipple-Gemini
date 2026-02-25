@@ -113,6 +113,7 @@ class ModelResponse:
     input_tokens: int
     output_tokens: int
     model_id: str
+    finish_reason: Optional[str] = None
 
 
 @dataclass
@@ -415,7 +416,31 @@ class ModelClient:
             input_tokens = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
             output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
 
-        text = getattr(response, "text", "") or ""
+        # Extract finish reason for diagnostics
+        finish_reason = None
+        try:
+            if hasattr(response, "candidates") and response.candidates:
+                finish_reason = str(getattr(response.candidates[0], "finish_reason", None))
+        except Exception:
+            pass
+
+        text = ""
+        try:
+            text = getattr(response, "text", "") or ""
+        except ValueError as e:
+            # .text throws ValueError if response was blocked
+            logger.warning("Gemini .text access failed (finish_reason=%s): %s", finish_reason, e)
+            # Try to extract partial text from candidates
+            try:
+                if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                    text = "".join(p.text for p in response.candidates[0].content.parts if hasattr(p, "text"))
+            except Exception:
+                pass
+
+        if finish_reason and finish_reason not in ("FinishReason.STOP", "STOP", "None"):
+            logger.warning("Gemini non-STOP finish_reason: %s (output_tokens=%d, max=%s)", 
+                          finish_reason, output_tokens, max_tokens)
+
         if response_mime_type == "application/json":
             # Keep it as text, but clean common fences
             text = extract_first_json_substring(text)
@@ -425,6 +450,7 @@ class ModelClient:
             input_tokens=int(input_tokens),
             output_tokens=int(output_tokens),
             model_id=config.model_id,
+            finish_reason=finish_reason,
         )
 
     def _call_anthropic(
@@ -482,6 +508,7 @@ class ModelClient:
             input_tokens=int(response.usage.input_tokens),
             output_tokens=int(response.usage.output_tokens),
             model_id=config.model_id,
+            finish_reason=getattr(response, "stop_reason", None),
         )
 
 
