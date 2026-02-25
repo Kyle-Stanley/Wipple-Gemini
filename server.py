@@ -1,38 +1,68 @@
-import shutil
+# =====================
+# server.py (UPDATED)
+# =====================
+from __future__ import annotations
+
 import os
 import json
-import re
 import asyncio
+import shutil
+import time
+import uuid
+import logging
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, UploadFile, File, Form
+from typing import Optional, Tuple, Any
+
+import anyio
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
 import uvicorn
 
-# Model client for unified model access
-from model_client import get_client, get_supported_models, DEFAULT_MODEL, SUPPORTED_MODELS
+from model_client import (
+    get_client,
+    get_supported_models,
+    get_default_model,
+    SUPPORTED_MODELS,
+    parse_json_safely,
+    is_model_available,
+)
 
-# Import Agents
 from wip_agent import app as wip_app
 from bond_agent import app as bond_app
 
-# Thread pool for running sync LangGraph agents without blocking
-executor = ThreadPoolExecutor(max_workers=4)
+# -----------------------
+# Logging
+# -----------------------
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("server")
 
-# --- Config ---
-if "GOOGLE_API_KEY" not in os.environ:
-    os.environ["GOOGLE_API_KEY"] = ""
+# -----------------------
+# Thread pool (LangGraph runs sync)
+# -----------------------
+executor = ThreadPoolExecutor(max_workers=int(os.environ.get("WORKER_THREADS", "4")))
 
+# -----------------------
+# Upload / temp config
+# -----------------------
+UPLOAD_TMP_DIR = os.environ.get("UPLOAD_TMP_DIR", "/tmp/wipple_uploads")
+MAX_UPLOAD_SIZE_BYTES = int(os.environ.get("MAX_UPLOAD_SIZE_BYTES", str(25 * 1024 * 1024)))  # 25MB
+TEMP_FILE_TTL_SECONDS = int(os.environ.get("TEMP_FILE_TTL_SECONDS", str(60 * 60)))  # 1 hour
+TEMP_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("TEMP_CLEANUP_INTERVAL_SECONDS", str(10 * 60)))  # 10 min
+
+os.makedirs(UPLOAD_TMP_DIR, exist_ok=True)
+
+# -----------------------
+# FastAPI app
+# -----------------------
 app = FastAPI()
 
-# --- CORS FIX ---
 origins = [
     "https://wipple.ai",
     "https://www.wipple.ai",
     "http://localhost:3000",
-    "http://localhost:8000"
+    "http://localhost:8000",
 ]
 
 app.add_middleware(
@@ -44,211 +74,285 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
-# ------------------------
 
-# --- Helpers ---
+# -----------------------
+# Helpers
+# -----------------------
 
 def format_sse(event_type: str, data: str) -> str:
-    """Formats a message as a Server-Sent Event."""
-    clean_data = data.replace('\n', ' ') 
+    clean_data = (data or "").replace("\n", " ")
     return f"event: {event_type}\ndata: {clean_data}\n\n"
 
-def clean_json_text(text: str) -> str:
-    """Strips markdown code blocks and non-JSON prefixes from LLM response."""
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0]
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0]
-    
-    text = text.strip()
-    return text
+def _is_pdf_magic(header: bytes) -> bool:
+    return header.startswith(b"%PDF-")
 
-async def detect_document_type(file_path: str, model_name: str = DEFAULT_MODEL) -> str:
-    """Reads the ENTIRE file and uses the specified model to classify it using JSON."""
+async def save_upload_pdf_to_temp(upload: UploadFile, request_id: str) -> str:
+    """
+    Save upload to a safe temp path (ignores user filename).
+    Validates:
+      - size limit
+      - PDF magic bytes
+    """
+    temp_path = os.path.join(UPLOAD_TMP_DIR, f"{request_id}.pdf")
+    size = 0
+    first_bytes = b""
+
+    # Stream read to avoid huge in-memory reads
+    try:
+        with open(temp_path, "wb") as out:
+            while True:
+                chunk = await upload.read(1024 * 1024)  # 1MB chunks
+                if not chunk:
+                    break
+                if not first_bytes:
+                    first_bytes = chunk[:8]
+                size += len(chunk)
+                if size > MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(status_code=413, detail=f"File too large (>{MAX_UPLOAD_SIZE_BYTES} bytes).")
+                out.write(chunk)
+    finally:
+        try:
+            await upload.close()
+        except Exception:
+            pass
+
+    if not _is_pdf_magic(first_bytes):
+        # Clean up
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail="Invalid file: expected a PDF.")
+
+    return temp_path
+
+def cleanup_temp_dir() -> int:
+    """Delete temp files older than TTL. Returns number deleted."""
+    now = time.time()
+    deleted = 0
+    try:
+        for name in os.listdir(UPLOAD_TMP_DIR):
+            path = os.path.join(UPLOAD_TMP_DIR, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                st = os.stat(path)
+                age = now - st.st_mtime
+                if age > TEMP_FILE_TTL_SECONDS:
+                    os.remove(path)
+                    deleted += 1
+            except Exception:
+                continue
+    except Exception:
+        return 0
+    return deleted
+
+@app.on_event("startup")
+async def _startup_cleanup_task():
+    async def _loop():
+        while True:
+            await asyncio.sleep(TEMP_CLEANUP_INTERVAL_SECONDS)
+            deleted = await anyio.to_thread.run_sync(cleanup_temp_dir)
+            if deleted:
+                logger.info("Temp cleanup deleted %s files", deleted)
+    asyncio.create_task(_loop())
+
+def normalize_model_or_default(model: Optional[str]) -> str:
+    default = get_default_model()
+    if not model:
+        return default
+    if model not in SUPPORTED_MODELS:
+        return default
+    if not is_model_available(model):
+        return default
+    return model
+
+def detect_document_type_sync(file_path: str, model_name: str) -> str:
+    """
+    Sync router (safe to run in thread).
+    Reads entire file, calls model, returns "WIP" or "BOND".
+    """
     try:
         with open(file_path, "rb") as f:
-            file_bytes = f.read() 
-            
+            file_bytes = f.read()
+
         prompt = """
         Look at this document. Is it mainly a TABLE/SPREADSHEET or is it mainly TEXT/PARAGRAPHS?
-        
+
         - If it's dominated by TABLES with rows and columns of data -> classify as "WIP"
         - If it's dominated by TEXT in paragraphs (like a contract or form) -> classify as "BOND"
-        
+
         Return JSON:
         {
             "document_type": "WIP" or "BOND",
             "reasoning": "One sentence: what you see visually"
         }
         """
-        
+
         client = get_client()
         response = client.generate_content(
             prompt=prompt,
             model_name=model_name,
             pdf_bytes=file_bytes,
             response_mime_type="application/json",
+            system_prompt="You are a strict router. Output JSON only.",
         )
-        
-        # Clean the LLM output before json.loads()
-        raw_text = response.text
-        cleaned_text = clean_json_text(raw_text)
-        
-        data = json.loads(cleaned_text)
-        doc_type = data.get("document_type", "WIP").upper()
-        
-        print(f"\nROUTER: {doc_type}")
-        print(f"   Why: {data.get('reasoning', 'N/A')}\n")
-        
-        if doc_type == "BOND":
-            return "BOND"
-            
-        return "WIP"
-        
+
+        data = parse_json_safely(response.text)
+        doc_type = (data.get("document_type") or "WIP").upper()
+
+        logger.info("ROUTER: %s | Why: %s", doc_type, data.get("reasoning", "N/A"))
+
+        return "BOND" if doc_type == "BOND" else "WIP"
+
     except Exception as e:
-        print(f"ROUTER ERROR (Defaulting to WIP): {e}")
+        logger.exception("ROUTER ERROR (Defaulting to WIP): %s", e)
         return "WIP"
 
-# --- Stream Handlers ---
+# -----------------------
+# Thread -> async queue bridge
+# -----------------------
 
-def run_wip_sync(inputs, queue):
-    """Runs WIP agent synchronously in a thread, pushing results to queue."""
+class ThreadToAsyncQueue:
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self.loop = loop
+        self.queue: asyncio.Queue[Optional[Tuple[str, str]]] = asyncio.Queue()
+
+    def put(self, item: Optional[Tuple[str, str]]) -> None:
+        # Called from worker thread
+        self.loop.call_soon_threadsafe(self.queue.put_nowait, item)
+
+# -----------------------
+# Stream runners
+# -----------------------
+
+def run_wip_sync(inputs: dict, outbox: ThreadToAsyncQueue):
     try:
         for chunk in wip_app.stream(inputs, stream_mode="updates"):
-            print(f"WIP STREAM CHUNK KEYS: {chunk.keys()}")
-            
             if "extract" in chunk:
                 extract_data = chunk["extract"]
                 processed = extract_data.get("processed_data", [])
                 row_count = len(processed) if processed else 0
-                queue.put(("status", f"Extracted {row_count} rows. Validating math..."))
-            
+                outbox.put(("status", f"Extracted {row_count} rows. Validating math..."))
+
             if "analyze" in chunk:
-                queue.put(("status", "Analysis complete. Generating summary..."))
-            
+                outbox.put(("status", "Analysis complete. Generating summary..."))
+
             if "narrative" in chunk:
-                queue.put(("status", "Summary generated. Preparing output..."))
-            
+                outbox.put(("status", "Summary generated. Preparing output..."))
+
             if "output" in chunk:
                 output_data = chunk["output"]
                 final_data = output_data.get("final_json", {})
-                
-                if "error" in final_data:
-                    print(f"WIP WORKFLOW ERROR: {final_data.get('error')}")
-                    if "traceback" in final_data:
-                        print(f"TRACEBACK: {final_data.get('traceback')}")
-                
                 payload = {"type": "WIP", "data": final_data}
-                queue.put(("result_wip", json.dumps(payload)))
-                
-    except Exception as e:
-        import traceback
-        print(f"RUN_WIP_STREAM ERROR: {e}")
-        print(traceback.format_exc())
-        queue.put(("error", str(e)))
-    finally:
-        queue.put(None)  # Signal completion
+                outbox.put(("result_wip", json.dumps(payload)))
 
-def run_bond_sync(inputs, queue):
-    """Runs Bond agent synchronously in a thread, pushing results to queue."""
+    except Exception as e:
+        logger.exception("RUN_WIP_STREAM ERROR: %s", e)
+        outbox.put(("error", str(e)))
+    finally:
+        outbox.put(None)
+
+def run_bond_sync(inputs: dict, outbox: ThreadToAsyncQueue):
     try:
         for chunk in bond_app.stream(inputs, stream_mode="updates"):
             if "extract" in chunk:
-                queue.put(("status", "Core extraction complete. Searching legal statutes..."))
+                outbox.put(("status", "Core extraction complete. Searching legal statutes..."))
                 partial = {
                     "parties": chunk["extract"]["parties"].model_dump() if chunk["extract"].get("parties") else {},
-                    "risks": chunk["extract"]["risks"].model_dump() if chunk["extract"].get("risks") else {}
+                    "risks": chunk["extract"]["risks"].model_dump() if chunk["extract"].get("risks") else {},
                 }
-                queue.put(("bond_step_1", json.dumps(partial)))
-                
+                outbox.put(("bond_step_1", json.dumps(partial)))
+
             if "research" in chunk:
-                queue.put(("status", "Statute research complete. Synthesizing opinion..."))
+                outbox.put(("status", "Statute research complete. Synthesizing opinion..."))
                 stats = [s.model_dump() for s in chunk["research"]["researched_statutes"]]
-                queue.put(("bond_step_2", json.dumps(stats)))
+                outbox.put(("bond_step_2", json.dumps(stats)))
 
             if "opinion" in chunk:
-                queue.put(("status", "Underwriting opinion generated."))
+                outbox.put(("status", "Underwriting opinion generated."))
                 if chunk["opinion"].get("opinion"):
                     op = chunk["opinion"]["opinion"].model_dump()
-                    queue.put(("bond_step_3", json.dumps(op)))
-                
+                    outbox.put(("bond_step_3", json.dumps(op)))
+
                 final = chunk["opinion"]["final_json"]
-                queue.put(("result_bond_final", json.dumps(final)))
+                outbox.put(("result_bond_final", json.dumps(final)))
+
     except Exception as e:
-        import traceback
-        print(f"RUN_BOND_STREAM ERROR: {e}")
-        print(traceback.format_exc())
-        queue.put(("error", str(e)))
+        logger.exception("RUN_BOND_STREAM ERROR: %s", e)
+        outbox.put(("error", str(e)))
     finally:
-        queue.put(None)  # Signal completion
+        outbox.put(None)
 
-async def run_wip_stream(inputs):
-    """Async wrapper that runs WIP agent in thread pool."""
-    import queue
-    q = queue.Queue()
-    
-    # Start the sync function in a thread
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(executor, run_wip_sync, inputs, q)
-    
-    # Yield results as they come in
-    while True:
-        # Check queue with small timeout to allow other async tasks to run
+async def run_wip_stream(inputs: dict):
+    loop = asyncio.get_running_loop()
+    outbox = ThreadToAsyncQueue(loop)
+
+    fut = loop.run_in_executor(executor, run_wip_sync, inputs, outbox)
+
+    # Remove file when worker completes (prevents early deletion on client disconnect)
+    def _cleanup(_f: Any):
+        path = inputs.get("file_path")
         try:
-            result = await loop.run_in_executor(None, lambda: q.get(timeout=0.1))
-            if result is None:  # Completion signal
-                break
-            event_type, data = result
-            yield format_sse(event_type, data)
-        except queue.Empty:
-            await asyncio.sleep(0.05)  # Brief yield to event loop
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
 
-async def run_bond_stream(inputs):
-    """Async wrapper that runs Bond agent in thread pool."""
-    import queue
-    q = queue.Queue()
-    
-    # Start the sync function in a thread
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(executor, run_bond_sync, inputs, q)
-    
-    # Yield results as they come in
+    fut.add_done_callback(_cleanup)
+
     while True:
+        item = await outbox.queue.get()
+        if item is None:
+            break
+        event_type, data = item
+        yield format_sse(event_type, data)
+
+async def run_bond_stream(inputs: dict):
+    loop = asyncio.get_running_loop()
+    outbox = ThreadToAsyncQueue(loop)
+
+    fut = loop.run_in_executor(executor, run_bond_sync, inputs, outbox)
+
+    def _cleanup(_f: Any):
+        path = inputs.get("file_path")
         try:
-            result = await loop.run_in_executor(None, lambda: q.get(timeout=0.1))
-            if result is None:
-                break
-            event_type, data = result
-            yield format_sse(event_type, data)
-        except queue.Empty:
-            await asyncio.sleep(0.05)
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
 
-# --- Main Generator ---
+    fut.add_done_callback(_cleanup)
 
-async def processing_generator(temp_filename: str, model_name: str = DEFAULT_MODEL):
-    """Orchestrates the detection and agent execution."""
+    while True:
+        item = await outbox.queue.get()
+        if item is None:
+            break
+        event_type, data = item
+        yield format_sse(event_type, data)
+
+# -----------------------
+# Main generator
+# -----------------------
+
+async def processing_generator(temp_filename: str, model_name: str):
     try:
-        # Send selected model info to frontend
         model_config = SUPPORTED_MODELS.get(model_name)
         model_display = model_config.display_name if model_config else model_name
         yield format_sse("model_selected", json.dumps({"model": model_name, "display_name": model_display}))
-        
+
         yield format_sse("status", f"Analyzing document structure with {model_display}...")
-        
-        # 1. ROUTER
-        doc_type = await detect_document_type(temp_filename, model_name)
-        
-        # Pass model_name to agents via inputs
+
+        # Router offloaded to a thread (LLM call is blocking)
+        doc_type = await anyio.to_thread.run_sync(detect_document_type_sync, temp_filename, model_name)
+
         inputs = {"file_path": temp_filename, "model_name": model_name}
 
-        # 2. BRANCH: WIP
         if doc_type == "WIP":
             yield format_sse("status", f"Processing WIP schedule with {model_display}...")
             yield format_sse("router", "WIP")
             async for chunk in run_wip_stream(inputs):
                 yield chunk
-
-        # 3. BRANCH: BOND
         else:
             yield format_sse("status", f"Processing bond form with {model_display}...")
             yield format_sse("router", "BOND")
@@ -256,109 +360,83 @@ async def processing_generator(temp_filename: str, model_name: str = DEFAULT_MOD
                 yield chunk
 
     except Exception as e:
-        import traceback
-        print(f"PROCESSING GENERATOR ERROR: {e}")
-        print(traceback.format_exc())
+        logger.exception("PROCESSING GENERATOR ERROR: %s", e)
         yield format_sse("error", str(e))
-    finally:
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
+        # Do NOT delete file here; worker cleanup + TTL sweep handle it safely.
 
-# --- Endpoints ---
+# -----------------------
+# Endpoints
+# -----------------------
 
 class ChatRequest(BaseModel):
     message: str
     context: str
-    model: Optional[str] = DEFAULT_MODEL
+    doc_type: Optional[str] = None
+    model: Optional[str] = None
 
 @app.get("/models")
 async def list_models():
-    """Returns list of available models for frontend dropdown."""
-    return {"models": get_supported_models(), "default": DEFAULT_MODEL}
+    default = get_default_model()
+    return {"models": get_supported_models(include_unavailable=False), "default": default}
 
 @app.post("/chat")
-async def chat_endpoint(req: ChatRequest):
+def chat_endpoint(req: ChatRequest):
+    """
+    Sync endpoint so LLM call doesn't block the event loop.
+    """
     try:
+        model_name = normalize_model_or_default(req.model)
+        doc_type = (req.doc_type or "").upper().strip()
+        doc_hint = f"Document type: {doc_type}\n" if doc_type in {"WIP", "BOND"} else ""
+
         prompt = (
             "You are a helpful Bond & Construction Financial Analyst.\n"
-            "The user is asking a question about a document you just analyzed.\n\n"
+            "The user is asking a question about a document you just analyzed.\n"
+            f"{doc_hint}\n"
             f"DOCUMENT CONTEXT:\n{req.context}\n\n"
             f"USER QUESTION:\n{req.message}\n\n"
             "Answer clearly and concisely based strictly on the provided context."
         )
-        
+
         client = get_client()
         response = client.generate_content(
             prompt=prompt,
-            model_name=req.model or DEFAULT_MODEL,
+            model_name=model_name,
+            system_prompt="Be accurate. If the context doesn't support an answer, say so.",
         )
         return {"reply": response.text}
-    except Exception as e:
+    except Exception:
         return {"reply": "I'm having trouble connecting to the chat service right now."}
 
 @app.post("/analyze-stream")
 async def analyze_stream(
     file: UploadFile = File(...),
-    model: str = Form(default=DEFAULT_MODEL)
+    model: str = Form(default=""),
 ):
-    """
-    Main analysis endpoint.
-    
-    Args:
-        file: The PDF document to analyze
-        model: Model key from SUPPORTED_MODELS (e.g., "claude-sonnet-4-5", "gemini-3-pro")
-    """
-    import uuid
-    
-    print(f"--- RECEIVING FILE: {file.filename} ---")
-    print(f"--- SELECTED MODEL: {model} ---")
-    
-    # Validate model selection
-    if model not in SUPPORTED_MODELS:
-        print(f"WARNING: Unknown model '{model}', falling back to {DEFAULT_MODEL}")
-        model = DEFAULT_MODEL
-    
-    # Use unique temp filename to prevent race conditions with parallel requests
-    unique_id = uuid.uuid4().hex[:8]
-    temp_filename = f"temp_{unique_id}_{file.filename}"
-    with open(temp_filename, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
+    request_id = uuid.uuid4().hex[:12]
+    model_name = normalize_model_or_default(model)
+
+    logger.info("RECEIVING FILE name=%s model=%s request_id=%s", file.filename, model_name, request_id)
+
+    # Basic content-type check (not authoritative but helpful)
+    if file.content_type and "pdf" not in file.content_type.lower():
+        raise HTTPException(status_code=400, detail="Invalid content type. Please upload a PDF.")
+
+    temp_path = await save_upload_pdf_to_temp(file, request_id)
+
     return StreamingResponse(
-        processing_generator(temp_filename, model), 
-        media_type="text/event-stream"
+        processing_generator(temp_path, model_name),
+        media_type="text/event-stream",
     )
 
 # BACKWARD COMPATIBILITY
 @app.post("/analyze-wip-stream")
 async def analyze_wip_stream_legacy(
     file: UploadFile = File(...),
-    model: str = Form(default=DEFAULT_MODEL)
+    model: str = Form(default=""),
 ):
-    """Legacy endpoint - redirects to new unified endpoint"""
-    import uuid
-    
-    print(f"--- LEGACY ENDPOINT CALLED: {file.filename} ---")
-    
-    if model not in SUPPORTED_MODELS:
-        model = DEFAULT_MODEL
-    
-    unique_id = uuid.uuid4().hex[:8]
-    temp_filename = f"temp_{unique_id}_{file.filename}"
-    with open(temp_filename, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    return StreamingResponse(
-        processing_generator(temp_filename, model), 
-        media_type="text/event-stream"
-    )
-
-# Debug: Print all registered routes
-print("\n=== REGISTERED ROUTES ===")
-for route in app.routes:
-    if hasattr(route, 'methods') and hasattr(route, 'path'):
-        print(f"{route.methods} {route.path}")
-print("=========================\n")
+    # Legacy endpoint uses same unified pipeline now
+    return await analyze_stream(file=file, model=model)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
