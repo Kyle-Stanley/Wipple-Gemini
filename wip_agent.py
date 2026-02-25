@@ -1351,38 +1351,20 @@ def analyst_node(state: WipState):
 # 8. NARRATIVE NODE (metrics via from_dict, no bare except)
 # ==========================================
 
-SURETY_NARRATIVE_PROMPT = """
-You are a senior surety underwriting analyst preparing an executive summary for the chief underwriter. This summary accompanies a WIP schedule review and should demonstrate the caliber of analysis expected at a top-10 surety.
+SURETY_NARRATIVE_PROMPT = """You are a surety underwriting analyst. Write a 2-4 sentence executive abstract of this WIP schedule for the chief underwriter.
 
-SURETY PERSPECTIVE: We have bonded this contractor. Our exposure is the penal sum of outstanding bonds. If the contractor defaults mid-project, we inherit the obligation to complete or pay. Every data point should be evaluated through this lens: "What does this mean for our recovery position and likelihood of claim?"
+PERSPECTIVE: We bonded this contractor. Evaluate everything through: "What does this mean for our recovery if they default?"
 
-ANALYTICAL FRAMEWORK (priority order):
+PRIORITY: (1) Underbilling exposure = work done, cash not collected = direct recovery risk. (2) Loss jobs / GP fade = eroding net worth. (3) Concentration risk. (4) Overbilling is less concerning (cash collected ahead of work).
 
-1. CASH FLOW & LIQUIDITY SIGNAL
-   - Underbilling = work performed but unbilled = cash NOT collected. This is the single biggest red flag because it directly reduces recovery in a default scenario. Quantify the exposure.
-   - Overbilling = cash collected ahead of work = favorable for recovery (but can mask front-loading or manipulation). Only flag if extreme or suspicious.
-   - Net billing position relative to portfolio size tells the real story.
+DATA QUALITY: {correction_context}
 
-2. LOSS EXPOSURE & MARGIN INTEGRITY
-   - Loss jobs represent direct erosion of the contractor's net worth and bonding capacity.
-   - GP fade (actual profit lagging expected profit at current completion) often precedes loss recognition — it means the contractor's estimates may be stale.
-   - Thin margins (<5% GP) leave no buffer. One change order or weather delay flips these to losses.
-
-3. COMPLETION & CONCENTRATION
-   - Early-stage large jobs have the most remaining exposure. Late-stage jobs are de-risking.
-   - Single-job concentration means one default cascades. Diversified portfolios absorb hits.
-
-4. DATA QUALITY CONTEXT
-   {correction_context}
-
-WHAT TO WRITE:
-- 4-6 sentences as flowing prose (no bullets, no headers, no bold).
-- Open with the single most important finding — the one thing the chief underwriter needs to know first.
-- Connect signals to conclusions: don't just report numbers, explain what they MEAN for our bond program.
-- Distinguish between systemic concerns (patterns across jobs) vs isolated issues (one bad job).
-- If the portfolio is genuinely healthy, say so with conviction and explain the structural reasons why (e.g., "margins are thick across the board with balanced billing positions").
-- End with a forward-looking statement: what to watch at next review, or what additional information would sharpen the picture.
-- DO NOT repeat stats already displayed in the dashboard (job count, total contract value, risk tier label). The underwriter can see those. Add insight they can't get from the numbers alone.
+RULES:
+- Exactly 2-4 sentences. No more.
+- Lead with the single most important insight.
+- Connect dots between signals — don't just restate numbers the dashboard already shows.
+- End with what to watch or ask for at next review.
+- No bullets, no headers, no bold, no preamble.
 
 RISK DATA:
 {risk_context}
@@ -1438,14 +1420,9 @@ def narrative_node(state: WipState):
             prompt=prompt,
             model_name=state.model_name,
             temperature=0.3,
-            max_tokens=400,
+            max_tokens=250,
             tracker=tracker,
-            system_prompt=(
-                "You are a senior surety underwriting analyst at a top-10 surety company. "
-                "Write with precision, authority, and analytical depth. "
-                "Prose only — no bullets, no headers, no formatting. "
-                "Every sentence should earn its place."
-            ),
+            system_prompt="You are a surety underwriting analyst. Write exactly 2-4 sentences of prose. No bullets, no headers. Be specific and insightful.",
         )
 
         narrative = response.text.strip()
