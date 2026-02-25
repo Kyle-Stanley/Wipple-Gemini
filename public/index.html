@@ -5,99 +5,436 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Wipple</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
-        /* BASE & LAYOUT */
-        body { font-family: 'Inter', sans-serif; background-color: #212121; }
-        
-        /* SCROLLBAR */
-        ::-webkit-scrollbar { width: 10px; }
-        ::-webkit-scrollbar-track { background: #2d2d2d; }
-        ::-webkit-scrollbar-thumb { background-color: #565869; border-radius: 5px; }
-        ::-webkit-scrollbar-thumb:hover { background-color: #6e7080; }
+        /* ========================================
+           THEME VARIABLES
+           ======================================== */
+        :root {
+            --bg: #191919;
+            --surface: #242424;
+            --surface-alt: #2a2a2a;
+            --surface-hover: #2e2e2e;
+            --border: #343434;
+            --border-strong: #444;
+            --text: #e8e8e8;
+            --text-secondary: #909090;
+            --text-muted: #606060;
+            --accent: #4BA0D4;
+            --accent-soft: rgba(75,160,212,0.1);
+            --accent-border: rgba(75,160,212,0.25);
+            --risk-high: #E05252;
+            --risk-high-bg: rgba(224,82,82,0.1);
+            --risk-med: #D4A843;
+            --risk-med-bg: rgba(212,168,67,0.1);
+            --risk-low: #4BA87D;
+            --risk-low-bg: rgba(75,168,125,0.1);
+            --negative: #E05252;
+            --positive: #4BA87D;
+            --chart-bar1: #4BA0D4;
+            --chart-bar2: #7BC4A0;
+            --shadow: 0 1px 3px rgba(0,0,0,0.5);
+            --diff-highlight: rgba(212,168,67,0.12);
+            --match-bg: rgba(75,168,125,0.06);
+            --header-bg: #141414;
+        }
 
-        /* MESSAGE STYLING */
-        .messages-container { max-width: 768px; margin: 0 auto; }
-        .user-message { 
-            background-color: #2f2f2f; 
-            color: #ececec; 
-            border-radius: 18px; 
-            padding: 10px 16px; 
-            max-width: 85%; 
-            margin-left: auto; 
-            width: fit-content; 
+        body.light {
+            --bg: #C8BDA8;
+            --surface: #D8CFBE;
+            --surface-alt: #CFC5B2;
+            --surface-hover: #C2B8A4;
+            --border: #B0A48E;
+            --border-strong: #9E927C;
+            --text: #2C2416;
+            --text-secondary: #5C5346;
+            --text-muted: #8A7F70;
+            --accent: #4A6B3A;
+            --accent-soft: rgba(74,107,58,0.1);
+            --accent-border: rgba(74,107,58,0.3);
+            --risk-high: #A63828;
+            --risk-high-bg: rgba(166,56,40,0.1);
+            --risk-med: #8C6A20;
+            --risk-med-bg: rgba(140,106,32,0.1);
+            --risk-low: #3D7248;
+            --risk-low-bg: rgba(61,114,72,0.1);
+            --negative: #A63828;
+            --positive: #3D7248;
+            --chart-bar1: #4A6B3A;
+            --chart-bar2: #7B9A6A;
+            --shadow: 0 1px 3px rgba(0,0,0,0.1);
+            --diff-highlight: rgba(140,106,32,0.1);
+            --match-bg: rgba(61,114,72,0.06);
+            --header-bg: #CFC5B2;
         }
-        .ai-message { color: #ececec; max-width: 100%; line-height: 1.6; }
-        .agent-status { color: #8e8ea0; font-size: 0.875rem; margin: 8px 0; }
-        
+
+        /* ========================================
+           BASE & LAYOUT
+           ======================================== */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            overflow-y: auto;
+            transition: background-color 0.35s, color 0.35s;
+        }
+
+        /* SCROLLBAR */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
         /* ANIMATIONS */
-        @keyframes slideInRight {
-            from { opacity: 0; transform: translateX(20px); }
-            to { opacity: 1; transform: translateX(0); }
+        @keyframes fadeSlide {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
         }
-        .user-message-anim { animation: slideInRight 0.3s ease-out forwards; }
-        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .fade-slide { animation: fadeSlide 0.35s ease forwards; }
+
         /* Wipple Logo Loading Animation */
-        .wipple-loader-container {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .wipple-loader-text {
-            color: #8e8ea0;
-            font-size: 0.85rem;
-        }
+        .wipple-loader-container { display: flex; align-items: center; gap: 10px; }
+        .wipple-loader-text { color: var(--text-secondary); font-size: 0.85rem; }
         .wipple-loader {
-            position: relative;
-            width: 24px;
-            height: 14px;
-            display: inline-block;
-            vertical-align: middle;
+            position: relative; width: 24px; height: 14px;
+            display: inline-block; vertical-align: middle;
             animation: pulse 1.5s ease-in-out infinite;
         }
-        .wipple-loader img {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
+        .wipple-loader img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
         .wipple-loader .logo-blue { animation: fadeBlue 3s ease-in-out infinite; }
         .wipple-loader .logo-green { animation: fadeGreen 3s ease-in-out infinite; }
         .wipple-loader .logo-red { animation: fadeRed 3s ease-in-out infinite; }
-    
         @keyframes fadeBlue { 0%, 100% { opacity: 1; } 33%, 66% { opacity: 0; } }
         @keyframes fadeGreen { 0%, 100% { opacity: 0; } 33% { opacity: 1; } 66% { opacity: 0; } }
         @keyframes fadeRed { 0%, 33% { opacity: 0; } 66% { opacity: 1; } 100% { opacity: 0; } }
         @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(0.92); } }
 
-        /* WIDGETS */
-        .widget-card { background: linear-gradient(180deg, #262626 0%, #212121 100%); border: 1px solid #3e3e4e; border-radius: 12px; margin: 16px 0; overflow: hidden; transition: all 0.3s ease; position: relative; z-index: 10; }
-        .widget-header { padding: 12px 16px; border-bottom: 1px solid #3e3e4e; display: flex; justify-content: space-between; align-items: center; cursor: pointer; color: #ececec; }
-        .widget-header:hover { background-color: rgba(255, 255, 255, 0.03); }
-        .widget-content { transition: height 0.3s ease-out; overflow: hidden; height: auto; }
-        
-        /* FULLSCREEN MODAL MODE (80% Width + Bevel) */
-        .widget-card.maximized {
-            position: fixed; 
-            top: 5vh; 
-            left: 10vw; 
-            width: 80vw; 
-            height: 90vh;
-            z-index: 50; 
-            margin: 0;
-            background: #212121;
-            display: flex; 
-            flex-direction: column;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.3);
-            border: 1px solid #52525b;
+        /* ========================================
+           HEADER
+           ======================================== */
+        #app-header {
+            background: var(--header-bg);
+            border-bottom: 1px solid var(--border);
+            height: 46px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            position: sticky;
+            top: 0;
+            z-index: 30;
+            transition: background 0.35s, border-color 0.35s;
         }
-        .widget-card.maximized .widget-content { flex: 1; overflow: auto; height: auto !important; max-height: none !important; }
-        .widget-card.maximized .data-table { max-height: none !important; }
+        .header-left { display: flex; align-items: center; gap: 12px; }
+        .header-logo {
+            font-size: 17px;
+            font-weight: 700;
+            color: var(--text);
+            letter-spacing: -0.3px;
+            margin-right: 4px;
+        }
 
-        /* BACKDROP */
+        /* SEGMENTED CONTROLS */
+        .seg-control {
+            display: flex;
+            background: var(--bg);
+            border-radius: 5px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .seg-btn {
+            padding: 4px 12px;
+            font-size: 11px;
+            font-weight: 400;
+            background: transparent;
+            color: var(--text-muted);
+            border: none;
+            cursor: pointer;
+            font-family: inherit;
+            border-right: 1px solid var(--border);
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .seg-btn:last-child { border-right: none; }
+        .seg-btn.active {
+            font-weight: 600;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .seg-btn:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+        .seg-btn:not(:disabled):not(.active):hover {
+            color: var(--text-secondary);
+        }
+
+        /* MODEL DROPDOWN (JSX-style) */
+        .model-dropdown-wrap { position: relative; }
+        .model-dropdown-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .model-dropdown-trigger {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 6px 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            font-family: inherit;
+            min-width: 160px;
+            transition: border-color 0.2s;
+            gap: 10px;
+        }
+        .model-dropdown-trigger:hover { border-color: var(--border-strong); }
+        .model-dropdown-trigger.open { border-color: var(--accent); }
+        .model-dropdown-trigger .dd-name { color: var(--text); font-size: 12px; font-weight: 500; }
+        .model-dropdown-trigger .dd-desc { color: var(--text-muted); font-size: 9px; }
+        .model-dropdown-trigger .dd-arrow {
+            transition: transform 0.2s;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+        .model-dropdown-trigger.open .dd-arrow { transform: rotate(180deg); }
+
+        .model-dropdown-menu {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            margin-top: 4px;
+            z-index: 20;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+            overflow: hidden;
+            display: none;
+        }
+        .model-dropdown-menu.open { display: block; }
+        .model-dropdown-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background 0.1s;
+            border-left: 2px solid transparent;
+        }
+        .model-dropdown-item:hover { background: var(--surface-hover); }
+        .model-dropdown-item.selected {
+            background: var(--accent-soft);
+            border-left-color: var(--accent);
+        }
+        .model-dropdown-item .dd-name { font-size: 12px; font-weight: 500; color: var(--text); }
+        .model-dropdown-item.selected .dd-name { color: var(--accent); }
+        .model-dropdown-item .dd-desc { font-size: 9px; color: var(--text-muted); }
+
+        /* THEME TOGGLE */
+        .theme-toggle {
+            position: relative;
+            width: 48px;
+            height: 26px;
+            border-radius: 13px;
+            background: var(--border);
+            border: none;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .theme-toggle .toggle-knob {
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #e8e8e8;
+            transition: left 0.25s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        body.light .theme-toggle { background: var(--border-strong); }
+        body.light .theme-toggle .toggle-knob { left: 23px; background: #F5EDD8; }
+
+        /* ========================================
+           UPLOAD STAGE
+           ======================================== */
+        #upload-stage {
+            max-width: 520px;
+            margin: 0 auto;
+            padding: 48px 20px;
+            transition: opacity 0.3s;
+        }
+        #upload-stage.hidden { display: none; }
+
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: 10px;
+            padding: 40px 24px;
+            text-align: center;
+            cursor: pointer;
+            background: transparent;
+            transition: all 0.2s;
+            margin-bottom: 20px;
+        }
+        .drop-zone:hover, .drop-zone.drag-over {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+        }
+        .drop-zone.has-file { padding: 20px 24px; }
+        .drop-zone-icon { color: var(--text-muted); margin-bottom: 10px; transition: color 0.2s; }
+        .drop-zone:hover .drop-zone-icon { color: var(--accent); }
+        .drop-zone-text { color: var(--text); font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+        .drop-zone-hint { color: var(--text-muted); font-size: 12px; }
+        .file-selected-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            justify-content: center;
+        }
+        .file-selected-info .file-name { color: var(--text); font-size: 14px; font-weight: 600; }
+        .file-selected-info .file-meta { color: var(--text-muted); font-size: 11px; }
+
+        .upload-models { margin-bottom: 24px; }
+        .upload-models-grid { display: grid; gap: 12px; }
+        .upload-models-grid.single { grid-template-columns: 1fr; }
+        .upload-models-grid.compare { grid-template-columns: 1fr 1fr; }
+
+        .analyze-btn {
+            display: block;
+            margin: 0 auto;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 11px 40px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: background 0.2s, opacity 0.2s;
+        }
+        .analyze-btn:hover:not(:disabled) { opacity: 0.85; }
+        .analyze-btn:disabled {
+            background: var(--border);
+            color: var(--text-muted);
+            cursor: default;
+            opacity: 0.5;
+        }
+
+        /* ========================================
+           RESULTS STAGE
+           ======================================== */
+        #results-stage { display: none; }
+        #results-stage.active { display: block; }
+
+        .results-single {
+            max-width: 680px;
+            margin: 0 auto;
+            padding: 24px 20px 60px;
+        }
+        .results-single.wide { max-width: 1340px; }
+
+        .agent-status { color: var(--text-secondary); font-size: 12.5px; padding: 4px 0; }
+
+        /* ========================================
+           COMPARE LAYOUT
+           ======================================== */
+        .compare-container {
+            display: grid;
+            grid-template-columns: 1fr 1px 1fr;
+            max-width: 1800px;
+            margin: 0 auto;
+            min-height: calc(100vh - 46px);
+        }
+        .compare-divider { background: var(--border); }
+        .compare-panel { display: flex; flex-direction: column; overflow: hidden; }
+        .compare-panel-header {
+            padding: 14px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg);
+            flex-shrink: 0;
+        }
+        .compare-panel-title { font-weight: 600; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+        .compare-panel-model { color: var(--text); font-size: 0.85rem; font-weight: 600; }
+        .compare-panel-content { flex: 1; overflow-y: auto; padding: 24px; }
+
+        /* ========================================
+           WIDGET CARD (port from JSX)
+           ======================================== */
+        .widget-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: var(--shadow);
+            margin-bottom: 10px;
+            position: relative;
+            z-index: 10;
+        }
+        .widget-header {
+            padding: 9px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+        }
+        .widget-header:hover { background: rgba(255,255,255,0.02); }
+        .widget-header-left { display: flex; align-items: baseline; gap: 8px; }
+        .widget-title { color: var(--text); font-weight: 600; font-size: 13px; }
+        .widget-subtitle { color: var(--text-muted); font-size: 11px; }
+        .widget-header-right { display: flex; align-items: center; gap: 6px; }
+        .widget-content { transition: height 0.3s ease-out; overflow: hidden; }
+        .widget-content.collapsed { height: 0 !important; }
+
+        .collapse-icon { transition: transform 0.2s; color: var(--text-muted); flex-shrink: 0; }
+        .collapse-icon.collapsed { transform: rotate(-90deg); }
+
+        .btn-widget-action {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 3px;
+            display: flex;
+            color: var(--text-muted);
+            transition: color 0.2s;
+        }
+        .btn-widget-action:hover { color: var(--text); }
+
+        /* FULLSCREEN MODAL */
+        .widget-card.maximized {
+            position: fixed;
+            top: 5vh; left: 10vw;
+            width: 80vw; height: 90vh;
+            z-index: 50;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+            border: 1px solid var(--border-strong);
+        }
+        .widget-card.maximized .widget-header { flex-shrink: 0; background: var(--surface-alt); }
+        .widget-card.maximized .widget-content { flex: 1; overflow: auto; height: auto !important; max-height: none !important; }
+
         #modal-backdrop {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
@@ -105,1881 +442,1709 @@
         }
         #modal-backdrop.active { display: block; }
 
-        /* KPI GRID */
-        .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
-        .kpi-box { background-color: #1a1a1a; border: 1px solid #3e3e4e; border-radius: 8px; padding: 12px; }
-        .kpi-label { font-size: 0.75rem; color: #8e8ea0; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .kpi-value { font-size: 1.25rem; font-weight: 600; color: #ececec; }
-
-        /* VALIDATION - Updated for job-grouped display */
-        .validation-section { margin-bottom: 1px; }
-        .validation-row { padding: 12px 16px; margin-bottom: 1px; cursor: default; }
-        .validation-row.expandable { cursor: pointer; }
-        .validation-row:last-child { margin-bottom: 0; }
-        
-        .val-row-pass { background-color: rgba(16, 185, 129, 0.2); border-left: 3px solid #10b981; }
-        .val-row-fail { background-color: rgba(239, 68, 68, 0.2); border-left: 3px solid #ef4444; }
-
-        .val-header { display: flex; justify-content: space-between; align-items: center; }
-        .val-pass { color: #10b981; font-weight: 600; } 
-        .val-fail { color: #ef4444; font-weight: 600; }
-        
-        .val-details { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; padding-left: 8px; }
-        .val-details.open { max-height: 500px; margin-top: 8px; overflow-y: auto; }
-        
-        .val-expand-icon { transition: transform 0.2s; margin-left: 8px; }
-        .val-expand-icon.rotated { transform: rotate(180deg); }
-
-        /* Job issue item styling - FLAT layout */
-        .job-issue-flat { 
-            border-bottom: 1px solid rgba(255,255,255,0.1); 
-            padding: 12px 0; 
+        /* ========================================
+           VALIDATION PANEL
+           ======================================== */
+        .val-step { color: var(--text-secondary); font-size: 12.5px; padding: 4px 0; }
+        .val-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 16px;
         }
-        .job-issue-flat:last-child { border-bottom: none; }
-        .job-issue-header-flat { 
-            display: flex; 
-            align-items: center; 
-            padding: 4px 0;
-            margin-bottom: 8px;
-        }
-        .job-issue-id { 
-            font-weight: 700; 
-            color: #ffffff; 
-            font-size: 0.9rem;
-            min-width: 90px;
-        }
-        .job-issue-summary { 
-            color: #9ca3af; 
-            font-size: 0.8rem; 
-            flex: 1;
-        }
-        .job-issue-content {
-            padding-left: 0;
-        }
-        .error-line { 
-            color: #f87171; 
-            font-size: 0.8rem; 
-            padding: 4px 0;
-            padding-left: 12px;
-        }
-        .correction-line { 
-            color: #38bdf8; 
-            font-size: 0.8rem; 
-            padding: 8px 12px;
-            border-left: 2px solid #38bdf8;
-            margin: 8px 0;
-            background: rgba(56, 189, 248, 0.05);
-        }
-        .correction-arrow {
-            font-weight: 600;
-            margin-right: 6px;
-        }
-        .correction-text {
-            display: inline;
-        }
-        .correction-reasoning {
-            margin-top: 6px; 
-            color: #8e8ea0; 
-            font-size: 0.75rem;
-            line-height: 1.4;
-        }
-        .confidence-badge {
-            font-size: 0.65rem;
-            padding: 2px 6px;
-            border-radius: 3px;
-            margin-left: 8px;
-            text-transform: uppercase;
-        }
-        .confidence-high { background: rgba(16, 185, 129, 0.2); color: #10b981; }
-        .confidence-medium { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
-        .confidence-low { background: rgba(156, 163, 175, 0.2); color: #9ca3af; }
-
-        /* RISKS - Updated layout */
-        .risk-row { 
-            display: grid; 
-            grid-template-columns: 160px 1fr 80px; 
-            gap: 16px;
-            padding: 12px 0; 
-            border-bottom: 1px solid rgba(62, 62, 78, 0.3); 
-            color: #ececec; 
-            align-items: center; 
-            cursor: pointer; 
-            transition: background 0.2s; 
-        }
-        .risk-row:hover { background-color: rgba(255,255,255,0.03); }
-        .risk-header { 
-            display: grid; 
-            grid-template-columns: 160px 1fr 80px; 
-            gap: 16px;
-            padding: 8px 0; 
-            border-bottom: 1px solid #3e3e4e; 
-            color: #8e8ea0; 
-            font-size: 0.75rem; 
-            text-transform: uppercase; 
-        }
-        
-        .job-name-bold { font-weight: 700; color: #ffffff; }
-        
-        .risk-expand-icon { transition: transform 0.2s; margin-left: 6px; color: #666; display: inline-block; vertical-align: middle; }
-        .risk-expand-icon.expanded { transform: rotate(180deg); color: #ececec; }
-        
-        .risk-details { 
-            background-color: rgba(0,0,0,0.2); 
-            padding: 0 16px; 
-            max-height: 0; 
-            overflow: hidden; 
-            transition: max-height 0.3s ease-out, padding 0.3s ease; 
-            color: #a0a0a0; 
-            font-size: 0.875rem; 
-        }
-        .risk-details.expanded { max-height: 500px; padding: 16px; }
-        
-        .risk-detail-item {
-            padding: 12px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-        .risk-detail-item:last-child { border-bottom: none; }
-        .risk-detail-tag {
-            font-weight: 600;
-            color: #ececec;
-            margin-bottom: 4px;
-        }
-        .risk-detail-summary {
-            color: #d1d5db;
-            font-size: 0.85rem;
-            margin-bottom: 4px;
-        }
-        .risk-detail-explanation {
-            color: #8e8ea0;
-            font-size: 0.8rem;
-            font-style: italic;
-        }
-        
-        /* Risk tier badges */
-        .risk-tier { 
-            padding: 4px 10px; 
-            border-radius: 4px; 
-            font-size: 0.7rem; 
-            font-weight: 700; 
-            width: fit-content;
-            letter-spacing: 0.5px;
-        }
-        .risk-tier-high { background-color: rgba(239, 68, 68, 0.25); color: #ef4444; }
-        .risk-tier-medium { background-color: rgba(251, 191, 36, 0.25); color: #fbbf24; }
-        .risk-tier-low { background-color: rgba(16, 185, 129, 0.25); color: #10b981; }
-
-        /* Portfolio risk tier in header */
-        .portfolio-tier-badge {
-            padding: 4px 12px;
-            border-radius: 6px;
-            font-size: 0.75rem;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            margin-left: 12px;
-        }
-        .portfolio-tier-high { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
-        .portfolio-tier-moderate { background: rgba(251, 191, 36, 0.2); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); }
-        .portfolio-tier-low { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
-
-        /* WIP SUMMARY */
-        .wip-summary { background-color: rgba(0, 191, 255, 0.05); border-left: 3px solid #00BFFF; padding: 16px; border-radius: 6px; margin-bottom: 20px; }
-        .wip-summary h4 { color: #00BFFF; font-size: 0.875rem; font-weight: 600; text-transform: uppercase; margin-bottom: 8px; }
-        .wip-summary p { color: #d0d0d0; line-height: 1.6; font-size: 0.95rem; }
-
-        /* DATA TABLE */
-        .data-table { width: 100%; border-collapse: collapse; }
-        .data-table th { background: #2a2a2a; padding: 10px; text-align: left; color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; position: sticky; top: 0; }
-        .data-table td { padding: 10px; border-bottom: 1px solid #333; font-size: 0.85rem; color: #ececec; }
-        .text-right { text-align: right; }
-        .totals-row td { font-weight: 700; background-color: #2a2a2a; border-top: 2px solid #4b5563; color: #fff; }
-        
-        .btn-download { background: transparent; color: #00BFFF; font-size: 0.75rem; border: 1px solid #00BFFF; padding: 4px 10px; border-radius: 4px; transition: all 0.2s; margin-right: 8px; }
-        .btn-download:hover { background: rgba(0, 191, 255, 0.1); }
-        .btn-max { color: #8e8ea0; padding: 4px; border-radius: 4px; transition: all 0.2s; margin-right: 8px; }
-        .btn-max:hover { background: rgba(255,255,255,0.1); color: white; }
-
-        /* INPUT UI */
-        .input-container { background-color: #2f2f2f; border: 1.5px solid #565869; border-radius: 24px; }
-        #chat-input { background: transparent; border: none; outline: none; color: #ececec; padding: 12px 16px; width: 100%; }
-        .icon-button { color: #8e8ea0; padding: 8px; border-radius: 50%; }
-        .icon-button:hover:not(:disabled) { background-color: rgba(255,255,255,0.1); color: white; }
-        
-        .collapse-icon { transition: transform 0.3s; }
-        .collapse-icon.collapsed { transform: rotate(-90deg); }
-
-        /* === BOND WIDGET STYLES === */
-        .bond-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
-        .bond-cell { background: #1a1a1a; padding: 12px; border-radius: 6px; border: 1px solid #3e3e4e; }
-        .bond-label { color: #8e8ea0; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-        .bond-value { color: #ececec; font-weight: 500; font-size: 0.95rem; line-height: 1.4; }
-        .bond-value-sm { color: #d1d5db; font-size: 0.875rem; line-height: 1.5; }
-        .bond-risk-list { display: flex; flex-direction: column; gap: 0; }
-        .bond-risk-item { padding: 12px 0; border-bottom: 1px solid rgba(62, 62, 78, 0.3); display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: start; }
-        .bond-risk-item:last-child { border-bottom: none; }
-        
-        .statute-item { border-bottom: 1px solid rgba(62, 62, 78, 0.3); padding: 16px 0; }
-        .statute-item:last-child { border-bottom: none; }
-        .statute-header { display: flex; justify-content: space-between; align-items: center; cursor: pointer; transition: all 0.2s; padding: 4px 0; }
-        .statute-header:hover { background: rgba(255, 255, 255, 0.02); }
-        .statute-citation-text { color: #ececec; font-weight: 600; font-size: 0.95rem; margin-bottom: 4px; }
-        .statute-name { color: #8e8ea0; font-size: 0.85rem; }
-        .statute-chevron { color: #8e8ea0; transition: transform 0.3s ease, color 0.2s; flex-shrink: 0; }
-        .statute-chevron.rotated { transform: rotate(180deg); color: #ececec; }
-        .statute-details-container { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; padding: 0 8px; }
-        .statute-details-container.open { max-height: 600px; padding: 16px 8px 8px 8px; }
-        .statute-section-label { color: #8e8ea0; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
-        .statute-text { color: #d1d5db; font-size: 0.9rem; line-height: 1.6; }
-        .statute-verbatim { font-family: 'Courier New', monospace; background: #0d0d0d; padding: 12px; border-radius: 4px; color: #d1d5db; font-size: 0.85rem; border-left: 3px solid #565869; line-height: 1.6; white-space: pre-wrap; }
-        .statute-link { color: #00BFFF; font-size: 0.85rem; text-decoration: none; display: inline-block; margin-top: 8px; transition: all 0.2s; }
-        .statute-link:hover { color: #60d9ff; text-decoration: underline; }
-        
-        .opinion-badge { font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; font-weight: 600; background: rgba(16, 185, 129, 0.15); color: #10b981; text-transform: uppercase; letter-spacing: 0.5px; }
-        .opinion-header-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; padding-bottom: 20px; border-bottom: 1px solid #3e3e4e; }
-        .opinion-field { display: flex; flex-direction: column; gap: 6px; }
-        .opinion-section { background: #1a1a1a; border-radius: 8px; padding: 16px; border: 1px solid #3e3e4e; }
-        .opinion-subsection { padding: 12px 0; border-bottom: 1px solid rgba(62, 62, 78, 0.3); }
-        .opinion-subsection:last-child { border-bottom: none; padding-bottom: 0; }
-        .opinion-label { color: #8e8ea0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
-        .opinion-text { color: #ececec; font-size: 0.9rem; line-height: 1.6; }
-
-        /* MODEL SELECTOR */
-        .model-selector {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-right: 12px;
-        }
-        .model-selector label {
-            color: #8e8ea0;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .model-selector select {
-            background-color: #1a1a1a;
-            border: 1px solid #3e3e4e;
-            border-radius: 6px;
-            color: #ececec;
-            padding: 6px 28px 6px 10px;
-            font-size: 0.8rem;
-            cursor: pointer;
-            outline: none;
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238e8ea0' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 8px center;
-            transition: all 0.2s;
-        }
-        .model-selector select:hover {
-            border-color: #565869;
-        }
-        .model-selector select:focus {
-            border-color: #00BFFF;
-        }
-
-        /* METRICS WIDGET */
-        .metrics-widget {
-            background: linear-gradient(180deg, #1a1a1a 0%, #151515 100%);
-            border: 1px solid #3e3e4e;
-            border-radius: 10px;
-            padding: 14px 18px;
-            margin: 16px 0;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 20px;
-        }
-        .metrics-widget-title {
-            color: #8e8ea0;
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 4px;
-        }
-        .metrics-model-name {
-            color: #00BFFF;
-            font-weight: 600;
-            font-size: 0.9rem;
-        }
-        .metrics-stats {
-            display: flex;
-            gap: 24px;
-        }
-        .metrics-stat {
-            text-align: center;
-        }
-        .metrics-stat-value {
-            color: #ececec;
-            font-size: 1rem;
-            font-weight: 600;
-        }
-        .metrics-stat-label {
-            color: #8e8ea0;
-            font-size: 0.65rem;
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            margin-top: 2px;
-        }
-        .metrics-cost {
-            background: rgba(16, 185, 129, 0.1);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            border-radius: 6px;
+        .val-card-title {
             padding: 8px 14px;
-            text-align: center;
-        }
-        .metrics-cost-value {
-            color: #10b981;
-            font-size: 1.1rem;
-            font-weight: 700;
-        }
-        .metrics-cost-label {
-            color: #10b981;
-            font-size: 0.6rem;
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            opacity: 0.8;
-        }
-
-        /* COMPARE MODE */
-        .controls-row {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 16px;
-            padding: 12px 0;
-            margin-bottom: 8px;
-        }
-
-        .mode-toggle {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .mode-toggle-btn {
-            padding: 6px 14px;
-            border-radius: 6px;
-            font-size: 0.75rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-            border: 1px solid #3e3e4e;
-            background: transparent;
-            color: #8e8ea0;
-        }
-        .mode-toggle-btn.active {
-            background: rgba(0, 191, 255, 0.15);
-            border-color: #00BFFF;
-            color: #00BFFF;
-        }
-        .mode-toggle-btn:hover:not(.active) {
-            border-color: #565869;
-            color: #ececec;
-        }
-
-        .model-selectors {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-        .model-group {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .model-group label {
-            color: #8e8ea0;
-            font-size: 0.75rem;
+            border-bottom: 1px solid var(--border);
+            color: var(--text);
             font-weight: 600;
-            white-space: nowrap;
+            font-size: 12.5px;
         }
-        .model-group select {
-            background-color: #1a1a1a;
-            border: 1px solid #3e3e4e;
-            border-radius: 6px;
-            color: #ececec;
-            padding: 6px 28px 6px 10px;
-            font-size: 0.8rem;
-            cursor: pointer;
-            outline: none;
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238e8ea0' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 8px center;
-            transition: all 0.2s;
-        }
-        .model-group select:hover {
-            border-color: #565869;
-        }
-
-        /* Model B - hidden by default, slides in */
-        .model-group-b {
-            overflow: hidden;
-            max-width: 0;
-            opacity: 0;
-            transition: max-width 0.3s ease, opacity 0.3s ease, margin 0.3s ease;
-            margin-left: 0;
-            white-space: nowrap;
-        }
-        body.compare-mode .model-group-b {
-            max-width: 250px;
-            opacity: 1;
-            margin-left: 16px;
-        }
-
-        /* View fade transitions */
-        .messages-container {
-            animation: fadeIn 0.25s ease;
-        }
-        #compare-view {
-            animation: fadeIn 0.25s ease;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-
-        /* Compare layout */
-        .compare-container {
-            display: grid;
-            grid-template-columns: 1fr 1px 1fr;
-            gap: 0;
-            max-width: 1800px;
-            margin: 0 auto;
-            padding: 0;
-            min-height: calc(100vh - 200px);
-        }
-        .compare-divider {
-            background: #3e3e4e;
-            width: 1px;
-        }
-        .compare-panel {
-            display: flex;
-            flex-direction: column;
-            min-height: 400px;
-            overflow: hidden;
-        }
-        .compare-panel-header {
-            padding: 14px 24px;
+        .val-row {
+            padding: 7px 14px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #3e3e4e;
-            background: #212121;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        .val-row.pass {
+            border-left: 3px solid var(--risk-low);
+            background: var(--risk-low-bg);
+        }
+        .val-row.fail {
+            border-left: 3px solid var(--risk-high);
+            background: var(--risk-high-bg);
+        }
+        .val-row-left { display: flex; align-items: center; gap: 6px; }
+        .val-row-label { color: var(--text); font-size: 12px; text-transform: capitalize; }
+        .val-row-status { font-weight: 600; font-size: 12px; }
+        .val-row-status.pass { color: var(--risk-low); }
+        .val-row-status.fail { color: var(--risk-high); }
+
+        .val-expand-icon {
+            transition: transform 0.15s;
             flex-shrink: 0;
         }
-        .compare-panel-title {
-            font-weight: 600;
-            color: #8e8ea0;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+        .val-expand-icon.open { transform: rotate(90deg); }
+
+        .val-details {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
         }
-        .compare-panel-model {
-            color: #ececec;
-            font-size: 0.85rem;
-            font-weight: 600;
+        .val-details.open { max-height: 600px; overflow-y: auto; }
+        .val-details.pass-bg {
+            border-left: 3px solid var(--risk-low);
+            background: var(--risk-low-bg);
         }
-        .compare-panel-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 24px;
-        }
-        .compare-panel-content .widget-card {
-            margin: 12px 0;
-        }
-        .compare-panel-content .agent-status {
-            margin: 8px 0;
+        .val-details.fail-bg {
+            border-left: 3px solid var(--risk-high);
+            background: var(--risk-high-bg);
         }
 
-        /* Hide/show based on mode */
-        body.compare-mode .messages-container { display: none; }
-        body.compare-mode #compare-view { display: grid; }
-        #compare-view { display: none; }
+        /* Totals detail grid */
+        .val-totals-header {
+            display: grid;
+            grid-template-columns: 1fr 100px 100px 40px;
+            gap: 4px;
+            padding: 5px 14px 4px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .val-totals-header span {
+            color: var(--text-muted);
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        .val-totals-row {
+            display: grid;
+            grid-template-columns: 1fr 100px 100px 40px;
+            gap: 4px;
+            padding: 4px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+        }
+        .val-totals-row.mismatch { background: var(--risk-high-bg); }
+        .val-totals-row span { font-size: 11px; }
+        .val-totals-row .mono { font-family: ui-monospace, monospace; text-align: right; }
+        .val-totals-row .label-col { color: var(--text); }
+        .val-totals-row.mismatch .label-col { color: var(--risk-high); font-weight: 600; }
+        .val-totals-row .val-col { color: var(--text-secondary); }
+        .val-totals-row.mismatch .val-col { color: var(--risk-high); }
+        .val-delta-msg { padding: 6px 14px; color: var(--risk-high); font-size: 10px; border-top: 1px solid rgba(255,255,255,0.05); }
+
+        /* Formula/structural items */
+        .val-item-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+        }
+        .val-item-label { color: var(--text); font-size: 11px; }
+        .val-item-label.mono { font-family: ui-monospace, monospace; }
+        .val-item-right { display: flex; align-items: center; gap: 8px; }
+        .val-item-value { color: var(--text-secondary); font-size: 10.5px; }
+        .val-check { font-size: 11px; }
+        .val-check.pass { color: var(--risk-low); }
+        .val-check.fail { color: var(--risk-high); font-weight: 700; }
+
+        /* Job issues (formulaic validation corrections) */
+        .job-issue-flat { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 14px; }
+        .job-issue-flat:last-child { border-bottom: none; }
+        .job-issue-header { display: flex; align-items: center; padding: 4px 0; margin-bottom: 8px; }
+        .job-issue-id { font-weight: 700; color: var(--text); font-size: 0.9rem; min-width: 90px; }
+        .job-issue-summary { color: var(--text-secondary); font-size: 0.8rem; flex: 1; }
+        .error-line { color: var(--risk-high); font-size: 0.8rem; padding: 4px 0 4px 12px; }
+        .correction-line {
+            color: var(--accent);
+            font-size: 0.8rem;
+            padding: 8px 12px;
+            border-left: 2px solid var(--accent);
+            margin: 8px 0;
+            background: var(--accent-soft);
+        }
+        .correction-arrow { font-weight: 600; margin-right: 6px; }
+        .correction-reasoning { margin-top: 6px; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.4; }
+        .confidence-badge {
+            font-size: 0.65rem; padding: 2px 6px; border-radius: 3px;
+            margin-left: 8px; text-transform: uppercase;
+        }
+        .confidence-high { background: var(--risk-low-bg); color: var(--risk-low); }
+        .confidence-medium { background: var(--risk-med-bg); color: var(--risk-med); }
+        .confidence-low { background: rgba(156,163,175,0.2); color: var(--text-secondary); }
+
+        /* ========================================
+           DASHBOARD
+           ======================================== */
+        /* Narrative Banner */
+        .narrative-banner {
+            border-left: 3px solid var(--accent);
+            background: var(--accent-soft);
+            border-radius: 0 6px 6px 0;
+            padding: 14px 18px;
+            margin-bottom: 14px;
+        }
+        .narrative-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+        .narrative-label {
+            color: var(--accent);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+        }
+        .narrative-text { color: var(--text-secondary); font-size: 12.5px; line-height: 1.7; }
+
+        /* KPI Grid */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        @media (max-width: 900px) {
+            .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        .kpi-box {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px 12px;
+        }
+        .kpi-label {
+            font-size: 9.5px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            margin-bottom: 4px;
+        }
+        .kpi-value { font-size: 18px; font-weight: 700; color: var(--text); }
+        .kpi-value.negative { color: var(--negative); }
+
+        /* Risk Badge */
+        .risk-badge {
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            display: inline-block;
+        }
+        .risk-badge.high { background: var(--risk-high-bg); color: var(--risk-high); }
+        .risk-badge.medium, .risk-badge.moderate { background: var(--risk-med-bg); color: var(--risk-med); }
+        .risk-badge.low { background: var(--risk-low-bg); color: var(--risk-low); }
+        .risk-badge.unknown { background: rgba(128,128,128,0.15); color: var(--text-muted); }
+
+        /* Dashboard 2x2 grid */
+        .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+        @media (max-width: 900px) { .dash-grid { grid-template-columns: 1fr; } }
+
+        /* Risk Table */
+        .risk-table-header {
+            display: grid;
+            grid-template-columns: 100px 1fr 72px 48px;
+            gap: 6px;
+            padding: 6px 14px;
+            background: var(--surface-alt);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 2;
+        }
+        .risk-table-header span {
+            color: var(--text-muted);
+            font-size: 9.5px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .risk-row {
+            display: grid;
+            grid-template-columns: 100px 1fr 72px 48px;
+            gap: 6px;
+            padding: 8px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            transition: background 0.12s;
+            cursor: pointer;
+        }
+        .risk-row:hover { background: var(--surface-hover); }
+        .risk-row .risk-id { color: var(--text); font-weight: 600; font-size: 11.5px; }
+        .risk-row .risk-name { color: var(--text-muted); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .risk-tag {
+            background: rgba(128,128,128,0.1);
+            color: var(--text-secondary);
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 9.5px;
+            display: inline-block;
+            margin: 1px 2px;
+        }
+        .risk-contract { color: var(--text-secondary); font-size: 11.5px; text-align: right; align-self: center; }
+
+        /* Risk detail expand */
+        .risk-details-panel {
+            background: rgba(0,0,0,0.15);
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out, padding 0.3s ease;
+            padding: 0 16px;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+        .risk-details-panel.expanded { max-height: 500px; padding: 16px; }
+        .risk-detail-item { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .risk-detail-item:last-child { border-bottom: none; }
+        .risk-detail-tag { font-weight: 600; color: var(--text); margin-bottom: 4px; font-size: 0.85rem; }
+        .risk-detail-summary { color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 4px; }
+        .risk-detail-explanation { color: var(--text-muted); font-size: 0.8rem; font-style: italic; }
+
+        .risk-expand-icon { transition: transform 0.2s; margin-left: 6px; color: var(--text-muted); display: inline-block; vertical-align: middle; }
+        .risk-expand-icon.expanded { transform: rotate(180deg); color: var(--text); }
+
+        /* Chart containers */
+        .chart-box { min-height: 280px; }
+        .chart-box-title { color: var(--text-muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
+        .chart-legend { display: flex; gap: 14px; justify-content: flex-end; margin-bottom: 4px; }
+        .chart-legend-item { display: flex; align-items: center; gap: 4px; }
+        .chart-legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+        .chart-legend-label { font-size: 10px; color: var(--text-muted); }
+
+        /* Data Table */
+        .data-table { width: 100%; border-collapse: collapse; }
+        .data-table th {
+            background: var(--surface-alt);
+            padding: 7px 10px;
+            color: var(--text-muted);
+            font-size: 9.5px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            border-bottom: 1px solid var(--border);
+        }
+        .data-table td {
+            padding: 6px 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            font-size: 11.5px;
+            color: var(--text);
+        }
+        .data-table .text-right { text-align: right; }
+        .data-table .text-left { text-align: left; }
+        .data-table .mono { font-family: ui-monospace, monospace; font-weight: 500; white-space: nowrap; }
+        .data-table .truncate { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+        .data-table .negative { color: var(--negative); }
+        .data-table .positive { color: var(--positive); }
+        .data-table .muted { color: var(--text-muted); }
+        .data-table tr:hover td { background: var(--surface-hover); }
+
+        .data-table .totals-row td {
+            font-weight: 700;
+            border-top: 2px solid var(--border);
+            background: var(--surface-alt);
+            padding: 8px 10px;
+        }
+
+        .btn-download {
+            background: transparent;
+            color: var(--accent);
+            font-size: 0.75rem;
+            border: 1px solid var(--accent);
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .btn-download:hover { background: var(--accent-soft); }
+
+        /* Metrics Footer */
+        .metrics-footer {
+            margin-top: 10px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 9px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .metrics-model-label { font-size: 9.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .metrics-model-name { color: var(--accent); font-weight: 600; font-size: 13px; }
+        .metrics-stats { display: flex; gap: 24px; }
+        .metrics-stat { text-align: center; }
+        .metrics-stat-value { color: var(--text); font-weight: 600; font-size: 14px; }
+        .metrics-stat-label { color: var(--text-muted); font-size: 9px; text-transform: uppercase; }
+        .metrics-cost-box {
+            background: var(--risk-low-bg);
+            border: 1px solid rgba(75,168,125,0.3);
+            border-radius: 5px;
+            padding: 5px 12px;
+            text-align: center;
+        }
+        .metrics-cost-value { color: var(--risk-low); font-weight: 700; font-size: 15px; }
+        .metrics-cost-label { color: var(--risk-low); font-size: 8px; text-transform: uppercase; opacity: 0.8; }
+
+        /* ========================================
+           BOND WIDGET STYLES (preserved)
+           ======================================== */
+        .bond-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
+        .bond-cell { background: var(--bg); padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+        .bond-label { color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .bond-value { color: var(--text); font-weight: 500; font-size: 0.95rem; line-height: 1.4; }
+        .bond-value-sm { color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; }
+        .bond-risk-list { display: flex; flex-direction: column; gap: 0; }
+        .bond-risk-item { padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06); display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: start; }
+        .bond-risk-item:last-child { border-bottom: none; }
+
+        .statute-item { border-bottom: 1px solid rgba(255,255,255,0.06); padding: 16px 0; }
+        .statute-item:last-child { border-bottom: none; }
+        .statute-header { display: flex; justify-content: space-between; align-items: center; cursor: pointer; transition: all 0.2s; padding: 4px 0; }
+        .statute-header:hover { background: rgba(255,255,255,0.02); }
+        .statute-citation-text { color: var(--text); font-weight: 600; font-size: 0.95rem; margin-bottom: 4px; }
+        .statute-name { color: var(--text-secondary); font-size: 0.85rem; }
+        .statute-chevron { color: var(--text-muted); transition: transform 0.3s, color 0.2s; flex-shrink: 0; }
+        .statute-chevron.rotated { transform: rotate(180deg); color: var(--text); }
+        .statute-details-container { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; padding: 0 8px; }
+        .statute-details-container.open { max-height: 600px; padding: 16px 8px 8px 8px; }
+        .statute-section-label { color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
+        .statute-text { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.6; }
+        .statute-verbatim {
+            font-family: 'Courier New', monospace;
+            background: rgba(0,0,0,0.3);
+            padding: 12px; border-radius: 4px;
+            color: var(--text-secondary); font-size: 0.85rem;
+            border-left: 3px solid var(--border-strong);
+            line-height: 1.6; white-space: pre-wrap;
+        }
+        .statute-link { color: var(--accent); font-size: 0.85rem; text-decoration: none; display: inline-block; margin-top: 8px; }
+        .statute-link:hover { text-decoration: underline; }
+
+        .opinion-badge { font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; font-weight: 600; background: var(--risk-low-bg); color: var(--risk-low); text-transform: uppercase; letter-spacing: 0.5px; }
+        .opinion-header-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+        .opinion-field { display: flex; flex-direction: column; gap: 6px; }
+        .opinion-section { background: var(--bg); border-radius: 8px; padding: 16px; border: 1px solid var(--border); }
+        .opinion-subsection { padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .opinion-subsection:last-child { border-bottom: none; padding-bottom: 0; }
+        .opinion-label { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
+        .opinion-text { color: var(--text); font-size: 0.9rem; line-height: 1.6; }
+
+        /* New Analysis bar */
+        .new-analysis-bar {
+            display: none;
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            padding: 12px 24px;
+            background: linear-gradient(180deg, transparent 0%, var(--bg) 30%);
+            z-index: 30;
+            text-align: center;
+        }
+        .new-analysis-bar.active { display: block; }
+        .new-analysis-btn {
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            padding: 10px 32px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: background 0.2s;
+        }
+        .new-analysis-btn:hover { background: var(--accent-soft); }
     </style>
-    <!-- Firebase Libraries -->
+
+    <!-- Firebase -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        window.firebaseApp = null;
-        window.db = null;
-        window.auth = null;
-        window.userId = null;
+        window.firebaseApp = null; window.db = null; window.auth = null; window.userId = null;
         window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
-
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-        
         if (firebaseConfig) {
             const app = initializeApp(firebaseConfig);
-            window.firebaseApp = app;
-            window.db = getFirestore(app);
-            window.auth = getAuth(app);
-
+            window.firebaseApp = app; window.db = getFirestore(app); window.auth = getAuth(app);
             const initAuth = async () => {
                 try {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token)
                         await signInWithCustomToken(window.auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(window.auth);
-                    }
+                    else await signInAnonymously(window.auth);
                     window.userId = window.auth.currentUser.uid;
-                    console.log("Authenticated as:", window.userId);
-                } catch (error) {
-                    console.error("Auth Failed:", error);
-                }
+                } catch (e) { console.error("Auth Failed:", e); }
             };
             initAuth();
         }
-
         window.saveAnalysis = async (data) => {
             if (!window.db || !window.userId) return;
             try {
                 const colRef = collection(window.db, 'artifacts', window.appId, 'users', window.userId, 'wip_analyses');
-                await addDoc(colRef, {
-                    timestamp: new Date(),
-                    data: data
-                });
-                console.log("Analysis saved to Firestore");
-            } catch (e) {
-                console.error("Save failed:", e);
-            }
+                await addDoc(colRef, { timestamp: new Date(), data });
+            } catch (e) { console.error("Save failed:", e); }
         };
     </script>
 </head>
-<body class="min-h-screen overflow-y-auto pb-32">
-    
-    <!-- Backdrop for Modal -->
+<body>
     <div id="modal-backdrop"></div>
-    
-    <!-- Header -->
-    <header class="h-16 flex items-center px-6 sticky top-0 z-30 bg-[#212121]" style="padding-top: 12px;">
-        <img src="logo2_bw.png" alt="Wipple" class="h-14" onerror="this.style.display='none'">
+
+    <!-- ========== HEADER ========== -->
+    <header id="app-header">
+        <div class="header-left">
+            <img src="logo2_bw.png" alt="Wipple" style="height:22px;" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline'">
+            <span class="header-logo" style="display:none;">wipple</span>
+
+            <div class="seg-control" id="mode-toggle">
+                <button class="seg-btn active" data-mode="single">Single</button>
+                <button class="seg-btn" data-mode="compare">Compare</button>
+            </div>
+
+            <div class="seg-control" id="stage-toggle">
+                <button class="seg-btn active" data-stage="upload">Upload</button>
+                <button class="seg-btn" data-stage="validation" disabled>Validation</button>
+                <button class="seg-btn" data-stage="dashboard" disabled>Dashboard</button>
+            </div>
+        </div>
+
+        <button class="theme-toggle" id="theme-toggle">
+            <div class="toggle-knob">
+                <svg id="theme-icon-dark" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#191919" stroke-width="2.5"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+                <svg id="theme-icon-light" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#8A7F70" stroke-width="2.5" style="display:none"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            </div>
+        </button>
     </header>
 
-    <!-- Chat Window -->
-    <div id="messages-window" class="messages-container p-6"></div>
-
-    <!-- Compare View (hidden by default) -->
-    <div id="compare-view" class="compare-container">
-        <div class="compare-panel panel-a">
-            <div class="compare-panel-header">
-                <span class="compare-panel-title">Model A</span>
-                <span class="compare-panel-model" id="compare-model-a-name">-</span>
+    <!-- ========== UPLOAD STAGE ========== -->
+    <div id="upload-stage">
+        <div class="drop-zone" id="drop-zone">
+            <input type="file" id="file-input" accept="application/pdf,.xlsx,.xls,.csv" style="display:none;">
+            <div id="drop-empty">
+                <div class="drop-zone-icon">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                </div>
+                <div class="drop-zone-text">Drop WIP schedule here</div>
+                <div class="drop-zone-hint">PDF, Excel, or CSV · Click to browse</div>
             </div>
-            <div class="compare-panel-content" id="compare-panel-a"></div>
+            <div id="drop-filled" style="display:none;">
+                <div class="file-selected-info">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+                    <div>
+                        <div class="file-name" id="file-name-display"></div>
+                        <div class="file-meta" id="file-meta-display"></div>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div class="compare-divider"></div>
-        <div class="compare-panel panel-b">
-            <div class="compare-panel-header">
-                <span class="compare-panel-title">Model B</span>
-                <span class="compare-panel-model" id="compare-model-b-name">-</span>
+
+        <div class="upload-models" id="upload-models">
+            <div class="upload-models-grid single" id="models-grid">
+                <div>
+                    <div class="model-dropdown-label" id="model-a-label">Model</div>
+                    <div class="model-dropdown-wrap" id="model-a-wrap"></div>
+                </div>
+                <div id="model-b-col" style="display:none;">
+                    <div class="model-dropdown-label">Model B</div>
+                    <div class="model-dropdown-wrap" id="model-b-wrap"></div>
+                </div>
             </div>
-            <div class="compare-panel-content" id="compare-panel-b"></div>
+        </div>
+
+        <div style="text-align:center;">
+            <button id="analyze-btn" class="analyze-btn" disabled>Analyze →</button>
         </div>
     </div>
 
-    <!-- Input Area -->
-    <div class="fixed bottom-0 left-0 right-0 z-30 p-4 bg-[#212121]">
-        <div class="max-w-3xl mx-auto">
-            <!-- Unified Controls Row -->
-            <div class="controls-row">
-                <div class="mode-toggle">
-                    <button id="mode-single" class="mode-toggle-btn active">Single</button>
-                    <button id="mode-compare" class="mode-toggle-btn">Compare</button>
-                </div>
-                <div class="model-selectors">
-                    <div class="model-group">
-                        <label id="model-a-label">Model</label>
-                        <select id="model-select-a">
-                            <option value="gemini-3-pro">Gemini 3 Pro</option>
-                            <option value="gemini-3-flash">Gemini 3 Flash</option>
-                            <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
-                            <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
-                            <option value="claude-opus-4-5">Claude Opus 4.5</option>
-                        </select>
-                    </div>
-                    <div class="model-group model-group-b">
-                        <label>Model B</label>
-                        <select id="model-select-b">
-                            <option value="claude-sonnet-4-5" selected>Claude Sonnet 4.5</option>
-                            <option value="gemini-3-flash">Gemini 3 Flash</option>
-                            <option value="gemini-3-pro">Gemini 3 Pro</option>
-                            <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
-                            <option value="claude-opus-4-5">Claude Opus 4.5</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
+    <!-- ========== RESULTS STAGE ========== -->
+    <div id="results-stage">
+        <!-- Single mode: validation then dashboard -->
+        <div id="results-single" class="results-single">
+            <div id="validation-container"></div>
+            <div id="dashboard-container" style="display:none;"></div>
+        </div>
 
-            <div class="input-container flex items-center">
-                <input type="file" id="file-input" accept="application/pdf" class="hidden">
-                <button id="upload-button" class="icon-button ml-2">
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                </button>
-                <input type="text" id="chat-input" placeholder="Message Wipple" disabled>
-                <button id="send-button" class="icon-button mr-2" disabled>
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13L22 2L15 22L11 13L2 9L22 2Z" stroke-linejoin="round" stroke-linecap="round"/></svg>
-                </button>
+        <!-- Compare mode -->
+        <div id="compare-view" class="compare-container" style="display:none;">
+            <div class="compare-panel">
+                <div class="compare-panel-header">
+                    <span class="compare-panel-title">Model A</span>
+                    <span class="compare-panel-model" id="compare-model-a-name">-</span>
+                </div>
+                <div class="compare-panel-content" id="compare-panel-a"></div>
+            </div>
+            <div class="compare-divider"></div>
+            <div class="compare-panel">
+                <div class="compare-panel-header">
+                    <span class="compare-panel-title">Model B</span>
+                    <span class="compare-panel-model" id="compare-model-b-name">-</span>
+                </div>
+                <div class="compare-panel-content" id="compare-panel-b"></div>
             </div>
         </div>
+    </div>
+
+    <!-- New Analysis bar -->
+    <div class="new-analysis-bar" id="new-analysis-bar">
+        <button class="new-analysis-btn" id="new-analysis-btn">← New Analysis</button>
     </div>
 
 <script>
-    const API_ENDPOINT = "https://api.wipple.ai/analyze-stream";
-    const CHAT_ENDPOINT = "https://api.wipple.ai/chat";
-        
-    const messagesWindow = document.getElementById('messages-window');
-    const fileInput = document.getElementById('file-input');
-    const uploadButton = document.getElementById('upload-button');
-    const sendButton = document.getElementById('send-button');
-    const chatInput = document.getElementById('chat-input');
-    const modelSelectA = document.getElementById('model-select-a');
-    const modelSelectB = document.getElementById('model-select-b');
-    const modelALabel = document.getElementById('model-a-label');
-    const modeSingleBtn = document.getElementById('mode-single');
-    const modeCompareBtn = document.getElementById('mode-compare');
-    const comparePanelA = document.getElementById('compare-panel-a');
-    const comparePanelB = document.getElementById('compare-panel-b');
-    const compareModelAName = document.getElementById('compare-model-a-name');
-    const compareModelBName = document.getElementById('compare-model-b-name');
+// ==========================================
+// CONFIG & STATE
+// ==========================================
+const API_ENDPOINT = "https://api.wipple.ai/analyze-stream";
 
-    let uploadedFile = null;
-    let isProcessing = false;
-    let currentLoadingDiv = null;
-    let lastTableData = [];
-    let lastCalculatedTotals = null;
-    let fullAnalysisContext = null;
-    let selectedModel = 'gemini-3-pro';
-    let compareMode = false;
+const MODELS = [
+    { key: "gemini-3-pro", label: "Gemini 3 Pro", desc: "Fast, cost-effective" },
+    { key: "gemini-3-flash", label: "Gemini 3 Flash", desc: "Ultra fast" },
+    { key: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", desc: "Balanced performance" },
+    { key: "claude-haiku-4-5", label: "Claude Haiku 4.5", desc: "Lightweight" },
+    { key: "claude-opus-4-5", label: "Claude Opus 4.5", desc: "Highest accuracy" },
+];
 
-    // Loading animation HTML generator
-    function getLoadingHtml() {
-        return `<div class="wipple-loader-container">
-            <span class="wipple-loader-text">One moment...</span>
-            <div class="wipple-loader">
-                <img src="wipple-blue.png" alt="" class="logo-blue">
-                <img src="wipple-green.png" alt="" class="logo-green">
-                <img src="wipple-red.png" alt="" class="logo-red">
+const MODEL_NAMES = {};
+MODELS.forEach(m => MODEL_NAMES[m.key] = m.label);
+
+let state = {
+    theme: 'dark',
+    mode: 'single',        // single | compare
+    stage: 'upload',        // upload | validation | dashboard
+    file: null,
+    modelA: 'gemini-3-pro',
+    modelB: 'claude-sonnet-4-5',
+    isProcessing: false,
+    validationDone: false,
+    dashboardReady: false,
+    lastTableData: [],
+    lastCalculatedTotals: null,
+    fullAnalysisContext: null,
+};
+
+// DOM refs
+const $ = id => document.getElementById(id);
+const uploadStage = $('upload-stage');
+const resultsStage = $('results-stage');
+const resultsSingle = $('results-single');
+const compareView = $('compare-view');
+const validationContainer = $('validation-container');
+const dashboardContainer = $('dashboard-container');
+const comparePanelA = $('compare-panel-a');
+const comparePanelB = $('compare-panel-b');
+const modalBackdrop = $('modal-backdrop');
+
+// ==========================================
+// HELPERS
+// ==========================================
+function getLoadingHtml() {
+    return `<div class="wipple-loader-container">
+        <span class="wipple-loader-text">One moment...</span>
+        <div class="wipple-loader">
+            <img src="wipple-blue.png" alt="" class="logo-blue">
+            <img src="wipple-green.png" alt="" class="logo-green">
+            <img src="wipple-red.png" alt="" class="logo-red">
+        </div>
+    </div>`;
+}
+
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(0) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+const fmt = (num) => {
+    if (num === undefined || num === null || num === 0) return '—';
+    if (typeof num === 'string' && (num.includes('M') || num.includes('k') || num.includes('$'))) return num;
+    const a = Math.abs(Number(num));
+    const s = a >= 1e6 ? `$${(a/1e6).toFixed(2)}M` : a >= 1e3 ? `$${(a/1e3).toFixed(0)}K` : `$${a}`;
+    return Number(num) < 0 ? `-${s}` : s;
+};
+
+const fmtLegacy = (num) => {
+    if (num === undefined || num === null) return '$0';
+    if (typeof num === 'string' && (num.includes('M') || num.includes('k') || num.includes('$'))) return num;
+    return '$' + Math.round(Number(num)).toLocaleString();
+};
+
+// ==========================================
+// THEME
+// ==========================================
+function setTheme(t) {
+    state.theme = t;
+    if (t === 'light') {
+        document.body.classList.add('light');
+        $('theme-icon-dark').style.display = 'none';
+        $('theme-icon-light').style.display = 'block';
+    } else {
+        document.body.classList.remove('light');
+        $('theme-icon-dark').style.display = 'block';
+        $('theme-icon-light').style.display = 'none';
+    }
+    // Re-mount charts if they exist (colors change)
+    if (window.mountPendingCharts) window.mountPendingCharts();
+}
+
+$('theme-toggle').addEventListener('click', () => setTheme(state.theme === 'dark' ? 'light' : 'dark'));
+
+// ==========================================
+// MODEL DROPDOWN COMPONENT
+// ==========================================
+function createModelDropdown(wrapId, selectedKey, onChange) {
+    const wrap = $(wrapId);
+    const sel = MODELS.find(m => m.key === selectedKey) || MODELS[0];
+
+    wrap.innerHTML = `
+        <div class="model-dropdown-trigger" id="${wrapId}-trigger">
+            <div>
+                <div class="dd-name">${sel.label}</div>
+                <div class="dd-desc">${sel.desc}</div>
             </div>
-        </div>`;
-    }
+            <svg class="dd-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="model-dropdown-menu" id="${wrapId}-menu">
+            ${MODELS.map(m => `
+                <div class="model-dropdown-item ${m.key === selectedKey ? 'selected' : ''}" data-key="${m.key}">
+                    <div class="dd-name">${m.label}</div>
+                    <div class="dd-desc">${m.desc}</div>
+                </div>
+            `).join('')}
+        </div>
+    `;
 
-    function setCompareMode(enabled) {
-        if (isProcessing) return;
-        compareMode = enabled;
-        if (enabled) {
-            document.body.classList.add('compare-mode');
-            modeCompareBtn.classList.add('active');
-            modeSingleBtn.classList.remove('active');
-            modelALabel.textContent = 'Model A';
-        } else {
-            document.body.classList.remove('compare-mode');
-            modeSingleBtn.classList.add('active');
-            modeCompareBtn.classList.remove('active');
-            modelALabel.textContent = 'Model';
-        }
-    }
+    const trigger = $(`${wrapId}-trigger`);
+    const menu = $(`${wrapId}-menu`);
 
-    const agentStatusMessages = [
-        "OCR Agent is scanning the document now...",
-        "OCR was successful. Passing to Validation Agent to confirm table validity...",
-        "Validations passed. Analyst Agent is preparing final analysis..."
-    ];
-    let statusStep = 0;
-
-    const fmt = (num) => {
-        if(num === undefined || num === null) return '$0';
-        if(typeof num === 'string' && (num.includes('M') || num.includes('k') || num.includes('$'))) return num;
-        return '$' + Math.round(Number(num)).toLocaleString();
-    };
-
-    window.onload = () => { uploadButton.disabled = false; chatInput.disabled = false; };
-    uploadButton.addEventListener('click', () => !isProcessing && fileInput.click());
-    modelSelectA.addEventListener('change', (e) => { selectedModel = e.target.value; });
-    
-    // Mode toggle handlers
-    modeSingleBtn.addEventListener('click', () => setCompareMode(false));
-    modeCompareBtn.addEventListener('click', () => setCompareMode(true));
-
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length) {
-            uploadedFile = e.target.files[0];
-            chatInput.value = `Ready to analyze: ${uploadedFile.name}`;
-            sendButton.disabled = false;
+    trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = menu.classList.contains('open');
+        // Close all menus first
+        document.querySelectorAll('.model-dropdown-menu').forEach(m => m.classList.remove('open'));
+        document.querySelectorAll('.model-dropdown-trigger').forEach(t => t.classList.remove('open'));
+        if (!isOpen) {
+            menu.classList.add('open');
+            trigger.classList.add('open');
         }
     });
-    sendButton.addEventListener('click', handleSend);
 
-    function handleSend() {
-        if (!uploadedFile || isProcessing) return;
-        isProcessing = true;
-        sendButton.disabled = true;
-        statusStep = 0;
-        
-        const fileName = uploadedFile.name;
-        chatInput.value = '';
-        chatInput.placeholder = "Processing...";
-
-        if (compareMode) {
-            handleCompareMode(fileName);
-        } else {
-            handleSingleMode(fileName);
-        }
-    }
-
-    function handleSingleMode(fileName) {
-        addMessage(`Uploaded ${fileName}`, 'user');
-        addMessage(agentStatusMessages[0], 'agent-status');
-        statusStep = 1;
-        showLoading();
-
-        const formData = new FormData();
-        formData.append('file', uploadedFile);
-        formData.append('model', modelSelectA.value);
-
-        fetch(API_ENDPOINT, { method: 'POST', body: formData })
-        .then(response => {
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            function read() {
-                reader.read().then(({done, value}) => {
-                    if (done) {
-                        isProcessing = false;
-                        removeLoading();
-                        resetUI();
-                        return;
-                    }
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n\n');
-                    buffer = lines.pop();
-
-                    lines.forEach(line => {
-                        if (line.startsWith('event: ')) {
-                            const type = line.split('\n')[0].replace('event: ', '').trim();
-                            const dataStr = line.split('data: ')[1];
-                            
-                            if (type === 'status') {
-                                removeLoading();
-                                addMessage(dataStr, 'agent-status');
-                                showLoading();
-                            }
-                            else if (type === 'error') {
-                                removeLoading();
-                                addMessage("Error processing file.", 'error');
-                            }
-                            else if (type === 'router') {
-                                removeLoading();
-                                showLoading();
-                            }
-                            else if (type === 'bond_step_1') {
-                                const data = JSON.parse(dataStr);
-                                renderBondWidget1(data);
-                            }
-                            else if (type === 'bond_step_2') {
-                                const data = JSON.parse(dataStr);
-                                renderBondWidget2(data);
-                            }
-                            else if (type === 'bond_step_3') {
-                                const data = JSON.parse(dataStr);
-                                renderBondWidget3(data);
-                            }
-                            else if (type === 'result_bond_final') {
-                                fullAnalysisContext = JSON.parse(dataStr);
-                                if (fullAnalysisContext.metrics) {
-                                    const metricsDiv = document.createElement('div');
-                                    metricsDiv.className = 'mb-4';
-                                    metricsDiv.innerHTML = renderMetricsWidget(fullAnalysisContext.metrics);
-                                    messagesWindow.appendChild(metricsDiv);
-                                    messagesWindow.scrollTop = messagesWindow.scrollHeight;
-                                }
-                                if(window.saveAnalysis) window.saveAnalysis(fullAnalysisContext);
-                            }
-                            else if (type === 'result_wip') {
-                                removeLoading();
-                                const payload = JSON.parse(dataStr);
-                                const data = payload.data;
-                                fullAnalysisContext = payload;
-                                renderResults(data);
-                                if(window.saveAnalysis) window.saveAnalysis(data);
-                            }
-                            else if (type === 'result') {
-                                removeLoading();
-                                const data = JSON.parse(dataStr);
-                                renderResults(data);
-                                if(window.saveAnalysis) window.saveAnalysis(data);
-                            }
-                        }
-                    });
-                    read();
-                });
-            }
-            read();
+    menu.querySelectorAll('.model-dropdown-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const key = item.dataset.key;
+            const m = MODELS.find(x => x.key === key);
+            trigger.querySelector('.dd-name').textContent = m.label;
+            trigger.querySelector('.dd-desc').textContent = m.desc;
+            menu.querySelectorAll('.model-dropdown-item').forEach(i => i.classList.remove('selected'));
+            item.classList.add('selected');
+            menu.classList.remove('open');
+            trigger.classList.remove('open');
+            onChange(key);
         });
+    });
+}
+
+// Close dropdowns on outside click
+document.addEventListener('click', () => {
+    document.querySelectorAll('.model-dropdown-menu').forEach(m => m.classList.remove('open'));
+    document.querySelectorAll('.model-dropdown-trigger').forEach(t => t.classList.remove('open'));
+});
+
+// Init model dropdowns
+createModelDropdown('model-a-wrap', state.modelA, k => { state.modelA = k; });
+createModelDropdown('model-b-wrap', state.modelB, k => { state.modelB = k; });
+
+// ==========================================
+// MODE & STAGE MANAGEMENT
+// ==========================================
+function setMode(mode) {
+    if (state.isProcessing) return;
+    state.mode = mode;
+
+    // Update toggle buttons
+    document.querySelectorAll('#mode-toggle .seg-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+
+    // Update upload layout
+    const grid = $('models-grid');
+    const bCol = $('model-b-col');
+    const aLabel = $('model-a-label');
+
+    if (mode === 'compare') {
+        grid.classList.remove('single'); grid.classList.add('compare');
+        bCol.style.display = '';
+        aLabel.textContent = 'Model A';
+    } else {
+        grid.classList.remove('compare'); grid.classList.add('single');
+        bCol.style.display = 'none';
+        aLabel.textContent = 'Model';
     }
 
-    function handleCompareMode(fileName) {
-        // Clear previous compare results
-        comparePanelA.innerHTML = '';
-        comparePanelB.innerHTML = '';
-        
-        const modelA = modelSelectA.value;
-        const modelB = modelSelectB.value;
-        
-        // Update header names
-        const modelNames = {
-            'gemini-3-pro': 'Gemini 3 Pro',
-            'gemini-3-flash': 'Gemini 3 Flash',
-            'claude-sonnet-4-5': 'Claude Sonnet 4.5',
-            'claude-haiku-4-5': 'Claude Haiku 4.5',
-            'claude-opus-4-5': 'Claude Opus 4.5'
-        };
-        compareModelAName.textContent = modelNames[modelA] || modelA;
-        compareModelBName.textContent = modelNames[modelB] || modelB;
-        
-        // Show initial status in both panels
-        addCompareMessage('a', 'Starting analysis...', 'agent-status');
-        addCompareMessage('b', 'Starting analysis...', 'agent-status');
-        showCompareLoading('a');
-        showCompareLoading('b');
-        
-        let completedCount = 0;
-        const checkComplete = () => {
-            completedCount++;
-            if (completedCount >= 2) {
-                isProcessing = false;
-                resetUI();
-            }
-        };
-        
-        // Read file into memory so we can send it twice
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            const fileBytes = e.target.result;
-            const fileBlob = new Blob([fileBytes], { type: uploadedFile.type });
-            
-            // Start both streams with independent file copies
-            startCompareStream('a', modelA, new File([fileBlob], uploadedFile.name, { type: uploadedFile.type }), checkComplete);
-            startCompareStream('b', modelB, new File([fileBlob], uploadedFile.name, { type: uploadedFile.type }), checkComplete);
-        };
-        reader.readAsArrayBuffer(uploadedFile);
+    updateAnalyzeBtn();
+
+    // Reset to upload if switching modes
+    if (state.stage !== 'upload') {
+        setStage('upload', true);
+    }
+}
+
+function setStage(stage, force) {
+    if (!force && stage === 'validation' && !state.validationDone && !state.isProcessing) return;
+    if (!force && stage === 'dashboard' && !state.dashboardReady) return;
+
+    state.stage = stage;
+
+    // Update toggle buttons
+    document.querySelectorAll('#stage-toggle .seg-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.stage === stage);
+    });
+
+    // Show/hide stages
+    uploadStage.style.display = stage === 'upload' ? '' : 'none';
+    resultsStage.style.display = stage !== 'upload' ? '' : 'none';
+    resultsStage.classList.toggle('active', stage !== 'upload');
+
+    if (stage !== 'upload') {
+        if (state.mode === 'compare') {
+            resultsSingle.style.display = 'none';
+            compareView.style.display = '';
+        } else {
+            resultsSingle.style.display = '';
+            compareView.style.display = 'none';
+        }
     }
 
-    function startCompareStream(panel, model, file, onComplete) {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('model', model);
-        
-        fetch(API_ENDPOINT, { method: 'POST', body: formData })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
+    if (stage === 'validation') {
+        validationContainer.style.display = '';
+        dashboardContainer.style.display = 'none';
+        resultsSingle.classList.remove('wide');
+    } else if (stage === 'dashboard') {
+        validationContainer.style.display = 'none';
+        dashboardContainer.style.display = '';
+        resultsSingle.classList.add('wide');
+    }
 
-            function read() {
-                reader.read().then(({done, value}) => {
-                    if (done) {
-                        removeCompareLoading(panel);
-                        onComplete();
-                        return;
+    // Update stage button states
+    const valBtn = document.querySelector('#stage-toggle [data-stage="validation"]');
+    const dashBtn = document.querySelector('#stage-toggle [data-stage="dashboard"]');
+    valBtn.disabled = !state.validationDone && !state.isProcessing;
+    dashBtn.disabled = !state.dashboardReady;
+}
+
+function resetAll() {
+    state.file = null;
+    state.isProcessing = false;
+    state.validationDone = false;
+    state.dashboardReady = false;
+    state.lastTableData = [];
+    state.lastCalculatedTotals = null;
+    state.fullAnalysisContext = null;
+
+    validationContainer.innerHTML = '';
+    dashboardContainer.innerHTML = '';
+    comparePanelA.innerHTML = '';
+    comparePanelB.innerHTML = '';
+    $('new-analysis-bar').classList.remove('active');
+
+    // Reset file display
+    $('drop-empty').style.display = '';
+    $('drop-filled').style.display = 'none';
+    $('drop-zone').classList.remove('has-file');
+    $('file-input').value = '';
+
+    updateAnalyzeBtn();
+    setStage('upload', true);
+}
+
+// Mode toggle clicks
+document.querySelectorAll('#mode-toggle .seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => setMode(btn.dataset.mode));
+});
+
+// Stage toggle clicks
+document.querySelectorAll('#stage-toggle .seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => setStage(btn.dataset.stage));
+});
+
+$('new-analysis-btn').addEventListener('click', resetAll);
+
+// ==========================================
+// FILE HANDLING
+// ==========================================
+function selectFile(file) {
+    if (!file) return;
+    state.file = file;
+    $('file-name-display').textContent = file.name;
+    $('file-meta-display').textContent = formatFileSize(file.size) + ' · Click to change';
+    $('drop-empty').style.display = 'none';
+    $('drop-filled').style.display = '';
+    $('drop-zone').classList.add('has-file');
+    updateAnalyzeBtn();
+}
+
+function updateAnalyzeBtn() {
+    const btn = $('analyze-btn');
+    btn.disabled = !state.file;
+    btn.textContent = state.mode === 'compare' ? 'Compare →' : 'Analyze →';
+}
+
+const dropZone = $('drop-zone');
+const fileInput = $('file-input');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', e => { if (e.target.files.length) selectFile(e.target.files[0]); });
+
+// ==========================================
+// ANALYZE / SSE STREAMING
+// ==========================================
+$('analyze-btn').addEventListener('click', handleAnalyze);
+
+function handleAnalyze() {
+    if (!state.file || state.isProcessing) return;
+    state.isProcessing = true;
+    $('analyze-btn').disabled = true;
+
+    // Enable validation stage and switch to it
+    state.validationDone = false;
+    state.dashboardReady = false;
+    setStage('validation', true);
+
+    if (state.mode === 'compare') {
+        handleCompareMode();
+    } else {
+        handleSingleMode();
+    }
+}
+
+function handleSingleMode() {
+    const container = validationContainer;
+    container.innerHTML = '';
+    dashboardContainer.innerHTML = '';
+
+    addStatus(container, `Analyzing ${state.file.name}...`);
+    showLoading(container);
+
+    const formData = new FormData();
+    formData.append('file', state.file);
+    formData.append('model', state.modelA);
+
+    streamSSE(API_ENDPOINT, formData, {
+        onStatus: (msg) => { removeLoading(container); addStatus(container, msg); showLoading(container); },
+        onRouter: () => { removeLoading(container); showLoading(container); },
+        onResultWip: (payload) => { removeLoading(container); handleWipResult(payload, container, dashboardContainer); },
+        onBondStep1: (data) => { removeLoading(container); renderBondWidget1(data, container); showLoading(container); },
+        onBondStep2: (data) => { renderBondWidget2(data, container); },
+        onBondStep3: (data) => { renderBondWidget3(data, container); },
+        onBondFinal: (data) => {
+            state.fullAnalysisContext = data;
+            if (data.metrics) appendHtml(container, renderMetricsFooterHtml(data.metrics));
+            if (window.saveAnalysis) window.saveAnalysis(data);
+            finish(container);
+        },
+        onError: (msg) => { removeLoading(container); addStatus(container, `Error: ${msg}`); finish(container); },
+        onDone: () => { removeLoading(container); finish(container); },
+    });
+}
+
+function handleCompareMode() {
+    comparePanelA.innerHTML = '';
+    comparePanelB.innerHTML = '';
+
+    $('compare-model-a-name').textContent = MODEL_NAMES[state.modelA] || state.modelA;
+    $('compare-model-b-name').textContent = MODEL_NAMES[state.modelB] || state.modelB;
+
+    addStatus(comparePanelA, 'Starting analysis...');
+    addStatus(comparePanelB, 'Starting analysis...');
+    showLoading(comparePanelA); showLoading(comparePanelB);
+
+    let doneCount = 0;
+    const checkDone = () => { if (++doneCount >= 2) finish(null); };
+
+    // Panel A
+    const fdA = new FormData(); fdA.append('file', state.file); fdA.append('model', state.modelA);
+    streamSSE(API_ENDPOINT, fdA, buildCompareCallbacks(comparePanelA, checkDone));
+
+    // Panel B
+    const fdB = new FormData(); fdB.append('file', state.file); fdB.append('model', state.modelB);
+    streamSSE(API_ENDPOINT, fdB, buildCompareCallbacks(comparePanelB, checkDone));
+}
+
+function buildCompareCallbacks(panel, onComplete) {
+    return {
+        onStatus: (msg) => { removeLoading(panel); addStatus(panel, msg); showLoading(panel); },
+        onRouter: () => { removeLoading(panel); showLoading(panel); },
+        onResultWip: (payload) => {
+            removeLoading(panel);
+            const data = payload.data;
+            const wd = data.widget_data || {};
+            if (wd.validations) appendHtml(panel, renderValidationHtml(wd.validations));
+            if ((wd.kpis && wd.kpis.length > 0) || (wd.metrics && wd.metrics.row1_1)) appendHtml(panel, renderDashboardHtml(wd, data));
+            if (data.metrics) appendHtml(panel, renderMetricsFooterHtml(data.metrics));
+            setupCollapsibles(panel);
+            if (window.mountPendingCharts) window.mountPendingCharts();
+            if (window.saveAnalysis) window.saveAnalysis(data);
+        },
+        onBondStep1: (data) => { removeLoading(panel); renderBondWidget1(data, panel); showLoading(panel); },
+        onBondStep2: (data) => { renderBondWidget2(data, panel); },
+        onBondStep3: (data) => { renderBondWidget3(data, panel); },
+        onBondFinal: (data) => {
+            if (data.metrics) appendHtml(panel, renderMetricsFooterHtml(data.metrics));
+            if (window.saveAnalysis) window.saveAnalysis(data);
+        },
+        onError: (msg) => { removeLoading(panel); addStatus(panel, `Error: ${msg}`); },
+        onDone: onComplete,
+    };
+}
+
+function finish(container) {
+    state.isProcessing = false;
+    state.validationDone = true;
+    $('new-analysis-bar').classList.add('active');
+    // Update stage toggles
+    const valBtn = document.querySelector('#stage-toggle [data-stage="validation"]');
+    valBtn.disabled = false;
+}
+
+// ==========================================
+// SSE STREAM HANDLER
+// ==========================================
+function streamSSE(url, formData, callbacks) {
+    fetch(url, { method: 'POST', body: formData })
+    .then(response => {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function read() {
+            reader.read().then(({ done, value }) => {
+                if (done) { if (callbacks.onDone) callbacks.onDone(); return; }
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop();
+
+                lines.forEach(line => {
+                    if (!line.startsWith('event: ')) return;
+                    const type = line.split('\n')[0].replace('event: ', '').trim();
+                    const dataStr = line.split('data: ')[1];
+                    if (!dataStr) return;
+
+                    switch (type) {
+                        case 'status': callbacks.onStatus?.(dataStr); break;
+                        case 'router': callbacks.onRouter?.(); break;
+                        case 'error': callbacks.onError?.(dataStr); break;
+                        case 'result_wip': callbacks.onResultWip?.(JSON.parse(dataStr)); break;
+                        case 'result': callbacks.onResultWip?.({ data: JSON.parse(dataStr) }); break;
+                        case 'bond_step_1': callbacks.onBondStep1?.(JSON.parse(dataStr)); break;
+                        case 'bond_step_2': callbacks.onBondStep2?.(JSON.parse(dataStr)); break;
+                        case 'bond_step_3': callbacks.onBondStep3?.(JSON.parse(dataStr)); break;
+                        case 'result_bond_final': callbacks.onBondFinal?.(JSON.parse(dataStr)); break;
                     }
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n\n');
-                    buffer = lines.pop();
-
-                    lines.forEach(line => {
-                        if (line.startsWith('event: ')) {
-                            const type = line.split('\n')[0].replace('event: ', '').trim();
-                            const dataStr = line.split('data: ')[1];
-                            
-                            if (type === 'status') {
-                                removeCompareLoading(panel);
-                                addCompareMessage(panel, dataStr, 'agent-status');
-                                showCompareLoading(panel);
-                            }
-                            else if (type === 'error') {
-                                removeCompareLoading(panel);
-                                addCompareMessage(panel, "Error processing file.", 'error');
-                            }
-                            else if (type === 'bond_step_1') {
-                                const data = JSON.parse(dataStr);
-                                renderCompareBondWidget1(panel, data);
-                            }
-                            else if (type === 'bond_step_2') {
-                                const data = JSON.parse(dataStr);
-                                renderCompareBondWidget2(panel, data);
-                            }
-                            else if (type === 'bond_step_3') {
-                                const data = JSON.parse(dataStr);
-                                renderCompareBondWidget3(panel, data);
-                            }
-                            else if (type === 'result_bond_final') {
-                                const result = JSON.parse(dataStr);
-                                if (result.metrics) {
-                                    addCompareWidget(panel, renderMetricsWidget(result.metrics));
-                                }
-                            }
-                            else if (type === 'result_wip') {
-                                removeCompareLoading(panel);
-                                const payload = JSON.parse(dataStr);
-                                const data = payload.data;
-                                renderCompareResults(panel, data);
-                            }
-                        }
-                    });
-                    read();
                 });
-            }
-            read();
-        })
-        .catch(err => {
-            console.error(`Stream ${panel} error:`, err);
-            removeCompareLoading(panel);
-            addCompareMessage(panel, `Error: ${err.message}`, 'error');
-            onComplete();
-        });
-    }
-
-    // Compare mode helper functions
-    function getComparePanel(panel) {
-        return panel === 'a' ? comparePanelA : comparePanelB;
-    }
-
-    function addCompareMessage(panel, text, type) {
-        const container = getComparePanel(panel);
-        const div = document.createElement('div');
-        div.className = 'mb-2';
-        if (type === 'agent-status') {
-            div.innerHTML = `<div class="agent-status">${text}</div>`;
-        } else {
-            div.innerHTML = `<div class="ai-message">${text}</div>`;
+                read();
+            });
         }
-        container.appendChild(div);
-        container.scrollTop = container.scrollHeight;
+        read();
+    })
+    .catch(err => { callbacks.onError?.(err.message); });
+}
+
+// ==========================================
+// DOM HELPERS
+// ==========================================
+function addStatus(container, text) {
+    const div = document.createElement('div');
+    div.className = 'agent-status';
+    div.textContent = text;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+function appendHtml(container, html) {
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+let loadingEls = new WeakMap();
+function showLoading(container) {
+    if (loadingEls.has(container)) return;
+    const div = document.createElement('div');
+    div.className = 'agent-status';
+    div.innerHTML = getLoadingHtml();
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    loadingEls.set(container, div);
+}
+function removeLoading(container) {
+    const el = loadingEls.get(container);
+    if (el) { el.remove(); loadingEls.delete(container); }
+}
+
+// ==========================================
+// WIP RESULT HANDLER
+// ==========================================
+function handleWipResult(payload, valContainer, dashContainer) {
+    const data = payload.data;
+    const wd = data.widget_data || {};
+
+    state.lastTableData = data.clean_table || [];
+    state.lastCalculatedTotals = data.calculated_totals;
+    state.fullAnalysisContext = payload;
+
+    // 1. Validation widget in validation container
+    if (wd.validations) {
+        appendHtml(valContainer, renderValidationHtml(wd.validations));
     }
 
-    function addCompareWidget(panel, html) {
-        const container = getComparePanel(panel);
-        const div = document.createElement('div');
-        div.innerHTML = html;
-        container.appendChild(div);
-        container.scrollTop = container.scrollHeight;
+    // 2. "Open Dashboard" button
+    const openBtn = document.createElement('div');
+    openBtn.style.cssText = 'text-align:center; margin-top:28px; opacity:0; animation: fadeSlide 0.4s ease 0.1s forwards;';
+    openBtn.innerHTML = `<button class="new-analysis-btn" id="open-dashboard-btn">Open Dashboard →</button>`;
+    valContainer.appendChild(openBtn);
+
+    // 3. Build dashboard content
+    dashContainer.innerHTML = '';
+    if ((wd.kpis && wd.kpis.length > 0) || (wd.metrics && wd.metrics.row1_1)) {
+        appendHtml(dashContainer, renderDashboardHtml(wd, data));
     }
 
-    let compareLoadingA = null;
-    let compareLoadingB = null;
-
-    function showCompareLoading(panel) {
-        const container = getComparePanel(panel);
-        const loadingDiv = document.createElement('div');
-        loadingDiv.className = 'agent-status mb-2 compare-loading';
-        loadingDiv.innerHTML = getLoadingHtml();
-        container.appendChild(loadingDiv);
-        container.scrollTop = container.scrollHeight;
-        
-        if (panel === 'a') compareLoadingA = loadingDiv;
-        else compareLoadingB = loadingDiv;
+    // Table widget
+    if (data.clean_table && data.clean_table.length > 0) {
+        appendHtml(dashContainer, renderTableHtml(data.clean_table, data.calculated_totals));
     }
 
-    function removeCompareLoading(panel) {
-        const loadingDiv = panel === 'a' ? compareLoadingA : compareLoadingB;
-        if (loadingDiv) {
-            loadingDiv.remove();
-            if (panel === 'a') compareLoadingA = null;
-            else compareLoadingB = null;
+    // Metrics footer
+    if (data.metrics) {
+        appendHtml(dashContainer, renderMetricsFooterHtml(data.metrics));
+    }
+
+    setupCollapsibles();
+    if (window.mountPendingCharts) window.mountPendingCharts();
+    if (window.saveAnalysis) window.saveAnalysis(data);
+
+    // Wire up dashboard button
+    setTimeout(() => {
+        const btn = $('open-dashboard-btn');
+        if (btn) {
+            btn.addEventListener('click', () => {
+                state.dashboardReady = true;
+                const dashBtn = document.querySelector('#stage-toggle [data-stage="dashboard"]');
+                dashBtn.disabled = false;
+                setStage('dashboard');
+            });
         }
+    }, 100);
+}
+
+// ==========================================
+// VALIDATION RENDERER
+// ==========================================
+function renderValidationHtml(vals) {
+    if (!vals) return '';
+
+    const genId = () => 'v-' + Math.random().toString(36).substr(2, 8);
+
+    function renderJobIssues(jobIssues) {
+        if (!jobIssues || !jobIssues.length) return '';
+        return jobIssues.map(job => {
+            const parts = [];
+            if (job.errors?.length) parts.push(`${job.errors.length} validation${job.errors.length > 1 ? 's' : ''} failed`);
+            if (job.corrections?.length) parts.push(`${job.corrections.length} suggested fix${job.corrections.length > 1 ? 'es' : ''}`);
+
+            const errors = (job.errors || []).map(e => `<div class="error-line">✗ ${e.message}</div>`).join('');
+            const corrections = (job.corrections || []).map(c => {
+                const cls = c.confidence === 'high' ? 'confidence-high' : c.confidence === 'medium' ? 'confidence-medium' : 'confidence-low';
+                return `<div class="correction-line"><span class="correction-arrow">→</span><span><strong>Suggested fix:</strong> Change ${c.field} from ${c.current} to ${c.suggested}<span class="confidence-badge ${cls}">${c.confidence}</span></span><div class="correction-reasoning">${c.reasoning}</div></div>`;
+            }).join('');
+
+            return `<div class="job-issue-flat"><div class="job-issue-header"><span class="job-issue-id">${job.jobId}</span><span class="job-issue-summary">${parts.join(', ')}</span></div><div>${errors}${corrections}</div></div>`;
+        }).join('');
     }
 
-    function renderCompareResults(panel, data) {
-        const container = getComparePanel(panel);
-        const wd = data.widget_data || {};
-        const m = wd.metrics || {};
+    function renderDetails(key, obj) {
+        const id = genId();
+        const bgCls = obj.passed ? 'pass-bg' : 'fail-bg';
 
-        // Validation Widget
-        if (wd.validations) {
-            const valDiv = document.createElement('div');
-            valDiv.innerHTML = renderValidationWidget(wd.validations);
-            container.appendChild(valDiv);
+        if (key === 'formulaic' && obj.jobIssues?.length) {
+            return `<div id="${id}" class="val-details ${bgCls}">${renderJobIssues(obj.jobIssues)}</div>`;
         }
 
-        // Dashboard Widget - only render if we have the KPI metrics
-        if (m.row1_1) {
-            const dashDiv = document.createElement('div');
-            dashDiv.innerHTML = renderDashboardWidget(wd, m);
-            container.appendChild(dashDiv);
+        if (!obj.details?.length) return '';
+        const d0 = obj.details[0];
+
+        // Totals format: {label, extracted, calculated, match, delta?}
+        if (d0.extracted !== undefined) {
+            const header = `<div class="val-totals-header"><span>Column</span><span style="text-align:right">Extracted</span><span style="text-align:right">Calculated</span><span></span></div>`;
+            const rows = obj.details.map(d => {
+                const cls = d.match ? '' : 'mismatch';
+                const ico = d.match ? '<span class="val-check pass">✓</span>' : '<span class="val-check fail">✗</span>';
+                return `<div class="val-totals-row ${cls}"><span class="label-col">${d.label}</span><span class="val-col mono">${d.extracted}</span><span class="val-col mono">${d.calculated}</span><span style="text-align:right">${ico}</span></div>`;
+            }).join('');
+            const deltas = obj.details.filter(d => !d.match && d.delta).map(d => `<div class="val-delta-msg"><strong>${d.label}:</strong> off by ${d.delta}</div>`).join('');
+            return `<div id="${id}" class="val-details ${bgCls}">${header}${rows}${deltas}</div>`;
         }
 
-        // Metrics Widget
-        if (data.metrics) {
-            const metricsDiv = document.createElement('div');
-            metricsDiv.innerHTML = renderMetricsWidget(data.metrics);
-            container.appendChild(metricsDiv);
+        // Formula/Structural: {label, value, match}
+        if (d0.value !== undefined && d0.match !== undefined) {
+            const isMono = d0.label && (d0.label.includes('=') || d0.label.includes('−'));
+            const items = obj.details.map(d => {
+                const ico = d.match ? '<span class="val-check pass">✓</span>' : '<span class="val-check fail">✗</span>';
+                return `<div class="val-item-row"><span class="val-item-label ${isMono ? 'mono' : ''}">${d.label}</span><div class="val-item-right"><span class="val-item-value">${d.value}</span>${ico}</div></div>`;
+            }).join('');
+            return `<div id="${id}" class="val-details ${bgCls}">${items}</div>`;
         }
 
-        setupCollapsibles();
-        container.scrollTop = container.scrollHeight;
+        // Legacy: {id, msg}
+        const legacy = obj.details.map(d => `<div class="val-item-row"><span class="val-item-label"><strong>${d.id}:</strong> ${d.msg}</span></div>`).join('');
+        return `<div id="${id}" class="val-details ${bgCls}">${legacy}</div>`;
     }
 
-    function renderCompareBondWidget1(panel, data) {
-        const container = getComparePanel(panel);
-        const p = data.parties;
-        const r = data.risks;
-        
-        const html = `
-        <div class="widget-card">
-            <div class="widget-header">
-                <span class="font-semibold">Bond Analysis</span>
-                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-            </div>
-            <div class="widget-content">
-                <div style="padding: 16px;">
-                    <div class="bond-grid">
-                        <div class="bond-cell">
-                            <div class="bond-label">Principal</div>
-                            <div class="bond-value" style="font-size: 0.85rem;">${p.principal_name}</div>
-                        </div>
-                        <div class="bond-cell">
-                            <div class="bond-label">Obligee</div>
-                            <div class="bond-value" style="font-size: 0.85rem;">${p.obligee_name}</div>
-                        </div>
-                        <div class="bond-cell">
-                            <div class="bond-label">Penal Sum</div>
-                            <div class="bond-value" style="font-size: 0.85rem;">${p.penal_sum}</div>
-                        </div>
-                        <div class="bond-cell">
-                            <div class="bond-label">Bond Type</div>
-                            <div class="bond-value" style="font-size: 0.85rem;">${r.bond_type}</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>`;
-        
-        const div = document.createElement('div');
-        div.innerHTML = html;
-        container.appendChild(div);
-        setupCollapsibles();
-    }
+    function renderRow(label, obj, key) {
+        const hasDetails = (obj.details?.length > 0) || (key === 'formulaic' && obj.jobIssues?.length > 0);
+        const rowId = genId();
+        const passCls = obj.passed ? 'pass' : 'fail';
 
-    function renderCompareBondWidget2(panel, statutes) {
-        const container = getComparePanel(panel);
-        if (!statutes || statutes.length === 0) return;
-        
-        const html = `
-        <div class="widget-card">
-            <div class="widget-header">
-                <span class="font-semibold">Statutes (${statutes.length})</span>
-                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-            </div>
-            <div class="widget-content">
-                <div style="padding: 16px; font-size: 0.85rem; color: #d1d5db;">
-                    ${statutes.map(s => s.citation).join(', ')}
-                </div>
-            </div>
-        </div>`;
-        
-        const div = document.createElement('div');
-        div.innerHTML = html;
-        container.appendChild(div);
-        setupCollapsibles();
-    }
+        const chevron = hasDetails
+            ? `<svg class="val-expand-icon" id="${rowId}-ico" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="${obj.passed ? 'var(--risk-low)' : 'var(--risk-high)'}" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>`
+            : '';
 
-    function renderCompareBondWidget3(panel, op) {
-        const container = getComparePanel(panel);
-        
-        const html = `
-        <div class="widget-card">
-            <div class="widget-header">
-                <span class="font-semibold">Opinion: ${op.recommendation}</span>
-                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-            </div>
-            <div class="widget-content">
-                <div style="padding: 16px;">
-                    <div style="margin-bottom: 12px;">
-                        <div class="bond-label">Bond Description</div>
-                        <div class="bond-value" style="font-size: 0.85rem;">${op.bond_description}</div>
-                    </div>
-                    <div style="margin-bottom: 12px;">
-                        <div class="bond-label">Who Must Post</div>
-                        <div class="bond-value-sm">${op.who_must_post}</div>
-                    </div>
-                    <div>
-                        <div class="bond-label">Cancellation</div>
-                        <div class="bond-value-sm">${op.cancellation_summary}</div>
-                    </div>
-                </div>
-            </div>
-        </div>`;
-        
-        const div = document.createElement('div');
-        div.innerHTML = html;
-        container.appendChild(div);
-        setupCollapsibles();
-    }
+        const detailsHtml = hasDetails ? renderDetails(key, obj).replace(/id="v-[^"]*"/, `id="${rowId}-det"`) : '';
+        const onClick = hasDetails ? `onclick="toggleValDetails('${rowId}')"` : '';
 
-    function addMessage(text, type) {
-        const div = document.createElement('div');
-        div.className = 'mb-4 fade-in';
-        
-        if (type === 'user') {
-            div.innerHTML = `<div class="user-message user-message-anim">${text}</div>`;
-        } else if (type === 'agent-status') {
-            div.innerHTML = `<div class="agent-status">${text}</div>`;
-        } else {
-            div.innerHTML = `<div class="ai-message">${text}</div>`;
-        }
-        messagesWindow.appendChild(div);
-        messagesWindow.scrollTop = messagesWindow.scrollHeight;
-    }
-
-    function showLoading() {
-        if (currentLoadingDiv) return;
-        currentLoadingDiv = document.createElement('div');
-        currentLoadingDiv.className = 'agent-status mb-4';
-        currentLoadingDiv.innerHTML = getLoadingHtml();
-        messagesWindow.appendChild(currentLoadingDiv);
-        messagesWindow.scrollTop = messagesWindow.scrollHeight;
-    }
-
-    function removeLoading() {
-        if (currentLoadingDiv) {
-            currentLoadingDiv.remove();
-            currentLoadingDiv = null;
-        }
-    }
-
-    function resetUI() {
-        fileInput.value = ''; 
-        uploadedFile = null;
-        chatInput.value = '';
-        chatInput.placeholder = "Message Wipple";
-        uploadButton.disabled = false;
-        chatInput.disabled = false;
-    }
-
-    function renderMetricsWidget(metrics) {
-        if (!metrics || !metrics.model_name) return '';
-        
-        const time = metrics.total_time_seconds || 0;
-        const tokens = metrics.tokens || {};
-        const cost = metrics.cost_usd || 0;
-        const calls = metrics.api_calls || 0;
-        
-        // Format time as "1m 16s" for times over 60s, otherwise just seconds
-        let timeStr;
-        if (time < 60) {
-            timeStr = `${time.toFixed(1)}s`;
-        } else {
-            const mins = Math.floor(time / 60);
-            const secs = Math.round(time % 60);
-            timeStr = secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
-        }
-        const tokensStr = (tokens.total || 0).toLocaleString();
-        const costStr = cost < 0.01 ? `$${(cost * 100).toFixed(2)}c` : `$${cost.toFixed(4)}`;
-        
         return `
-            <div class="metrics-widget">
-                <div>
-                    <div class="metrics-widget-title">Analyzed with</div>
-                    <div class="metrics-model-name">${metrics.model_display_name || metrics.model_name}</div>
-                </div>
-                <div class="metrics-stats">
-                    <div class="metrics-stat">
-                        <div class="metrics-stat-value">${timeStr}</div>
-                        <div class="metrics-stat-label">Time</div>
-                    </div>
-                    <div class="metrics-stat">
-                        <div class="metrics-stat-value">${tokensStr}</div>
-                        <div class="metrics-stat-label">Tokens</div>
-                    </div>
-                    <div class="metrics-stat">
-                        <div class="metrics-stat-value">${calls}</div>
-                        <div class="metrics-stat-label">API Calls</div>
-                    </div>
-                </div>
-                <div class="metrics-cost">
-                    <div class="metrics-cost-value">${costStr}</div>
-                    <div class="metrics-cost-label">Cost</div>
-                </div>
+            <div class="val-row ${passCls}" ${onClick} style="cursor:${hasDetails ? 'pointer' : 'default'}">
+                <div class="val-row-left">${chevron}<span class="val-row-label">${label}</span></div>
+                <span class="val-row-status ${passCls}">${obj.passed ? '✓' : '✗'} ${obj.message}</span>
             </div>
+            ${detailsHtml}
         `;
     }
 
-    function renderResults(data) {
-        const wd = data.widget_data;
+    return `
+        <div class="val-card fade-slide">
+            <div class="val-card-title">Data Integrity Check</div>
+            ${renderRow('Structural', vals.structural, 'structural')}
+            ${renderRow('Formulaic', vals.formulaic, 'formulaic')}
+            ${renderRow('Totals', vals.totals, 'totals')}
+        </div>
+    `;
+}
+
+window.toggleValDetails = (id) => {
+    const det = document.getElementById(id + '-det');
+    const ico = document.getElementById(id + '-ico');
+    if (!det) return;
+    det.classList.toggle('open');
+    if (ico) ico.classList.toggle('open');
+};
+
+// ==========================================
+// DASHBOARD RENDERER
+// ==========================================
+function renderDashboardHtml(wd, data) {
+    const riskTier = wd.riskTier || 'LOW';
+    const tierCls = riskTier === 'HIGH' ? 'high' : riskTier === 'MODERATE' ? 'moderate' : 'low';
+
+    // KPIs — new array format or legacy
+    let kpiHtml = '';
+    if (wd.kpis && wd.kpis.length) {
+        kpiHtml = wd.kpis.map(k => {
+            const neg = k.negative || (k.value && (k.value.includes('Under') || k.value.startsWith('-')));
+            return `<div class="kpi-box"><div class="kpi-label">${k.label}</div><div class="kpi-value ${neg ? 'negative' : ''}">${k.value}</div></div>`;
+        }).join('');
+    } else if (wd.metrics && wd.metrics.row1_1) {
         const m = wd.metrics;
-        lastTableData = data.clean_table;
-        lastCalculatedTotals = data.calculated_totals;
-
-        // 1. Validation Widget
-        const valDiv = document.createElement('div');
-        valDiv.innerHTML = renderValidationWidget(wd.validations);
-        messagesWindow.appendChild(valDiv);
-
-        // 2. Dashboard Widget
-        const dashDiv = document.createElement('div');
-        dashDiv.innerHTML = renderDashboardWidget(wd, m);
-        messagesWindow.appendChild(dashDiv);
-
-        // 3. Full Table Widget
-        const tableDiv = document.createElement('div');
-        tableDiv.innerHTML = renderTableWidget(data.clean_table, lastCalculatedTotals);
-        messagesWindow.appendChild(tableDiv);
-
-        // 4. Metrics Widget
-        if (data.metrics) {
-            const metricsDiv = document.createElement('div');
-            metricsDiv.innerHTML = renderMetricsWidget(data.metrics);
-            messagesWindow.appendChild(metricsDiv);
-        }
-        
-        setupCollapsibles();
+        const items = [m.row1_1, m.row1_2, m.row1_3, m.row2_1, m.row2_2, m.row2_3];
+        kpiHtml = items.map(k => {
+            const neg = k.value && (k.value.includes('Under') || k.value.startsWith('-'));
+            return `<div class="kpi-box"><div class="kpi-label">${k.label}</div><div class="kpi-value ${neg ? 'negative' : ''}">${k.value}</div></div>`;
+        }).join('');
     }
 
-    function renderValidationWidget(vals) {
-        if (!vals) return '';
-        
-        const genId = () => 'val-' + Math.random().toString(36).substr(2, 9);
+    // Narrative
+    const narrative = wd.summary?.text || 'Analysis complete.';
 
-        // Build the job issues section for formulaic validation
-        const buildJobIssuesHtml = (jobIssues) => {
-            if (!jobIssues || jobIssues.length === 0) return '';
-            
-            return jobIssues.map((job, idx) => {
-                const errorCount = job.errors.length;
-                const correctionCount = job.corrections.length;
-                const summaryParts = [];
-                if (errorCount > 0) summaryParts.push(`${errorCount} validation${errorCount > 1 ? 's' : ''} failed`);
-                if (correctionCount > 0) summaryParts.push(`${correctionCount} suggested fix${correctionCount > 1 ? 'es' : ''}`);
-                
-                const errorsHtml = job.errors.map(e => 
-                    `<div class="error-line">✗ ${e.message}</div>`
-                ).join('');
-                
-                const correctionsHtml = job.corrections.map(c => {
-                    const confidenceClass = c.confidence === 'high' ? 'confidence-high' : 
-                                           c.confidence === 'medium' ? 'confidence-medium' : 'confidence-low';
-                    return `
-                        <div class="correction-line">
-                            <span class="correction-arrow">→</span>
-                            <span class="correction-text">
-                                <strong>Suggested fix:</strong> Change ${c.field} from ${c.current} to ${c.suggested}
-                                <span class="confidence-badge ${confidenceClass}">${c.confidence}</span>
-                            </span>
-                            <div class="correction-reasoning">${c.reasoning}</div>
-                        </div>
-                    `;
-                }).join('');
-                
-                // Flat structure - no nested expand
-                return `
-                    <div class="job-issue-flat">
-                        <div class="job-issue-header-flat">
-                            <span class="job-issue-id">${job.jobId}</span>
-                            <span class="job-issue-summary">${summaryParts.join(', ')}</span>
-                        </div>
-                        <div class="job-issue-content">
-                            ${errorsHtml}
-                            ${correctionsHtml}
-                        </div>
-                    </div>
-                `;
-            }).join('');
-        };
+    // Risk rows
+    let riskRowsHtml = '';
+    if (wd.riskRowsAll?.length) {
+        riskRowsHtml = wd.riskRowsAll.map((r, i) => {
+            const rid = `rk-${Date.now()}-${i}`;
+            const tierCls2 = r.riskTier === 'HIGH' ? 'high' : r.riskTier === 'MEDIUM' ? 'medium' : 'low';
+            const tags = (r.riskTags || '').split(', ').filter(Boolean).map(t => `<span class="risk-tag">${t}</span>`).join('');
+            const contract = r.contractValue ? fmt(r.contractValue) : '';
 
-        const renderRow = (label, obj, isFormulaic = false) => {
-            const hasDetails = (obj.details && obj.details.length > 0) || (isFormulaic && obj.jobIssues && obj.jobIssues.length > 0);
-            const rowId = genId();
-            const expandableClass = hasDetails ? 'expandable' : '';
-            const bgClass = obj.passed ? 'val-row-pass' : 'val-row-fail';
-            const statusClass = obj.passed ? 'val-pass' : 'val-fail';
-            
             let detailsHtml = '';
-            if (hasDetails) {
-                if (isFormulaic && obj.jobIssues && obj.jobIssues.length > 0) {
-                    detailsHtml = `<div id="${rowId}-details" class="val-details">${buildJobIssuesHtml(obj.jobIssues)}</div>`;
-                } else if (obj.details && obj.details.length > 0) {
-                    const items = obj.details.map(d => `<div class="val-error-item"><span class="font-bold text-white mr-2">${d.id}:</span>${d.msg}</div>`).join('');
-                    detailsHtml = `<div id="${rowId}-details" class="val-details">${items}</div>`;
-                }
+            if (r.riskDetails?.length) {
+                detailsHtml = r.riskDetails.map(d => `<div class="risk-detail-item"><div class="risk-detail-tag">${d.tag}</div><div class="risk-detail-summary">${d.summary}</div><div class="risk-detail-explanation">${d.detail}</div></div>`).join('');
+                detailsHtml += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);color:var(--text-muted);font-size:0.8rem;"><strong>Completion:</strong> ${r.percentComplete}</div>`;
             }
 
-            const onClick = hasDetails ? `onclick="toggleValidationDetails('${rowId}')"` : '';
-            const icon = hasDetails ? `<svg id="${rowId}-icon" class="val-expand-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>` : '';
-            
-            const statusIcon = obj.passed ? 
-                '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>' : 
-                '<svg class="mr-2" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
-
             return `
-                <div class="validation-row ${bgClass} ${expandableClass}" ${onClick}>
-                    <div class="val-header">
-                        <div class="text-gray-300 text-sm font-medium">${label}</div>
-                        <div class="val-status ${statusClass} flex items-center">
-                            ${statusIcon}
-                            <span>${obj.message}</span>
-                            ${icon}
-                        </div>
+                <div class="risk-row" onclick="toggleRisk('${rid}')">
+                    <div>
+                        <div class="risk-id">${r.jobId}<svg class="risk-expand-icon" id="${rid}-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+                        <div class="risk-name">${r.jobName || ''}</div>
                     </div>
-                    ${detailsHtml}
+                    <div style="display:flex;gap:3px;flex-wrap:wrap;align-items:center;">${tags}</div>
+                    <div class="risk-contract">${contract}</div>
+                    <div style="align-self:center;"><span class="risk-badge ${tierCls2}">${r.riskTier}</span></div>
                 </div>
-            `;
-        };
-
-        return `
-            <div class="widget-card">
-                <div class="widget-header" id="header-val">
-                    <span class="font-semibold">Data Integrity Check</span>
-                    <svg id="icon-val" class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-                </div>
-                <div class="widget-content" id="content-val">
-                    ${renderRow("Formulaic Validation", vals.formulaic, true)}
-                    ${renderRow("Totals Validation", vals.totals)}
-                    ${renderRow("Structural Validation", vals.structural)}
-                </div>
-            </div>`;
-    }
-    
-    window.toggleJobIssue = (id) => {
-        const details = document.getElementById(id + '-details');
-        const icon = document.getElementById(id + '-icon');
-        if (!details) return;
-        
-        details.classList.toggle('open');
-        if(icon) icon.classList.toggle('rotated');
-    };
-    
-    function toggleValidationDetails(rowId) {
-        const details = document.getElementById(rowId + '-details');
-        const icon = document.getElementById(rowId + '-icon');
-        if (!details) return;
-        
-        details.classList.toggle('open');
-        if(icon) icon.classList.toggle('rotated');
-        
-        const parent = details.closest('.widget-content');
-        if(parent && !parent.classList.contains('collapsed')) {
-            parent.style.height = 'auto';
-        }
-    }
-
-    function renderDashboardWidget(data, m) {
-        // Portfolio risk tier badge
-        const riskTier = data.riskTier || 'LOW';
-        const tierClass = riskTier === 'HIGH' ? 'portfolio-tier-high' : 
-                         riskTier === 'MODERATE' ? 'portfolio-tier-moderate' : 'portfolio-tier-low';
-        
-        const kpis = `
-            <div class="kpi-grid">
-                <div class="kpi-box"><div class="kpi-label">${m.row1_1.label}</div><div class="kpi-value">${m.row1_1.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.row1_2.label}</div><div class="kpi-value">${m.row1_2.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.row1_3.label}</div><div class="kpi-value">${m.row1_3.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.row2_1.label}</div><div class="kpi-value">${m.row2_1.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.row2_2.label}</div><div class="kpi-value">${m.row2_2.value}</div></div>
-                <div class="kpi-box"><div class="kpi-label">${m.row2_3.label}</div><div class="kpi-value" style="color:${m.row2_3.value.includes('Over')?'#10b981':'#ef4444'}">${m.row2_3.value}</div></div>
-            </div>`;
-
-        let riskRows = '';
-        if (data.riskRowsAll && data.riskRowsAll.length > 0) {
-            data.riskRowsAll.forEach((r, i) => {
-                const riskId = `risk-${i}`;
-                const tierClass = r.riskTier === 'HIGH' ? 'risk-tier-high' : 
-                                 r.riskTier === 'MEDIUM' ? 'risk-tier-medium' : 'risk-tier-low';
-                
-                // Build detail items
-                let detailsHtml = '';
-                if (r.riskDetails && r.riskDetails.length > 0) {
-                    detailsHtml = r.riskDetails.map(d => `
-                        <div class="risk-detail-item">
-                            <div class="risk-detail-tag">${d.tag}</div>
-                            <div class="risk-detail-summary">${d.summary}</div>
-                            <div class="risk-detail-explanation">${d.detail}</div>
-                        </div>
-                    `).join('');
-                }
-                
-                riskRows += `
-                    <div class="risk-row" onclick="toggleRisk('${riskId}')">
-                        <div>
-                            <div class="font-semibold flex items-center">
-                                ${r.jobId}
-                                <svg class="risk-expand-icon" id="${riskId}-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-                            </div>
-                            <div class="text-xs job-name-bold">${r.jobName || 'No Name'}</div>
-                        </div>
-                        <div class="text-gray-300 text-xs" style="padding-right: 12px;">${r.riskTags}</div>
-                        <div><span class="risk-tier ${tierClass}">${r.riskTier}</span></div>
-                    </div>
-                    <div id="${riskId}" class="risk-details">
-                        ${detailsHtml}
-                        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); color: #8e8ea0; font-size: 0.8rem;">
-                            <strong>Completion:</strong> ${r.percentComplete}
-                        </div>
-                    </div>`;
-            });
-        } else {
-            riskRows = '<div style="padding: 16px; color: #8e8ea0; text-align: center;">No significant risks identified</div>';
-        }
-
-        return `
-            <div class="widget-card">
-                <div class="widget-header" id="header-dash">
-                    <div class="flex items-center">
-                        <span class="font-semibold">WIP Health Summary</span>
-                        <span class="portfolio-tier-badge ${tierClass}">${riskTier} RISK</span>
-                    </div>
-                    <svg id="icon-dash" class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-                </div>
-                <div class="widget-content" id="content-dash">
-                    <div class="p-4">
-                        <div class="wip-summary"><h4>Portfolio Overview</h4><p>${data.summary ? data.summary.text : 'Analysis complete.'}</p></div>
-                        ${kpis}
-                        <div>
-                            <h4 class="text-sm font-semibold text-gray-400 mb-3">Top Risks</h4>
-                            <div class="risk-table">
-                                <div class="risk-header">
-                                    <div>Job</div>
-                                    <div>Risk Type(s)</div>
-                                    <div>Tier</div>
-                                </div>
-                                ${riskRows}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>`;
-    }
-
-    function renderTableWidget(rows, totals) {
-        if(!rows || rows.length === 0) return '';
-        let trs = rows.map(r => `
-            <tr>
-                <td class="font-mono text-xs">${r.job_id}</td>
-                <td class="text-gray-400 text-xs" title="${r.job_name}">${r.job_name || '--'}</td>
-                <td class="text-right">${fmt(r.total_contract_price)}</td>
-                <td class="text-right">${fmt(r.estimated_total_costs)}</td>
-                <td class="text-right">${fmt(r.estimated_gross_profit)}</td>
-                <td class="text-right">${fmt(r.billed_to_date)}</td>
-                <td class="text-right">${fmt(r.cost_to_date)}</td>
-                <td class="text-right text-red-400">${r.under_billings > 0 ? fmt(r.under_billings) : '-'}</td>
-                <td class="text-right text-green-400">${r.over_billings > 0 ? fmt(r.over_billings) : '-'}</td>
-                <td class="text-right">${fmt(r.uegp)}</td>
-                <td class="text-right">${fmt(r.cost_to_complete)}</td>
-            </tr>`).join('');
-
-        if (totals) {
-            trs += `
-            <tr class="totals-row">
-                <td>TOTAL</td>
-                <td></td>
-                <td class="text-right">${fmt(totals.total_contract_price)}</td>
-                <td class="text-right">${fmt(totals.estimated_total_costs)}</td>
-                <td class="text-right">${fmt(totals.estimated_gross_profit)}</td>
-                <td class="text-right">${fmt(totals.billed_to_date)}</td>
-                <td class="text-right">${fmt(totals.cost_to_date)}</td>
-                <td class="text-right text-red-400">${fmt(totals.under_billings)}</td>
-                <td class="text-right text-green-400">${fmt(totals.over_billings)}</td>
-                <td class="text-right">${fmt(totals.uegp)}</td>
-                <td class="text-right">${fmt(totals.cost_to_complete)}</td>
-            </tr>`;
-        }
-
-        const tableId = 'tbl-' + Math.random().toString(36).substr(2, 9);
-
-        return `
-             <div class="widget-card" id="card-${tableId}">
-                <div class="widget-header" id="header-${tableId}" style="padding-right: 8px;">
-                    <span class="font-semibold flex-1">Validated WIP (${rows.length} Rows)</span>
-                    <button onclick="toggleMaximize('${tableId}', event)" class="btn-max" title="Maximize">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
-                    </button>
-                    <button onclick="downloadCSV(event)" class="btn-download">Download CSV</button>
-                    <svg id="icon-${tableId}" class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-                </div>
-                <div class="widget-content collapsed" id="content-${tableId}" style="height: 0px;">
-                    <div class="data-table" style="max-height: 400px; overflow-y: auto;">
-                        <table class="w-full">
-                            <thead>
-                                <tr>
-                                    <th>ID</th><th>Name</th><th class="text-right">Contract</th>
-                                    <th class="text-right">Est Cost</th><th class="text-right">Est GP</th>
-                                    <th class="text-right">Billed</th><th class="text-right">Costs</th>
-                                    <th class="text-right">UB</th><th class="text-right">OB</th>
-                                    <th class="text-right">UEGP</th><th class="text-right">CTC</th>
-                                </tr>
-                            </thead>
-                            <tbody>${trs}</tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>`;
-    }
-
-    function toggleMaximize(id, e) {
-        e.stopPropagation();
-        const card = document.getElementById(`card-${id}`);
-        const backdrop = document.getElementById('modal-backdrop');
-        
-        if(card.classList.contains('maximized')) {
-            card.classList.remove('maximized');
-            backdrop.classList.remove('active');
-        } else {
-            card.classList.add('maximized');
-            backdrop.classList.add('active');
-            const content = document.getElementById(`content-${id}`);
-            content.classList.remove('collapsed');
-            content.style.height = 'auto';
-        }
-    }
-
-    function downloadCSV(e) {
-        e.stopPropagation(); 
-        if (!lastTableData || !lastTableData.length) return;
-        
-        const headers = [
-            "job_id", "job_name", "total_contract_price", "estimated_total_costs", "estimated_gross_profit",
-            "billed_to_date", "cost_to_date", "under_billings", "over_billings", "uegp", "cost_to_complete"
-        ];
-        
-        const csvRows = [headers.join(',')];
-        
-        for (const row of lastTableData) {
-            const values = headers.map(header => {
-                const val = row[header];
-                return `"${('' + val).replace(/"/g, '""')}"`;
-            });
-            csvRows.push(values.join(','));
-        }
-        
-        if (lastCalculatedTotals) {
-            const totalValues = headers.map(header => {
-                if (header === 'job_id') return '"TOTALS"';
-                if (header === 'job_name') return '""';
-                const val = lastCalculatedTotals[header] || 0;
-                return `"${val}"`;
-            });
-            csvRows.push(totalValues.join(','));
-        }
-        
-        const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = 'wip_extract.csv'; a.click();
-    }
-
-    function toggleRisk(id) {
-        const el = document.getElementById(id);
-        const icon = document.getElementById(id + '-icon');
-        el.classList.toggle('expanded');
-        if(icon) icon.classList.toggle('expanded');
-    }
-
-    function setupCollapsibles() {
-        const widgets = document.querySelectorAll('.widget-card');
-        widgets.forEach(widget => {
-            const header = widget.querySelector('.widget-header');
-            const content = widget.querySelector('.widget-content');
-            const icon = widget.querySelector('.collapse-icon');
-            
-            if(!header || !content) return;
-            
-            const newHeader = header.cloneNode(true);
-            header.parentNode.replaceChild(newHeader, header);
-            
-            newHeader.addEventListener('click', (e) => {
-                if(e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
-                
-                if (content.classList.contains('collapsed')) {
-                    content.classList.remove('collapsed');
-                    content.style.height = content.scrollHeight + "px";
-                    if(icon) icon.classList.remove('collapsed');
-                    setTimeout(() => { if(!content.classList.contains('collapsed')) content.style.height = 'auto'; }, 300);
-                } else {
-                    content.style.height = content.scrollHeight + "px";
-                    content.offsetHeight; 
-                    content.classList.add('collapsed');
-                    content.style.height = "0px";
-                    if(icon) icon.classList.add('collapsed');
-                }
-            });
-        });
-    }
-
-    // === BOND WIDGET RENDERERS (unchanged) ===
-
-    function renderBondWidget1(data) {
-        const p = data.parties;
-        const r = data.risks;
-        
-        const html = `
-        <div class="widget-card">
-            <div class="widget-header">
-                <span class="font-semibold">Bond Analysis & Risk Terms</span>
-                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-            </div>
-            <div class="widget-content">
-                <div style="margin-bottom: 24px; padding: 20px 20px 0 20px;">
-                    <h4 style="color: #ffffff; font-size: 1.125rem; font-weight: 700; margin-bottom: 12px;">Parties Involved</h4>
-                    <div class="bond-grid">
-                        <div class="bond-cell">
-                            <div class="bond-label">Principal</div>
-                            <div class="bond-value">${p.principal_name}</div>
-                        </div>
-                        <div class="bond-cell">
-                            <div class="bond-label">Obligee</div>
-                            <div class="bond-value">${p.obligee_name}</div>
-                        </div>
-                        <div class="bond-cell">
-                            <div class="bond-label">Surety</div>
-                            <div class="bond-value">${p.surety_name || 'Not Specified'}</div>
-                        </div>
-                        <div class="bond-cell">
-                            <div class="bond-label">Penal Sum</div>
-                            <div class="bond-value">${p.penal_sum}</div>
-                        </div>
-                    </div>
-                </div>
-                <div style="padding: 0 20px 20px 20px;">
-                    <h4 style="color: #ffffff; font-size: 1.125rem; font-weight: 700; margin-bottom: 12px;">Key Risk Clauses</h4>
-                    <div class="bond-risk-list">
-                        <div class="bond-risk-item">
-                            <div class="bond-label">Security Required</div>
-                            <div class="bond-value-sm">${r.security_required}</div>
-                        </div>
-                        <div class="bond-risk-item">
-                            <div class="bond-label">Type</div>
-                            <div class="bond-value-sm">${r.bond_type}</div>
-                        </div>
-                        <div class="bond-risk-item">
-                            <div class="bond-label">Forms Provided</div>
-                            <div class="bond-value-sm">${r.forms_provided}</div>
-                        </div>
-                        <div class="bond-risk-item">
-                            <div class="bond-label">Adjustable Amount</div>
-                            <div class="bond-value-sm">${r.adjustable_amount}</div>
-                        </div>
-                        <div class="bond-risk-item">
-                            <div class="bond-label">Cancellation Notice</div>
-                            <div class="bond-value-sm">${r.cancellation_notice_period}</div>
-                        </div>
-                        <div class="bond-risk-item">
-                            <div class="bond-label">Effective Duration</div>
-                            <div class="bond-value-sm">${r.effective_duration}</div>
-                        </div>
-                        <div class="bond-risk-item">
-                            <div class="bond-label">Quick Payment Terms</div>
-                            <div class="bond-value-sm">${r.quick_payment_terms}</div>
-                        </div>
-                        <div class="bond-risk-item">
-                            <div class="bond-label">Efficiency Guarantees</div>
-                            <div class="bond-value-sm">${r.efficiency_guarantees}</div>
-                        </div>
-                        <div class="bond-risk-item">
-                            <div class="bond-label">Enforcement Mechanisms</div>
-                            <div class="bond-value-sm">${r.enforcement_mechanisms}</div>
-                        </div>
-                        <div class="bond-risk-item" style="border: none;">
-                            <div class="bond-label">Cancellation Terms</div>
-                            <div class="bond-value-sm" style="font-style: italic; color: #d1d5db;">"${r.cancellation_terms}"</div>
-                        </div>
-                        <div class="bond-risk-item" style="border: none;">
-                            <div class="bond-label">Forfeiture Language</div>
-                            <div class="bond-value-sm" style="font-style: italic; color: #d1d5db;">${r.forfeiture_language}</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>`;
-        
-        addMessage(html, 'widget');
-        setupCollapsibles();
-    }
-
-    function renderBondWidget2(statutes) {
-        if (!statutes || statutes.length === 0) {
-            const html = `
-            <div class="widget-card">
-                <div class="widget-header">
-                    <span class="font-semibold">Statutory References & Compliance</span>
-                    <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-                </div>
-                <div class="widget-content">
-                    <div style="padding: 20px;">
-                        <div style="color: #8e8ea0; font-size: 0.875rem;">No specific statutes cited in this bond.</div>
-                    </div>
-                </div>
-            </div>`;
-            addMessage(html, 'widget');
-            setupCollapsibles();
-            return;
-        }
-
-        const items = statutes.map((s, idx) => {
-            const hasExcerpt = s.verbatim_text && s.verbatim_text !== 'Excerpt not found.';
-            const hasSummary = s.plain_summary && s.plain_summary.length > 0;
-            
-            return `
-                <div class="statute-item">
-                    <div class="statute-header" onclick="toggleStatute(${idx})">
-                        <div>
-                            <div class="statute-citation-text">${s.citation}</div>
-                            <div class="statute-name">${s.name}</div>
-                        </div>
-                        <svg id="statute-icon-${idx}" class="statute-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M6 9l6 6 6-6"/>
-                        </svg>
-                    </div>
-                    <div id="stat-${idx}" class="statute-details-container">
-                        ${hasSummary ? `
-                            <div style="margin-bottom: 12px;">
-                                <div class="statute-section-label">SUMMARY</div>
-                                <div class="statute-text">${s.plain_summary}</div>
-                            </div>
-                        ` : ''}
-                        ${hasExcerpt ? `
-                            <div style="margin-bottom: 12px;">
-                                <div class="statute-section-label">VERBATIM TEXT</div>
-                                <div class="statute-verbatim">${s.verbatim_text}</div>
-                            </div>
-                        ` : ''}
-                        ${s.source_link ? `
-                            <a href="${s.source_link}" target="_blank" class="statute-link">
-                                View Official Source ↗
-                            </a>
-                        ` : ''}
-                        ${!hasExcerpt && !hasSummary ? `
-                            <div class="statute-text" style="color: #8e8ea0;">Statute identified but unable to retrieve official excerpt.</div>
-                        ` : ''}
-                    </div>
-                </div>
+                <div id="${rid}" class="risk-details-panel">${detailsHtml}</div>
             `;
         }).join('');
-
-        const html = `
-        <div class="widget-card">
-            <div class="widget-header">
-                <span class="font-semibold">Statutory References & Compliance</span>
-                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-            </div>
-            <div class="widget-content">
-                <div style="padding: 20px;">
-                    ${items}
-                </div>
-            </div>
-        </div>`;
-        
-        addMessage(html, 'widget');
-        setupCollapsibles();
+    } else {
+        riskRowsHtml = '<div style="padding:16px;color:var(--text-muted);text-align:center;">No significant risks identified</div>';
     }
 
-    window.toggleStatute = (idx) => {
-        const el = document.getElementById(`stat-${idx}`);
-        const icon = document.getElementById(`statute-icon-${idx}`);
-        
-        if (!el) return;
-        
-        if (el.classList.contains('open')) {
-            el.classList.remove('open');
-            if (icon) icon.classList.remove('rotated');
-        } else {
-            el.classList.add('open');
-            if (icon) icon.classList.add('rotated');
+    // Charts — generate data from clean_table
+    const chartId = 'ch-' + Math.random().toString(36).substr(2, 6);
+    let chartHtml = '';
+    const table = data?.clean_table || state.lastTableData || [];
+
+    if (table.length > 0) {
+        // Billing chart data: UB (negative) and OB (positive)
+        const billingData = table
+            .filter(r => (r.under_billings > 0 || r.over_billings > 0))
+            .map(r => ({
+                name: (r.job_name || r.job_id || '').substring(0, 14),
+                value: r.over_billings > 0 ? Math.round(r.over_billings / 1000) : -Math.round(r.under_billings / 1000)
+            }))
+            .sort((a, b) => a.value - b.value)
+            .slice(0, 10);
+
+        // Margin chart data: estimated GP% vs actual GP%
+        const marginData = table
+            .filter(r => r.total_contract_price > 100000 && r.estimated_total_costs > 0 && r.cost_to_date > 0)
+            .map(r => {
+                const estGPpct = r.total_contract_price > 0 ? (r.estimated_gross_profit / r.total_contract_price * 100) : 0;
+                const poc = r.cost_to_date / r.estimated_total_costs;
+                const expectedGP = r.estimated_gross_profit * poc;
+                const actualGPtd = r.gross_profit_to_date || (r.revenues_earned - r.cost_to_date) || 0;
+                const actualGPpct = r.cost_to_date > 0 ? (actualGPtd / (r.cost_to_date + actualGPtd) * 100) : 0;
+                return { name: (r.job_name || r.job_id || '').substring(0, 14), estimated: +estGPpct.toFixed(1), actual: +actualGPpct.toFixed(1) };
+            })
+            .sort((a, b) => (a.actual - a.estimated) - (b.actual - b.estimated))
+            .slice(0, 8);
+
+        if (billingData.length > 0 || marginData.length > 0) {
+            window.__chartQueue = window.__chartQueue || [];
+            window.__chartQueue.push({ id: chartId, charts: { billing: billingData, margin: marginData } });
+
+            chartHtml = `
+                <div class="dash-grid">
+                    <div class="widget-card"><div class="widget-header"><div class="widget-header-left"><span class="widget-title">Billing Position</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div><div class="widget-content"><div style="padding:14px;"><div class="chart-box" id="${chartId}-billing" style="width:100%;height:260px;"></div></div></div></div>
+                    <div class="widget-card"><div class="widget-header"><div class="widget-header-left"><span class="widget-title">Margin Analysis</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div><div class="widget-content"><div style="padding:14px;"><div class="chart-legend"><div class="chart-legend-item"><div class="chart-legend-dot" style="background:var(--chart-bar1);opacity:0.25"></div><span class="chart-legend-label">Estimated</span></div><div class="chart-legend-item"><div class="chart-legend-dot" style="background:var(--positive);opacity:0.7"></div><span class="chart-legend-label">Actual</span></div></div><div class="chart-box" id="${chartId}-margin" style="width:100%;height:260px;"></div></div></div></div>
+                </div>
+            `;
         }
-    };
-
-    function renderBondWidget3(op) {
-        const html = `
-        <div class="widget-card">
-            <div class="widget-header">
-                <span class="font-semibold">Underwriting Opinion</span>
-                <svg class="collapse-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-            </div>
-            <div class="widget-content">
-                <div style="padding: 20px;">
-                <div class="opinion-header-grid">
-                    <div class="opinion-field">
-                        <div class="bond-label">Risk State</div>
-                        <div class="bond-value">${op.risk_state}</div>
-                    </div>
-                    <div class="opinion-field">
-                        <div class="bond-label">Obligee</div>
-                        <div class="bond-value">${op.obligee}</div>
-                    </div>
-                    <div class="opinion-field">
-                        <div class="bond-label">Bond Description</div>
-                        <div class="bond-value">${op.bond_description}</div>
-                    </div>
-                    <div class="opinion-field">
-                        <div class="bond-label">SFAA No. / Descriptor</div>
-                        <div class="bond-value">${op.sfaa_descriptor}</div>
-                    </div>
-                    <div class="opinion-field">
-                        <div class="bond-label">Penalty</div>
-                        <div class="bond-value">${op.penalty}</div>
-                    </div>
-                    <div class="opinion-field" style="grid-column: span 1;">
-                        <div class="bond-label">Statutory References</div>
-                        <div class="bond-value-sm">${op.statutory_references.join(', ')}</div>
-                    </div>
-                </div>
-                <div style="margin-top: 24px;">
-                    <h4 style="color: #ffffff; font-size: 1.125rem; font-weight: 700; margin-bottom: 16px;">Legal Opinion</h4>
-                    <div class="opinion-section">
-                        <div class="opinion-subsection">
-                            <div class="opinion-label">Who Must Post Bond</div>
-                            <div class="opinion-text">${op.who_must_post}</div>
-                        </div>
-                        <div class="opinion-subsection">
-                            <div class="opinion-label">Statutory Definitions</div>
-                            <div class="opinion-text">${op.statutory_definitions}</div>
-                        </div>
-                        <div class="opinion-subsection">
-                            <div class="opinion-label">Exemptions</div>
-                            <div class="opinion-text">${op.exemptions}</div>
-                        </div>
-                        <div class="opinion-subsection">
-                            <div class="opinion-label">Bond Guarantees</div>
-                            <div class="opinion-text">${op.bond_guarantees}</div>
-                        </div>
-                        <div class="opinion-subsection">
-                            <div class="opinion-label">Licensing/Bonding Deadlines</div>
-                            <div class="opinion-text">${op.deadlines_cycles}</div>
-                        </div>
-                        <div class="opinion-subsection">
-                            <div class="opinion-label">Past Claims Experience</div>
-                            <div class="opinion-text">${op.claims_history}</div>
-                        </div>
-                        <div class="opinion-subsection">
-                            <div class="opinion-label">Alternative Instruments</div>
-                            <div class="opinion-text">${op.alternative_instruments}</div>
-                        </div>
-                    </div>
-                </div>
-                <div style="margin-top: 24px;">
-                    <h4 style="color: #ffffff; font-size: 1.125rem; font-weight: 700; margin-bottom: 12px;">Cancellation Clause</h4>
-                    
-                    <div style="margin-bottom: 12px;">
-                        <div class="statute-section-label">SUMMARY</div>
-                        <div class="statute-text">${op.cancellation_summary}</div>
-                    </div>
-                    
-                    <div>
-                        <div class="statute-section-label">VERBATIM TEXT</div>
-                        <div class="statute-verbatim">${op.cancellation_verbatim}</div>
-                    </div>
-                </div>
-                </div>
-            </div>
-        </div>`;
-        
-        addMessage(html, 'widget');
-        setupCollapsibles();
     }
+
+    const highCount = (wd.riskRowsAll || []).filter(r => r.riskTier === 'HIGH').length;
+
+    return `
+        <div class="fade-slide">
+            <div class="narrative-banner">
+                <div class="narrative-header">
+                    <span class="narrative-label">Portfolio Overview</span>
+                    <span class="risk-badge ${tierCls}">${riskTier}</span>
+                </div>
+                <p class="narrative-text">${narrative}</p>
+            </div>
+
+            <div class="kpi-grid">${kpiHtml}</div>
+
+            <div class="dash-grid">
+                <div class="widget-card" id="card-risks"><div class="widget-header" style="padding-right:8px;"><div class="widget-header-left"><span class="widget-title">Key Risks</span><span class="widget-subtitle">${highCount} high · ${(wd.riskRowsAll||[]).length} total</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+                    <div class="widget-content" style="max-height:340px;overflow-y:auto;">
+                        <div class="risk-table-header"><span>Job</span><span>Risk Types</span><span style="text-align:right">Contract</span><span>Tier</span></div>
+                        ${riskRowsHtml}
+                    </div>
+                </div>
+
+                <div style="display:flex;flex-direction:column;gap:10px;"><!-- placeholder for right column if no charts --></div>
+            </div>
+
+            ${chartHtml}
+        </div>
+    `;
+}
+
+window.toggleRisk = (id) => {
+    const el = document.getElementById(id);
+    const ico = document.getElementById(id + '-ico');
+    if (el) el.classList.toggle('expanded');
+    if (ico) ico.classList.toggle('expanded');
+};
+
+// ==========================================
+// TABLE RENDERER
+// ==========================================
+function renderTableHtml(rows, totals) {
+    if (!rows?.length) return '';
+
+    const tableId = 'tbl-' + Math.random().toString(36).substr(2, 8);
+
+    const trs = rows.map(r => `
+        <tr>
+            <td class="text-left mono">${r.job_id}</td>
+            <td class="text-left truncate" title="${r.job_name || ''}">${r.job_name || '—'}</td>
+            <td class="text-right">${fmtLegacy(r.total_contract_price)}</td>
+            <td class="text-right">${fmtLegacy(r.estimated_total_costs)}</td>
+            <td class="text-right ${r.estimated_gross_profit < 0 ? 'negative' : ''}">${fmtLegacy(r.estimated_gross_profit)}</td>
+            <td class="text-right">${fmtLegacy(r.billed_to_date)}</td>
+            <td class="text-right">${fmtLegacy(r.cost_to_date)}</td>
+            <td class="text-right ${r.under_billings > 0 ? 'negative' : 'muted'}">${r.under_billings > 0 ? fmtLegacy(r.under_billings) : '—'}</td>
+            <td class="text-right ${r.over_billings > 0 ? 'positive' : 'muted'}">${r.over_billings > 0 ? fmtLegacy(r.over_billings) : '—'}</td>
+            <td class="text-right">${fmtLegacy(r.cost_to_complete)}</td>
+        </tr>
+    `).join('');
+
+    let totalsRow = '';
+    if (totals) {
+        totalsRow = `<tr class="totals-row">
+            <td class="text-left"></td><td class="text-left" style="font-weight:700;">TOTALS</td>
+            <td class="text-right">${fmtLegacy(totals.total_contract_price)}</td>
+            <td class="text-right">${fmtLegacy(totals.estimated_total_costs)}</td>
+            <td class="text-right ${(totals.estimated_gross_profit||0) < 0 ? 'negative' : ''}">${fmtLegacy(totals.estimated_gross_profit)}</td>
+            <td class="text-right">${fmtLegacy(totals.billed_to_date)}</td>
+            <td class="text-right">${fmtLegacy(totals.cost_to_date)}</td>
+            <td class="text-right negative">${fmtLegacy(totals.under_billings)}</td>
+            <td class="text-right positive">${fmtLegacy(totals.over_billings)}</td>
+            <td class="text-right">${fmtLegacy(totals.cost_to_complete)}</td>
+        </tr>`;
+    }
+
+    return `
+        <div class="widget-card" id="card-${tableId}">
+            <div class="widget-header" style="padding-right:8px;">
+                <div class="widget-header-left"><span class="widget-title">Validated WIP (${rows.length} rows)</span></div>
+                <div class="widget-header-right">
+                    <button onclick="toggleMaximize('${tableId}',event)" class="btn-widget-action" title="Maximize">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                    </button>
+                    <button onclick="downloadCSV(event)" class="btn-download">Download CSV</button>
+                    <svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+                </div>
+            </div>
+            <div class="widget-content collapsed" style="height:0;">
+                <div style="max-height:400px;overflow:auto;">
+                    <table class="data-table">
+                        <thead><tr>
+                            <th class="text-left">ID</th><th class="text-left">Name</th>
+                            <th class="text-right">Contract</th><th class="text-right">Est Cost</th>
+                            <th class="text-right">Est GP</th><th class="text-right">Billed</th>
+                            <th class="text-right">CTD</th><th class="text-right">UB</th>
+                            <th class="text-right">OB</th><th class="text-right">CTC</th>
+                        </tr></thead>
+                        <tbody>${trs}${totalsRow}</tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// ==========================================
+// METRICS FOOTER RENDERER
+// ==========================================
+function renderMetricsFooterHtml(metrics) {
+    if (!metrics?.model_name && !metrics?.model_display_name) return '';
+    const time = metrics.total_time_seconds || 0;
+    const tokens = metrics.tokens || {};
+    const cost = metrics.cost_usd || 0;
+    const calls = metrics.api_calls || 0;
+
+    let timeStr;
+    if (time < 60) timeStr = `${time.toFixed(1)}s`;
+    else { const m = Math.floor(time / 60); const s = Math.round(time % 60); timeStr = s > 0 ? `${m}m ${s}s` : `${m}m`; }
+
+    const tokensStr = (tokens.total || 0).toLocaleString();
+    const costStr = cost < 0.01 ? `$${(cost * 100).toFixed(2)}c` : `$${cost.toFixed(4)}`;
+
+    return `
+        <div class="metrics-footer">
+            <div>
+                <div class="metrics-model-label">Analyzed with</div>
+                <div class="metrics-model-name">${metrics.model_display_name || metrics.model_name}</div>
+            </div>
+            <div class="metrics-stats">
+                <div class="metrics-stat"><div class="metrics-stat-value">${timeStr}</div><div class="metrics-stat-label">Time</div></div>
+                <div class="metrics-stat"><div class="metrics-stat-value">${tokensStr}</div><div class="metrics-stat-label">Tokens</div></div>
+                <div class="metrics-stat"><div class="metrics-stat-value">${calls}</div><div class="metrics-stat-label">Calls</div></div>
+            </div>
+            <div class="metrics-cost-box">
+                <div class="metrics-cost-value">${costStr}</div>
+                <div class="metrics-cost-label">Cost</div>
+            </div>
+        </div>
+    `;
+}
+
+// ==========================================
+// BOND WIDGET RENDERERS (preserved from original)
+// ==========================================
+function renderBondWidget1(data, container) {
+    const p = data.parties || {};
+    const r = data.risks || {};
+
+    const html = `
+    <div class="widget-card">
+        <div class="widget-header"><div class="widget-header-left"><span class="widget-title">Bond Analysis & Risk Terms</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+        <div class="widget-content">
+            <div style="margin-bottom:24px;padding:20px 20px 0;">
+                <h4 style="color:var(--text);font-size:1.125rem;font-weight:700;margin-bottom:12px;">Parties Involved</h4>
+                <div class="bond-grid">
+                    <div class="bond-cell"><div class="bond-label">Principal</div><div class="bond-value">${p.principal_name || 'N/A'}</div></div>
+                    <div class="bond-cell"><div class="bond-label">Obligee</div><div class="bond-value">${p.obligee_name || 'N/A'}</div></div>
+                    <div class="bond-cell"><div class="bond-label">Surety</div><div class="bond-value">${p.surety_name || 'Not Specified'}</div></div>
+                    <div class="bond-cell"><div class="bond-label">Penal Sum</div><div class="bond-value">${p.penal_sum || 'N/A'}</div></div>
+                </div>
+            </div>
+            <div style="padding:0 20px 20px;">
+                <h4 style="color:var(--text);font-size:1.125rem;font-weight:700;margin-bottom:12px;">Key Risk Clauses</h4>
+                <div class="bond-risk-list">
+                    <div class="bond-risk-item"><div class="bond-label">Security Required</div><div class="bond-value-sm">${r.security_required || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Type</div><div class="bond-value-sm">${r.bond_type || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Forms Provided</div><div class="bond-value-sm">${r.forms_provided || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Adjustable Amount</div><div class="bond-value-sm">${r.adjustable_amount || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Cancellation Clause</div><div class="bond-value-sm">${r.cancellation_clause || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Automatic Renewal</div><div class="bond-value-sm">${r.automatic_renewal || 'N/A'}</div></div>
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    appendHtml(container, html);
+    setupCollapsibles(container);
+}
+
+function renderBondWidget2(statutes, container) {
+    if (!statutes?.length) return;
+    const items = statutes.map((s, i) => {
+        const sid = 'stat-' + Date.now() + '-' + i;
+        return `
+            <div class="statute-item">
+                <div class="statute-header" onclick="toggleStatute('${sid}')">
+                    <div><div class="statute-citation-text">${s.citation || 'N/A'}</div><div class="statute-name">${s.statute_name || ''}</div></div>
+                    <svg id="${sid}-chev" class="statute-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                </div>
+                <div id="${sid}" class="statute-details-container">
+                    <div style="margin-bottom:16px;"><div class="statute-section-label">Summary</div><div class="statute-text">${s.summary || ''}</div></div>
+                    ${s.verbatim_text ? `<div style="margin-bottom:12px;"><div class="statute-section-label">Verbatim Text</div><div class="statute-verbatim">${s.verbatim_text}</div></div>` : ''}
+                    ${s.source_url ? `<a href="${s.source_url}" target="_blank" class="statute-link">View source →</a>` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    const html = `
+    <div class="widget-card">
+        <div class="widget-header"><div class="widget-header-left"><span class="widget-title">Statutory Research</span><span class="widget-subtitle">${statutes.length} statutes</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+        <div class="widget-content"><div style="padding:16px;">${items}</div></div>
+    </div>`;
+
+    appendHtml(container, html);
+    setupCollapsibles(container);
+}
+
+window.toggleStatute = (id) => {
+    const el = document.getElementById(id);
+    const chev = document.getElementById(id + '-chev');
+    if (el) el.classList.toggle('open');
+    if (chev) chev.classList.toggle('rotated');
+};
+
+function renderBondWidget3(op, container) {
+    const html = `
+    <div class="widget-card">
+        <div class="widget-header"><div class="widget-header-left"><span class="widget-title">Underwriting Opinion</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+        <div class="widget-content">
+            <div style="padding:20px;">
+                <div class="opinion-header-grid">
+                    <div class="opinion-field"><div class="bond-label">Risk State</div><div class="bond-value">${op.risk_state || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">Obligee</div><div class="bond-value">${op.obligee || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">Bond Description</div><div class="bond-value">${op.bond_description || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">SFAA No. / Descriptor</div><div class="bond-value">${op.sfaa_descriptor || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">Penalty</div><div class="bond-value">${op.penalty || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">Statutory References</div><div class="bond-value-sm">${(op.statutory_references || []).join(', ')}</div></div>
+                </div>
+                <div style="margin-top:24px;">
+                    <h4 style="color:var(--text);font-size:1.125rem;font-weight:700;margin-bottom:16px;">Legal Opinion</h4>
+                    <div class="opinion-section">
+                        <div class="opinion-subsection"><div class="opinion-label">Who Must Post Bond</div><div class="opinion-text">${op.who_must_post || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Statutory Definitions</div><div class="opinion-text">${op.statutory_definitions || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Exemptions</div><div class="opinion-text">${op.exemptions || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Bond Guarantees</div><div class="opinion-text">${op.bond_guarantees || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Licensing/Bonding Deadlines</div><div class="opinion-text">${op.deadlines_cycles || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Past Claims Experience</div><div class="opinion-text">${op.claims_history || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Alternative Instruments</div><div class="opinion-text">${op.alternative_instruments || ''}</div></div>
+                    </div>
+                </div>
+                <div style="margin-top:24px;">
+                    <h4 style="color:var(--text);font-size:1.125rem;font-weight:700;margin-bottom:12px;">Cancellation Clause</h4>
+                    <div style="margin-bottom:12px;"><div class="statute-section-label">Summary</div><div class="statute-text">${op.cancellation_summary || ''}</div></div>
+                    ${op.cancellation_verbatim ? `<div><div class="statute-section-label">Verbatim Text</div><div class="statute-verbatim">${op.cancellation_verbatim}</div></div>` : ''}
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    appendHtml(container, html);
+    setupCollapsibles(container);
+}
+
+// ==========================================
+// COLLAPSIBLE / MAXIMIZE
+// ==========================================
+function setupCollapsibles(scope) {
+    const root = scope || document;
+    root.querySelectorAll('.widget-card').forEach(card => {
+        const header = card.querySelector('.widget-header');
+        const content = card.querySelector('.widget-content');
+        const icon = card.querySelector('.collapse-icon');
+        if (!header || !content || header.dataset.bound) return;
+        header.dataset.bound = '1';
+
+        header.addEventListener('click', (e) => {
+            if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
+            if (content.classList.contains('collapsed')) {
+                content.classList.remove('collapsed');
+                content.style.height = content.scrollHeight + 'px';
+                if (icon) icon.classList.remove('collapsed');
+                setTimeout(() => { if (!content.classList.contains('collapsed')) content.style.height = 'auto'; }, 300);
+            } else {
+                content.style.height = content.scrollHeight + 'px';
+                content.offsetHeight; // force reflow
+                content.classList.add('collapsed');
+                content.style.height = '0px';
+                if (icon) icon.classList.add('collapsed');
+            }
+        });
+    });
+}
+
+window.toggleMaximize = (id, e) => {
+    e.stopPropagation();
+    const card = document.getElementById('card-' + id);
+    if (!card) return;
+    if (card.classList.contains('maximized')) {
+        card.classList.remove('maximized');
+        modalBackdrop.classList.remove('active');
+    } else {
+        card.classList.add('maximized');
+        modalBackdrop.classList.add('active');
+        const content = card.querySelector('.widget-content');
+        if (content) { content.classList.remove('collapsed'); content.style.height = 'auto'; }
+    }
+};
+
+modalBackdrop.addEventListener('click', () => {
+    document.querySelectorAll('.widget-card.maximized').forEach(c => c.classList.remove('maximized'));
+    modalBackdrop.classList.remove('active');
+});
+
+// ==========================================
+// CSV DOWNLOAD
+// ==========================================
+window.downloadCSV = (e) => {
+    e.stopPropagation();
+    if (!state.lastTableData?.length) return;
+    const headers = ["job_id","job_name","total_contract_price","estimated_total_costs","estimated_gross_profit","billed_to_date","cost_to_date","under_billings","over_billings","cost_to_complete"];
+    const csvRows = [headers.join(',')];
+    state.lastTableData.forEach(row => {
+        csvRows.push(headers.map(h => `"${('' + (row[h] || '')).replace(/"/g, '""')}"`).join(','));
+    });
+    if (state.lastCalculatedTotals) {
+        csvRows.push(headers.map(h => {
+            if (h === 'job_id') return '"TOTALS"';
+            if (h === 'job_name') return '""';
+            return `"${state.lastCalculatedTotals[h] || 0}"`;
+        }).join(','));
+    }
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'wip_extract.csv'; a.click();
+};
+</script>
+
+<!-- ========== RECHARTS (Babel for JSX) ========== -->
+<script type="text/babel">
+const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid, ReferenceLine } = Recharts;
+
+const getThemeColors = () => {
+    const s = getComputedStyle(document.body);
+    return {
+        border: s.getPropertyValue('--border').trim(),
+        borderStrong: s.getPropertyValue('--border-strong').trim(),
+        textMuted: s.getPropertyValue('--text-muted').trim(),
+        textSecondary: s.getPropertyValue('--text-secondary').trim(),
+        text: s.getPropertyValue('--text').trim(),
+        surface: s.getPropertyValue('--surface').trim(),
+        surfaceHover: s.getPropertyValue('--surface-hover').trim(),
+        negative: s.getPropertyValue('--negative').trim(),
+        positive: s.getPropertyValue('--positive').trim(),
+        chartBar1: s.getPropertyValue('--chart-bar1').trim(),
+    };
+};
+
+const ttStyle = () => {
+    const c = getThemeColors();
+    return { background: c.surface, border: `1px solid ${c.border}`, borderRadius: 5, fontSize: 11, fontFamily: 'Inter, sans-serif', padding: '6px 10px', color: c.text };
+};
+
+function BillingChart({ data }) {
+    const c = getThemeColors();
+    if (!data?.length) return <div style={{color:c.textMuted,fontSize:12,textAlign:'center',padding:20}}>No billing data</div>;
+    return (
+        <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={data} layout="vertical" margin={{top:2,right:20,bottom:2,left:2}}>
+                <CartesianGrid horizontal={false} stroke={c.border} strokeDasharray="3 3"/>
+                <XAxis type="number" tick={{fill:c.textMuted,fontSize:10,fontFamily:'Inter'}} tickFormatter={v=>`${v<0?'-':''}$${Math.abs(v/1000).toFixed(1)}M`} axisLine={false} tickLine={false}/>
+                <YAxis type="category" dataKey="name" tick={{fill:c.textSecondary,fontSize:10,fontFamily:'Inter'}} axisLine={false} tickLine={false} width={85}/>
+                <ReferenceLine x={0} stroke={c.borderStrong}/>
+                <Tooltip cursor={{fill:c.surfaceHover}} contentStyle={ttStyle()} labelStyle={{color:c.text,fontWeight:600,marginBottom:2}} formatter={v=>[`$${Math.abs(v).toLocaleString()}k ${v<0?'under':'over'}billed`,'']}/>
+                <Bar dataKey="value" radius={3} maxBarSize={14}>
+                    {data.map((d,i)=><Cell key={i} fill={d.value<0?c.negative:c.positive} opacity={0.75}/>)}
+                </Bar>
+            </BarChart>
+        </ResponsiveContainer>
+    );
+}
+
+function MarginChart({ data }) {
+    const c = getThemeColors();
+    if (!data?.length) return <div style={{color:c.textMuted,fontSize:12,textAlign:'center',padding:20}}>No margin data</div>;
+    return (
+        <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={data} margin={{top:2,right:20,bottom:24,left:2}}>
+                <CartesianGrid vertical={false} stroke={c.border} strokeDasharray="3 3"/>
+                <XAxis dataKey="name" tick={{fill:c.textMuted,fontSize:10,fontFamily:'Inter'}} axisLine={false} tickLine={false} angle={-12} textAnchor="end" interval={0}/>
+                <YAxis tick={{fill:c.textMuted,fontSize:10,fontFamily:'Inter'}} tickFormatter={v=>`${v}%`} axisLine={false} tickLine={false}/>
+                <ReferenceLine y={0} stroke={c.borderStrong}/>
+                <Tooltip cursor={{fill:c.surfaceHover}} contentStyle={ttStyle()} labelStyle={{color:c.text,fontWeight:600,marginBottom:2}} formatter={(v,n)=>[`${v}%`,n==='estimated'?'Estimated GP%':'Actual GP%']}/>
+                <Bar dataKey="estimated" fill={c.chartBar1} opacity={0.25} radius={[3,3,0,0]} maxBarSize={22} name="estimated"/>
+                <Bar dataKey="actual" radius={[3,3,0,0]} maxBarSize={22} name="actual">
+                    {data.map((d,i)=><Cell key={i} fill={d.actual<0?c.negative:c.positive} opacity={0.7}/>)}
+                </Bar>
+            </BarChart>
+        </ResponsiveContainer>
+    );
+}
+
+window.mountPendingCharts = function() {
+    if (!window.__chartQueue?.length) return;
+    const queue = window.__chartQueue.splice(0);
+    queue.forEach(({ id, charts }) => {
+        const billingEl = document.getElementById(id + '-billing');
+        const marginEl = document.getElementById(id + '-margin');
+        if (billingEl && charts.billing?.length) ReactDOM.createRoot(billingEl).render(<BillingChart data={charts.billing}/>);
+        if (marginEl && charts.margin?.length) ReactDOM.createRoot(marginEl).render(<MarginChart data={charts.margin}/>);
+    });
+};
 </script>
 </body>
 </html>
