@@ -22,3 +22,5 @@ starlette
 typing-extensions
 
 anthropic
+pypdf
+
