@@ -222,27 +222,28 @@ def clean_json_text(text: str) -> str:
 
 def extract_first_json_substring(text: str) -> str:
     """
-    Extract the first balanced JSON object/array substring from text.
-    Falls back to cleaned text if no balanced JSON found.
+    Extract the first valid JSON object/array substring from a model response.
+
+    Uses json.JSONDecoder().raw_decode scanning, which correctly handles:
+    - nested braces/brackets
+    - braces inside strings
+    - leading commentary before the JSON
+
+    Falls back to a regex grab only if decoder scanning cannot find JSON.
     """
     s = clean_json_text(text)
+    decoder = json.JSONDecoder()
 
-    # Find first object or array start
-    for open_ch, close_ch in [("{", "}"), ("[", "]")]:
-        start = s.find(open_ch)
-        if start == -1:
-            continue
-        depth = 0
-        for i in range(start, len(s)):
-            ch = s[i]
-            if ch == open_ch:
-                depth += 1
-            elif ch == close_ch:
-                depth -= 1
-                if depth == 0:
-                    return s[start:i + 1].strip()
+    # Scan for a place where a JSON object/array begins, then raw_decode from there.
+    for i, ch in enumerate(s):
+        if ch in "{[":
+            try:
+                _, end = decoder.raw_decode(s[i:])
+                return s[i : i + end].strip()
+            except json.JSONDecodeError:
+                continue
 
-    # Heuristic: if there is *some* JSON-ish region, try a regex grab
+    # Last-resort fallback (can be wrong for nested braces in some cases)
     m = re.search(r"(\{.*\}|\[.*\])", s, re.DOTALL)
     if m:
         return m.group(1).strip()
