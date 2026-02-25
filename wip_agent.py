@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import traceback
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 from dataclasses import dataclass
 from pydantic import BaseModel, Field, computed_field
 from langgraph.graph import StateGraph, END
@@ -99,6 +99,7 @@ class WipState(BaseModel):
 
     validation_errors: List[Dict[str, Any]] = Field(default_factory=list)
     correction_suggestions: List[Dict[str, Any]] = Field(default_factory=list)
+    correction_log: List[Dict[str, Any]] = Field(default_factory=list)
     surety_risk_context: Dict[str, Any] = Field(default_factory=dict)
     risk_rows: List[Dict[str, Any]] = Field(default_factory=list)
     widget_data: Dict[str, Any] = Field(default_factory=dict)
@@ -263,6 +264,15 @@ def run_validations(row: CalculatedWipRow, validations: List[Validation]) -> Lis
 # ==========================================
 
 def digit_change_score(current: float, target: float) -> int:
+    """
+    Score how many digit-level changes separate two numbers.
+    Lower = more likely a single OCR/extraction misread.
+
+    Handles:
+    - Same-length digit misreads (e.g., 1234 → 1834)
+    - Dropped/added single digit (e.g., 150000 → 15000, 11000 → 1100)
+    - Sign misreads (parenthetical negatives parsed as positive)
+    """
     if current == 0 and target == 0:
         return 0
     if current == 0 or target == 0:
@@ -274,14 +284,26 @@ def digit_change_score(current: float, target: float) -> int:
     sign_penalty = 50 if (current < 0) != (target < 0) else 0
 
     len_diff = abs(len(curr_str) - len(targ_str))
+
+    # Dropped/added single digit (including trailing zeros)
+    # e.g., 150000 → 15000, 11000 → 1100, 234567 → 23456
+    if len_diff == 1:
+        longer = curr_str if len(curr_str) > len(targ_str) else targ_str
+        shorter = targ_str if len(curr_str) > len(targ_str) else curr_str
+        for i in range(len(longer)):
+            if longer[:i] + longer[i + 1:] == shorter:
+                return 1 + sign_penalty  # Single digit drop/insert
+        # No single removal works — fall through to padded comparison
+
     if len_diff > 1:
         return 30 + len_diff * 10 + sign_penalty
 
+    # Same length (or len_diff==1 where no single removal matched): pad and count
     max_len = max(len(curr_str), len(targ_str))
-    curr_str = curr_str.zfill(max_len)
-    targ_str = targ_str.zfill(max_len)
+    curr_padded = curr_str.zfill(max_len)
+    targ_padded = targ_str.zfill(max_len)
 
-    digit_diffs = sum(1 for a, b in zip(curr_str, targ_str) if a != b)
+    digit_diffs = sum(1 for a, b in zip(curr_padded, targ_padded) if a != b)
 
     return digit_diffs + sign_penalty
 
@@ -301,68 +323,211 @@ def find_best_fix(candidates: List[Dict]) -> Optional[Dict]:
     best["confidence"] = "high" if best_score <= 2 else "medium" if best_score <= 4 else "low"
     return best
 
+
+def _get_candidates_for_validation(row: CalculatedWipRow, validation_name: str) -> List[Dict]:
+    """Generate algebraic fix candidates for a given validation failure."""
+    candidates = []
+
+    if validation_name == "contract_cost_gp":
+        expected_gp = row.total_contract_price - row.estimated_total_costs
+        expected_cost = row.total_contract_price - row.estimated_gross_profit
+        expected_contract = row.estimated_total_costs + row.estimated_gross_profit
+        candidates = [
+            {"field": "estimated_gross_profit", "current": row.estimated_gross_profit, "suggested": expected_gp, "formula": "Contract - Est Cost = Est GP"},
+            {"field": "estimated_total_costs", "current": row.estimated_total_costs, "suggested": expected_cost, "formula": "Contract - Est Cost = Est GP"},
+            {"field": "total_contract_price", "current": row.total_contract_price, "suggested": expected_contract, "formula": "Contract - Est Cost = Est GP"},
+        ]
+
+    elif validation_name == "cost_to_complete_check":
+        expected_ctc = row.estimated_total_costs - row.cost_to_date
+        expected_cost = row.cost_to_complete + row.cost_to_date
+        expected_ctd = row.estimated_total_costs - row.cost_to_complete
+        candidates = [
+            {"field": "cost_to_complete", "current": row.cost_to_complete, "suggested": expected_ctc, "formula": "Est Cost - Cost to Date = CTC"},
+            {"field": "estimated_total_costs", "current": row.estimated_total_costs, "suggested": expected_cost, "formula": "Est Cost - Cost to Date = CTC"},
+            {"field": "cost_to_date", "current": row.cost_to_date, "suggested": expected_ctd, "formula": "Est Cost - Cost to Date = CTC"},
+        ]
+
+    elif validation_name == "earned_revenue_from_gp":
+        expected_rev = row.cost_to_date + row.gross_profit_to_date
+        expected_gp_td = row.revenues_earned - row.cost_to_date
+        expected_ctd = row.revenues_earned - row.gross_profit_to_date
+        candidates = [
+            {"field": "revenues_earned", "current": row.revenues_earned, "suggested": expected_rev, "formula": "Cost to Date + GP to Date = Earned Rev"},
+            {"field": "gross_profit_to_date", "current": row.gross_profit_to_date, "suggested": expected_gp_td, "formula": "Cost to Date + GP to Date = Earned Rev"},
+            {"field": "cost_to_date", "current": row.cost_to_date, "suggested": expected_ctd, "formula": "Cost to Date + GP to Date = Earned Rev"},
+        ]
+
+    elif validation_name == "earned_revenue_from_poc":
+        if row.estimated_total_costs > 0:
+            poc = row.cost_to_date / row.estimated_total_costs
+            expected_rev = row.total_contract_price * poc
+            candidates = [{"field": "revenues_earned", "current": row.revenues_earned, "suggested": expected_rev, "formula": "Earned Rev = Contract x POC"}]
+
+    return candidates
+
+
 def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Generate correction suggestions with cross-validation ranking.
+
+    When multiple validations implicate the same field, that field's score
+    is reduced (= more likely the real culprit).
+    """
+    # Collect ALL candidates across ALL errors for this row
+    all_candidates: List[tuple] = []  # (validation_name, candidate_dict)
+    for error in errors:
+        candidates = _get_candidates_for_validation(row, error["validation"])
+        for c in candidates:
+            all_candidates.append((error["validation"], c))
+
+    # Count how many distinct validations implicate each field
+    field_validation_count: Dict[str, int] = {}
+    seen: Dict[str, set] = {}
+    for vname, c in all_candidates:
+        seen.setdefault(c["field"], set()).add(vname)
+    field_validation_count = {f: len(v) for f, v in seen.items()}
+
+    # Score and pick best fix per error
     suggestions: List[Dict[str, Any]] = []
 
     for error in errors:
-        validation_name = error["validation"]
-        candidates = []
+        candidates = _get_candidates_for_validation(row, error["validation"])
+        if not candidates:
+            continue
 
-        if validation_name == "contract_cost_gp":
-            expected_gp = row.total_contract_price - row.estimated_total_costs
-            expected_cost = row.total_contract_price - row.estimated_gross_profit
-            expected_contract = row.estimated_total_costs + row.estimated_gross_profit
+        scored = []
+        for c in candidates:
+            base_score = digit_change_score(c["current"], c["suggested"])
+            cross_count = field_validation_count.get(c["field"], 1)
+            # Cross-validation boost: each additional validation agreeing reduces score by 1
+            effective_score = max(0, base_score - (cross_count - 1))
+            scored.append((effective_score, base_score, c, cross_count))
 
-            candidates = [
-                {"field": "estimated_gross_profit", "current": row.estimated_gross_profit, "suggested": expected_gp, "formula": "Contract - Est Cost = Est GP"},
-                {"field": "estimated_total_costs", "current": row.estimated_total_costs, "suggested": expected_cost, "formula": "Contract - Est Cost = Est GP"},
-                {"field": "total_contract_price", "current": row.total_contract_price, "suggested": expected_contract, "formula": "Contract - Est Cost = Est GP"},
-            ]
+        scored.sort(key=lambda x: x[0])
+        effective, raw, best, cross_count = scored[0]
 
-        elif validation_name == "cost_to_complete_check":
-            expected_ctc = row.estimated_total_costs - row.cost_to_date
-            expected_cost = row.cost_to_complete + row.cost_to_date
-            expected_ctd = row.estimated_total_costs - row.cost_to_complete
+        confidence = "high" if effective <= 2 else "medium" if effective <= 4 else "low"
 
-            candidates = [
-                {"field": "cost_to_complete", "current": row.cost_to_complete, "suggested": expected_ctc, "formula": "Est Cost - Cost to Date = CTC"},
-                {"field": "estimated_total_costs", "current": row.estimated_total_costs, "suggested": expected_cost, "formula": "Est Cost - Cost to Date = CTC"},
-                {"field": "cost_to_date", "current": row.cost_to_date, "suggested": expected_ctd, "formula": "Est Cost - Cost to Date = CTC"},
-            ]
-
-        elif validation_name == "earned_revenue_from_gp":
-            expected_rev = row.cost_to_date + row.gross_profit_to_date
-            expected_gp_td = row.revenues_earned - row.cost_to_date
-            expected_ctd = row.revenues_earned - row.gross_profit_to_date
-
-            candidates = [
-                {"field": "revenues_earned", "current": row.revenues_earned, "suggested": expected_rev, "formula": "Cost to Date + GP to Date = Earned Rev"},
-                {"field": "gross_profit_to_date", "current": row.gross_profit_to_date, "suggested": expected_gp_td, "formula": "Cost to Date + GP to Date = Earned Rev"},
-                {"field": "cost_to_date", "current": row.cost_to_date, "suggested": expected_ctd, "formula": "Cost to Date + GP to Date = Earned Rev"},
-            ]
-
-        elif validation_name == "earned_revenue_from_poc":
-            if row.estimated_total_costs > 0:
-                poc = row.cost_to_date / row.estimated_total_costs
-                expected_rev = row.total_contract_price * poc
-                candidates = [{"field": "revenues_earned", "current": row.revenues_earned, "suggested": expected_rev, "formula": "Earned Rev = Contract x POC"}]
-
-        if candidates:
-            best = find_best_fix(candidates)
-            if best and best["digit_changes"] <= 2:
-                suggestions.append(
-                    {
-                        "job_id": row.job_id,
-                        "field": best["field"],
-                        "current_value": best["current"],
-                        "suggested_value": best["suggested"],
-                        "confidence": best["confidence"],
-                        "digit_changes": best["digit_changes"],
-                        "reasoning": f"Changing {best['field']} from ${best['current']:,.0f} to ${best['suggested']:,.0f} ({best['digit_changes']} digit change) would fix: {best['formula']}",
-                    }
-                )
+        suggestions.append(
+            {
+                "job_id": row.job_id,
+                "field": best["field"],
+                "current_value": best["current"],
+                "suggested_value": best["suggested"],
+                "confidence": confidence,
+                "digit_changes": raw,
+                "effective_score": effective,
+                "cross_validation_count": cross_count,
+                "reasoning": (
+                    f"Changing {best['field']} from ${best['current']:,.0f} to ${best['suggested']:,.0f} "
+                    f"({raw} digit change"
+                    + (f", {cross_count} validations agree" if cross_count > 1 else "")
+                    + f") would fix: {best['formula']}"
+                ),
+            }
+        )
 
     return suggestions
+
+
+# ==========================================
+# 4b. COLUMN SWAP DETECTION (Tier 1)
+# ==========================================
+
+def detect_column_swaps(rows: List[CalculatedWipRow]) -> List[Dict[str, Any]]:
+    """
+    Detect likely Cost to Date <-> Cost to Complete column swaps.
+
+    Signal: if revenue-based percent complete (revenues_earned / total_contract_price)
+    diverges significantly from cost-based percent complete (cost_to_date / estimated_total_costs),
+    AND swapping CTD/CTC would bring them into alignment, the columns are probably swapped.
+    """
+    swaps: List[Dict[str, Any]] = []
+    for r in rows:
+        if r.estimated_total_costs <= 0 or r.total_contract_price <= 0:
+            continue
+        if r.cost_to_date <= 0 and r.cost_to_complete <= 0:
+            continue
+
+        revenue_poc = r.revenues_earned / r.total_contract_price
+        cost_poc = r.cost_to_date / r.estimated_total_costs
+
+        # Revenue suggests far along but cost suggests early, and CTC > CTD
+        if (revenue_poc > 0.5 and cost_poc < 0.5
+                and r.cost_to_complete > r.cost_to_date
+                and r.cost_to_complete > 0):
+
+            swapped_poc = r.cost_to_complete / r.estimated_total_costs
+            # Swap only if it brings cost POC closer to revenue POC
+            if abs(swapped_poc - revenue_poc) < abs(cost_poc - revenue_poc):
+                swaps.append({
+                    "job_id": r.job_id,
+                    "type": "column_swap",
+                    "fields": ["cost_to_date", "cost_to_complete"],
+                    "original_ctd": r.cost_to_date,
+                    "original_ctc": r.cost_to_complete,
+                    "confidence": "high",
+                    "reasoning": (
+                        f"Revenue POC ({revenue_poc:.0%}) vs Cost POC ({cost_poc:.0%}) mismatch — "
+                        f"swapping CTD/CTC aligns to {swapped_poc:.0%}"
+                    ),
+                })
+
+    return swaps
+
+
+def apply_corrections(
+    rows: List[CalculatedWipRow],
+    column_swaps: List[Dict[str, Any]],
+    digit_corrections: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Apply high-confidence corrections in-place and return a log of what changed.
+
+    Tier 1: Column swaps (always applied).
+    Tier 2: Digit corrections with 'high' confidence.
+    """
+    correction_log: List[Dict[str, Any]] = []
+
+    swap_jobs = {s["job_id"] for s in column_swaps}
+
+    # Index digit corrections by job_id (high confidence only)
+    digit_fixes: Dict[str, List[Dict]] = {}
+    for d in digit_corrections:
+        if d.get("confidence") == "high":
+            digit_fixes.setdefault(d["job_id"], []).append(d)
+
+    for r in rows:
+        # Apply column swaps
+        if r.job_id in swap_jobs:
+            old_ctd, old_ctc = r.cost_to_date, r.cost_to_complete
+            r.cost_to_date = old_ctc
+            r.cost_to_complete = old_ctd
+            correction_log.append({
+                "job_id": r.job_id,
+                "type": "column_swap",
+                "action": f"Swapped CTD (${old_ctd:,.0f}) ↔ CTC (${old_ctc:,.0f})",
+                "confidence": "high",
+            })
+
+        # Apply digit corrections
+        if r.job_id in digit_fixes:
+            for fix in digit_fixes[r.job_id]:
+                field = fix["field"]
+                old_val = getattr(r, field, None)
+                if old_val is not None:
+                    setattr(r, field, fix["suggested_value"])
+                    correction_log.append({
+                        "job_id": r.job_id,
+                        "type": "digit_fix",
+                        "field": field,
+                        "action": f"Changed {field} from ${old_val:,.0f} to ${fix['suggested_value']:,.0f}",
+                        "confidence": fix["confidence"],
+                        "reasoning": fix["reasoning"],
+                    })
+
+    return correction_log
 
 # ==========================================
 # 5. SURETY RISK ANALYSIS (updated to use *_calc)
@@ -704,7 +869,7 @@ def extractor_node(state: WipState):
             pdf_bytes=file_bytes,
             response_mime_type="application/json",
             tracker=tracker,
-            system_prompt="You are a precise table extraction engine. Output strict JSON only.",
+            system_prompt="You are a financial document extraction engine specialized in construction Work-In-Progress schedules. Extract structured data and return it as a single JSON object. CRITICAL: Return ONLY the raw JSON object. No markdown code fences. No explanatory text before or after. No commentary.",
         )
 
         data = parse_json_safely(response.text)
@@ -739,17 +904,15 @@ def analyst_node(state: WipState):
                 "final_json": {"error": "No data found"},
                 "validation_errors": [],
                 "correction_suggestions": [],
+                "correction_log": [],
                 "surety_risk_context": {},
                 "risk_rows": [],
                 "widget_data": {},
             }
 
-        calc = WipTotals()
         validations = build_validations()
-        all_validation_errors: List[Dict[str, Any]] = []
-        all_correction_suggestions: List[Dict[str, Any]] = []
 
-        # Compute UB/OB without overwriting extracted values (so validation remains meaningful)
+        # ---- PHASE 1: Initial UB/OB calc + validation (pre-correction) ----
         for r in rows:
             variance = r.revenues_earned - r.billed_to_date
             if variance > 0:
@@ -759,7 +922,43 @@ def analyst_node(state: WipState):
                 r.under_billings_calc = 0.0
                 r.over_billings_calc = abs(variance)
 
-        # AGGREGATION & VALIDATION
+        pre_correction_errors: List[Dict[str, Any]] = []
+        all_correction_suggestions: List[Dict[str, Any]] = []
+
+        for r in rows:
+            row_errors = run_validations(r, validations)
+            pre_correction_errors.extend(row_errors)
+            if row_errors:
+                suggestions = suggest_corrections(r, row_errors)
+                all_correction_suggestions.extend(suggestions)
+
+        # ---- PHASE 2: Detect column swaps ----
+        column_swaps = detect_column_swaps(rows)
+
+        # ---- PHASE 3: Apply corrections ----
+        correction_log = apply_corrections(rows, column_swaps, all_correction_suggestions)
+
+        # ---- PHASE 4: Recompute UB/OB on corrected data ----
+        for r in rows:
+            variance = r.revenues_earned - r.billed_to_date
+            if variance > 0:
+                r.under_billings_calc = variance
+                r.over_billings_calc = 0.0
+            else:
+                r.under_billings_calc = 0.0
+                r.over_billings_calc = abs(variance)
+
+        # ---- PHASE 5: Re-validate post-correction ----
+        post_correction_errors: List[Dict[str, Any]] = []
+        for r in rows:
+            row_errors = run_validations(r, validations)
+            post_correction_errors.extend(row_errors)
+
+        # Use post-correction errors as the "final" validation state
+        all_validation_errors = post_correction_errors
+
+        # ---- PHASE 6: Aggregate totals from corrected data ----
+        calc = WipTotals()
         for r in rows:
             calc.total_contract_price += r.total_contract_price
             calc.estimated_total_costs += r.estimated_total_costs
@@ -769,25 +968,55 @@ def analyst_node(state: WipState):
             calc.gross_profit_to_date += r.gross_profit_to_date
             calc.billed_to_date += r.billed_to_date
             calc.cost_to_complete += r.cost_to_complete
-
-            # IMPORTANT: totals UB/OB should be computed (risk lens)
             calc.under_billings += r.under_billings_calc
             calc.over_billings += r.over_billings_calc
-
             calc.uegp += r.uegp
 
-            row_errors = run_validations(r, validations)
-            all_validation_errors.extend(row_errors)
+        # ---- PHASE 7: Full totals validation (all columns) ----
+        _totals_fields = [
+            ("total_contract_price", "Contract Price"),
+            ("estimated_total_costs", "Est Total Costs"),
+            ("estimated_gross_profit", "Est Gross Profit"),
+            ("revenues_earned", "Revenues Earned"),
+            ("cost_to_date", "Cost to Date"),
+            ("gross_profit_to_date", "GP to Date"),
+            ("billed_to_date", "Billed to Date"),
+            ("cost_to_complete", "Cost to Complete"),
+        ]
 
-            if row_errors:
-                suggestions = suggest_corrections(r, row_errors)
-                all_correction_suggestions.extend(suggestions)
+        totals_pass = False
+        totals_msg = "No Totals Row"
+        totals_details: List[Dict[str, Any]] = []
 
+        if extracted_totals:
+            mismatches = []
+            for field_name, display_name in _totals_fields:
+                calc_val = getattr(calc, field_name, 0.0)
+                ext_val = getattr(extracted_totals, field_name, 0.0)
+                diff = abs(calc_val - ext_val)
+                if diff >= 1000.0:
+                    mismatches.append((field_name, display_name, calc_val, ext_val, diff))
+
+            if not mismatches:
+                totals_pass = True
+                totals_msg = f"All {len(_totals_fields)} column sums match report totals"
+            else:
+                passed_count = len(_totals_fields) - len(mismatches)
+                totals_msg = f"{passed_count}/{len(_totals_fields)} columns match ({len(mismatches)} mismatches)"
+                for fname, dname, cv, ev, diff in mismatches:
+                    totals_details.append({
+                        "id": "TOTALS",
+                        "field": fname,
+                        "msg": f"{dname}: Calc ${cv:,.0f} vs Report ${ev:,.0f} (diff ${diff:,.0f})",
+                    })
+
+        # ---- PHASE 8: Risk analysis on corrected data ----
         surety_risk_context = build_surety_risk_context(rows, calc)
         surety_risk_context["risk_tier"] = compute_portfolio_risk_tier(surety_risk_context)
 
         risk_rows = build_risk_rows(rows, calc)
 
+        # ---- Build widget data ----
         t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
         gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
 
@@ -804,25 +1033,14 @@ def analyst_node(state: WipState):
         formula_errors_display = [{"id": e["job_id"], "msg": e["message"]} for e in all_validation_errors]
 
         formula_pass = len(all_validation_errors) == 0
-        formula_msg = "Column Math Validated" if formula_pass else f"Column Math Issues ({len(errors_by_job)} rows)"
+        if formula_pass and correction_log:
+            formula_msg = f"Column Math Validated (after {len(correction_log)} auto-corrections)"
+        elif formula_pass:
+            formula_msg = "Column Math Validated"
+        else:
+            formula_msg = f"Column Math Issues ({len(errors_by_job)} rows)"
 
-        totals_pass = False
-        totals_msg = "No Totals Row"
-        totals_details: List[Dict[str, Any]] = []
-        if extracted_totals:
-            diff = abs(calc.revenues_earned - extracted_totals.revenues_earned)
-            if diff < 1000.0:
-                totals_pass = True
-                totals_msg = "Sum matches Report Total"
-            else:
-                totals_msg = f"Sum Mismatch (${diff:,.0f})"
-                totals_details.append(
-                    {
-                        "id": "TOTALS",
-                        "msg": f"Calc Earned ${calc.revenues_earned:,.0f} vs Report ${extracted_totals.revenues_earned:,.0f}",
-                    }
-                )
-
+        # Build per-job issue display (corrections + remaining errors)
         jobs_with_issues: Dict[str, Dict[str, Any]] = {}
         for e in all_validation_errors:
             job_id = e["job_id"]
@@ -834,13 +1052,35 @@ def analyst_node(state: WipState):
         for s in all_correction_suggestions:
             job_id = s["job_id"]
             jobs_with_issues.setdefault(job_id, {"errors": [], "corrections": []})
+            applied = any(
+                cl["job_id"] == job_id and cl.get("field") == s.get("field")
+                for cl in correction_log if cl["type"] == "digit_fix"
+            )
             jobs_with_issues[job_id]["corrections"].append(
                 {
                     "field": s["field"],
                     "current": f"${s['current_value']:,.0f}",
                     "suggested": f"${s['suggested_value']:,.0f}",
                     "confidence": s["confidence"],
+                    "cross_validation_count": s.get("cross_validation_count", 1),
+                    "applied": applied,
                     "reasoning": s["reasoning"],
+                }
+            )
+
+        # Include column swap info in job issues
+        for swap in column_swaps:
+            job_id = swap["job_id"]
+            jobs_with_issues.setdefault(job_id, {"errors": [], "corrections": []})
+            jobs_with_issues[job_id]["corrections"].append(
+                {
+                    "field": "cost_to_date ↔ cost_to_complete",
+                    "current": f"CTD ${swap['original_ctd']:,.0f} / CTC ${swap['original_ctc']:,.0f}",
+                    "suggested": f"CTD ${swap['original_ctc']:,.0f} / CTC ${swap['original_ctd']:,.0f}",
+                    "confidence": "high",
+                    "cross_validation_count": 0,
+                    "applied": True,
+                    "reasoning": swap["reasoning"],
                 }
             )
 
@@ -852,6 +1092,7 @@ def analyst_node(state: WipState):
                 "formulaic": {"passed": formula_pass, "message": formula_msg, "details": formula_errors_display, "jobIssues": corrections_display},
                 "totals": {"passed": totals_pass, "message": totals_msg, "details": totals_details},
             },
+            "corrections_applied": correction_log,
             "metrics": {
                 "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},
                 "row1_2": {"label": "UEGP", "value": f"${t_uegp/1000000:.2f}M"},
@@ -868,6 +1109,7 @@ def analyst_node(state: WipState):
             "calculated_totals": calc,
             "validation_errors": all_validation_errors,
             "correction_suggestions": all_correction_suggestions,
+            "correction_log": correction_log,
             "surety_risk_context": surety_risk_context,
             "risk_rows": risk_rows,
             "widget_data": widget_data,
@@ -880,6 +1122,7 @@ def analyst_node(state: WipState):
             "calculated_totals": WipTotals(),
             "validation_errors": [],
             "correction_suggestions": [],
+            "correction_log": [],
             "surety_risk_context": {"risk_tier": "UNKNOWN", "error": str(e)},
             "risk_rows": [],
             "widget_data": {
@@ -1005,6 +1248,7 @@ def output_node(state: WipState):
             "calculated_totals": state.calculated_totals.model_dump() if state.calculated_totals else {},
             "validation_errors": state.validation_errors or [],
             "correction_suggestions": state.correction_suggestions or [],
+            "corrections_applied": state.correction_log or [],
             "surety_risk_context": state.surety_risk_context or {},
             "widget_data": state.widget_data or {},
             "metrics": state.metrics_data or {},
