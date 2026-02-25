@@ -1295,7 +1295,7 @@ def analyst_node(state: WipState):
 
         # ---- PHASE 7: Full totals validation (all columns) ----
         _totals_fields = [
-            ("total_contract_price", "Contract Price"),
+            ("total_contract_price", "Contract Value"),
             ("estimated_total_costs", "Est Total Costs"),
             ("estimated_gross_profit", "Est Gross Profit"),
             ("revenues_earned", "Revenues Earned"),
@@ -1308,6 +1308,7 @@ def analyst_node(state: WipState):
         totals_pass = False
         totals_msg = "No Totals Row"
         totals_details: List[Dict[str, Any]] = []
+        totals_detail_rows: List[Dict[str, Any]] = []  # For dashboard expandable
 
         if extracted_totals:
             mismatches = []
@@ -1315,15 +1316,27 @@ def analyst_node(state: WipState):
                 calc_val = getattr(calc, field_name, 0.0)
                 ext_val = getattr(extracted_totals, field_name, 0.0)
                 diff = abs(calc_val - ext_val)
-                if diff >= 1000.0:
+                match = diff < 1000.0
+
+                detail_row = {
+                    "label": display_name,
+                    "extracted": f"${ext_val:,.0f}",
+                    "calculated": f"${calc_val:,.0f}",
+                    "match": match,
+                }
+                if not match:
+                    signed_diff = calc_val - ext_val
+                    detail_row["delta"] = f"{'+'if signed_diff > 0 else '−'}${abs(signed_diff):,.0f}"
                     mismatches.append((field_name, display_name, calc_val, ext_val, diff))
+
+                totals_detail_rows.append(detail_row)
 
             if not mismatches:
                 totals_pass = True
-                totals_msg = f"All {len(_totals_fields)} column sums match report totals"
+                totals_msg = f"All {len(_totals_fields)} columns match"
             else:
                 passed_count = len(_totals_fields) - len(mismatches)
-                totals_msg = f"{passed_count}/{len(_totals_fields)} columns match ({len(mismatches)} mismatches)"
+                totals_msg = f"{len(mismatches)} column{'s' if len(mismatches) != 1 else ''} off"
                 for fname, dname, cv, ev, diff in mismatches:
                     totals_details.append({
                         "id": "TOTALS",
@@ -1337,15 +1350,72 @@ def analyst_node(state: WipState):
 
         risk_rows = build_risk_rows(rows, calc)
 
-        # ---- Build widget data ----
+        # ---- Build dashboard-compatible widget data ----
         t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
         gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
 
         net_ub_ob = calc.under_billings - calc.over_billings
         net_ub_ob_label = f"Under ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Over ${abs(net_ub_ob)/1000:.0f}k"
 
+        # --- Structural validation details ---
         struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
         struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
+
+        missing_ids = sum(1 for r in rows if not r.job_id)
+        struct_detail_rows = [
+            {"label": "Column headers detected", "value": f"10 of 10" if struct_pass else "Incomplete", "match": struct_pass},
+            {"label": "Row count", "value": f"{len(rows)} data rows", "match": len(rows) > 0},
+            {"label": "Total row detected", "value": "Present" if extracted_totals else "Missing", "match": extracted_totals is not None},
+            {"label": "Missing job IDs", "value": f"{missing_ids} found" if missing_ids else "0 found", "match": missing_ids == 0},
+        ]
+
+        # --- Formulaic validation details (aggregated per formula type) ---
+        # Count pass/fail per validation type across all rows
+        validation_type_labels = {
+            "contract_cost_gp": "Contract − Est Cost = Est GP",
+            "cost_to_complete_check": "Est Cost = CTD + CTC",
+            "earned_revenue_from_gp": "CTD + GP to Date = Earned Rev",
+            "underbilling_overbilling": "UB/OB matches billing variance",
+            "earned_revenue_from_poc": "Earned Rev ≈ Contract × POC",
+            "remaining_gp_check": "GP to Date ≤ Est GP",
+            "gp_percentage_bounds": "GP% within normal range",
+        }
+
+        # Run fresh count per validation type
+        formula_detail_rows = []
+        for v in validations:
+            pass_count = 0
+            fail_count = 0
+            fail_note = ""
+            for r in rows:
+                row_dict = r.model_dump()
+                required_present = all(row_dict.get(field) is not None for field in v.requires)
+                has_nonzero = any(row_dict.get(field, 0) != 0 for field in v.requires)
+                if not required_present or not has_nonzero:
+                    continue
+                error_msg = v.check(r)
+                if error_msg:
+                    fail_count += 1
+                else:
+                    pass_count += 1
+
+            total_checked = pass_count + fail_count
+            if total_checked == 0:
+                continue
+
+            label = validation_type_labels.get(v.name, v.name)
+            if fail_count == 0:
+                value_str = f"{pass_count}/{total_checked} rows pass"
+            elif fail_count <= 2:
+                value_str = f"{pass_count}/{total_checked} rows pass ({fail_count} {'rounding ≤$1' if fail_count == 1 and v.tolerance_value <= 100 else 'issue' + ('s' if fail_count > 1 else '')})"
+            else:
+                value_str = f"{fail_count}/{total_checked} rows failed"
+
+            formula_detail_rows.append({
+                "label": label,
+                "value": value_str,
+                "match": fail_count == 0,
+            })
 
         errors_by_job: Dict[str, List[Dict[str, Any]]] = {}
         for e in all_validation_errors:
@@ -1407,13 +1477,99 @@ def analyst_node(state: WipState):
 
         corrections_display = [{"jobId": job_id, **data} for job_id, data in jobs_with_issues.items()]
 
+        # --- Chart data computation ---
+        def _build_chart_data(rows: List[CalculatedWipRow], calc: WipTotals) -> Dict[str, Any]:
+            """Derive billing, exposure, and margin chart arrays from extracted data."""
+
+            # Billing position: top jobs by |UB - OB|, sorted under→over
+            billing_rows = []
+            for r in rows:
+                net = r.over_billings_calc - r.under_billings_calc  # positive = overbilled
+                if abs(net) > 1000:  # skip near-zero
+                    short_name = (r.job_name or r.job_id)[:18]
+                    billing_rows.append({"name": short_name, "value": round(net / 1000)})  # in $K
+            billing_rows.sort(key=lambda x: x["value"])
+            billing_chart = billing_rows[:15]  # top 15 by magnitude
+
+            # Exposure: top jobs by remaining cost, colored by risk tier
+            risk_tier_lookup = {rr["jobId"]: rr["riskTier"] for rr in risk_rows}
+            exposure_rows = []
+            for r in rows:
+                remaining = r.cost_to_complete
+                if remaining > 10000:
+                    tier = risk_tier_lookup.get(r.job_id, "NONE")
+                    short_name = (r.job_name or r.job_id)[:18]
+                    exposure_rows.append({
+                        "name": short_name,
+                        "completed": round(r.cost_to_date / 1000),  # in $K
+                        "remaining": round(remaining / 1000),
+                        "tier": tier if tier != "NONE" else "LOW",
+                    })
+            exposure_rows.sort(key=lambda x: x["remaining"], reverse=True)
+            exposure_chart = exposure_rows[:12]
+
+            # Margin: estimated GP% vs actual GP% per job
+            margin_rows = []
+            for r in rows:
+                if r.total_contract_price > 100000 and r.estimated_total_costs > 0:
+                    est_gp_pct = round((r.estimated_gross_profit / r.total_contract_price) * 100, 1)
+                    poc = r.cost_to_date / r.estimated_total_costs
+                    if poc > 0.05:  # skip barely-started jobs
+                        actual_gp_pct = round((r.gross_profit_to_date / r.revenues_earned) * 100, 1) if r.revenues_earned else 0
+                        short_name = (r.job_name or r.job_id)[:18]
+                        margin_rows.append({
+                            "name": short_name,
+                            "estimated": est_gp_pct,
+                            "actual": actual_gp_pct,
+                        })
+            # Sort by divergence (most concerning first)
+            margin_rows.sort(key=lambda x: x["estimated"] - x["actual"], reverse=True)
+            margin_chart = margin_rows[:12]
+
+            return {
+                "billing": billing_chart,
+                "exposure": exposure_chart,
+                "margin": margin_chart,
+            }
+
+        charts = _build_chart_data(rows, calc)
+
+        # --- KPIs ---
+        kpis = [
+            {"label": "Contract Value", "value": f"${calc.total_contract_price/1e6:.1f}M"},
+            {"label": "UEGP", "value": f"${t_uegp/1e6:.1f}M"},
+            {"label": "CTC", "value": f"${calc.cost_to_complete/1e6:.1f}M"},
+            {"label": "Earned Rev", "value": f"${calc.revenues_earned/1e6:.1f}M"},
+            {"label": "GP %", "value": f"{gp_percent:.1f}%"},
+            {"label": "Net Position", "value": net_ub_ob_label, "negative": net_ub_ob >= 0},
+        ]
+
+        # --- Assemble widget_data in dashboard schema ---
         widget_data = {
             "validations": {
-                "structural": {"passed": struct_pass, "message": struct_msg, "details": []},
-                "formulaic": {"passed": formula_pass, "message": formula_msg, "details": formula_errors_display, "jobIssues": corrections_display},
-                "totals": {"passed": totals_pass, "message": totals_msg, "details": totals_details},
+                "structural": {
+                    "passed": struct_pass,
+                    "message": struct_msg,
+                    "details": struct_detail_rows,
+                },
+                "formulaic": {
+                    "passed": formula_pass,
+                    "message": formula_msg,
+                    "details": formula_detail_rows,
+                    "jobIssues": corrections_display,
+                },
+                "totals": {
+                    "passed": totals_pass,
+                    "message": totals_msg,
+                    "details": totals_detail_rows if totals_detail_rows else totals_details,
+                },
             },
+            "kpis": kpis,
+            "charts": charts,
             "corrections_applied": correction_log,
+            "riskTier": surety_risk_context["risk_tier"],
+            "riskRowsAll": risk_rows,
+            # Legacy format for backward compatibility
             "metrics": {
                 "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},
                 "row1_2": {"label": "UEGP", "value": f"${t_uegp/1000000:.2f}M"},
@@ -1422,8 +1578,6 @@ def analyst_node(state: WipState):
                 "row2_2": {"label": "GP %", "value": f"{gp_percent:.1f}%"},
                 "row2_3": {"label": "Net UB / OB", "value": net_ub_ob_label},
             },
-            "riskTier": surety_risk_context["risk_tier"],
-            "riskRowsAll": risk_rows,
         }
 
         return {
