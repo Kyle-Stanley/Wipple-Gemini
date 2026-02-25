@@ -890,28 +890,101 @@ def extractor_node(state: WipState):
 
     # Stage 3: JSON parse
     diagnostics["raw_response_preview"] = raw_text[:500] if raw_text else "(empty)"
-    data = None
+    parsed = None
     try:
-        data = parse_json_safely(raw_text)
-        if data is None:
+        parsed = parse_json_safely(raw_text)
+        if parsed is None:
             _diag("json_parse", "FAIL", "parse_json_safely returned None")
-        elif not isinstance(data, dict):
-            _diag("json_parse", "FAIL", f"Expected dict, got {type(data).__name__}")
-            data = None
         else:
-            _diag("json_parse", "OK", f"Keys: {list(data.keys())}")
+            _diag("json_parse", "OK", f"Type: {type(parsed).__name__}, "
+                  + (f"Keys: {list(parsed.keys())}" if isinstance(parsed, dict) else f"Length: {len(parsed)}"))
     except Exception as e:
         _diag("json_parse", "FAIL", str(e))
+
+    # Stage 3b: Normalize parsed JSON into {"rows": [...], "totals": {...}} structure
+    data = None
+    _row_field_keys = {"job_id", "total_contract_price", "cost_to_date"}
+
+    if isinstance(parsed, dict):
+        data = parsed
+    elif isinstance(parsed, list) and len(parsed) > 0:
+        # Bare array of rows: [{row1}, {row2}, ...]
+        if isinstance(parsed[0], dict):
+            data = {"rows": parsed}
+            _diag("json_normalize", "OK", f"Wrapped top-level array ({len(parsed)} dicts) into rows")
+        else:
+            _diag("json_parse", "FAIL", f"Top-level list but items are {type(parsed[0]).__name__}, not dicts")
 
     if data is None:
         return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
 
-    # Stage 4: Row parsing (with partial recovery)
-    raw_rows = data.get("rows") or []
+    # Stage 4: Row extraction with aggressive structural recovery
+    raw_rows = []
+    totals_data = data.get("totals")
+
+    # Path A: Standard {"rows": [...]} structure
+    candidate = data.get("rows")
+    if isinstance(candidate, list) and len(candidate) > 0:
+        raw_rows = candidate
+        _diag("row_locate", "OK", f"Found {len(raw_rows)} rows under 'rows' key")
+
+    # Path B: Alternative key names
     if not raw_rows:
-        _diag("row_parse", "FAIL", f"No 'rows' key or empty. Available keys: {list(data.keys())}")
+        for alt_key in ("data", "jobs", "wip_rows", "schedule", "wip_schedule", "job_rows", "wip_data", "extracted_data"):
+            candidate = data.get(alt_key)
+            if isinstance(candidate, list) and len(candidate) > 0:
+                raw_rows = candidate
+                _diag("row_locate", "OK", f"Found {len(raw_rows)} rows under '{alt_key}' key")
+                break
+
+    # Path C: Scan all values — find any list of dicts that looks like rows
+    if not raw_rows:
+        for key, val in data.items():
+            if key == "totals":
+                continue
+            if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
+                if _row_field_keys.issubset(set(val[0].keys())):
+                    raw_rows = val
+                    _diag("row_locate", "OK", f"Found {len(raw_rows)} row-like dicts under '{key}' key")
+                    break
+
+    # Path D: Top-level dict has row field names directly
+    if not raw_rows and _row_field_keys.issubset(set(data.keys())):
+        first_val = data.get("job_id")
+        non_meta_data = {k: v for k, v in data.items() if k != "totals"}
+
+        if isinstance(first_val, list):
+            # Columnar format: {"job_id": ["101","102"], "cost_to_date": [1000, 2000]}
+            num_rows = len(first_val)
+            raw_rows = [
+                {k: (v[i] if isinstance(v, list) and i < len(v) else v) for k, v in non_meta_data.items()}
+                for i in range(num_rows)
+            ]
+            _diag("row_locate", "OK", f"Converted columnar format ({num_rows} rows)")
+        else:
+            # Single flat row (all fields at top level)
+            raw_rows = [non_meta_data]
+            _diag("row_locate", "OK", "Wrapped single flat object as 1 row")
+
+    # Path E: Single nested wrapper — {"wip_schedule": {"rows": [...]}}
+    if not raw_rows:
+        for key, val in data.items():
+            if key == "totals":
+                continue
+            if isinstance(val, dict):
+                nested_rows = val.get("rows")
+                if isinstance(nested_rows, list) and len(nested_rows) > 0:
+                    raw_rows = nested_rows
+                    totals_data = totals_data or val.get("totals")
+                    _diag("row_locate", "OK", f"Found {len(raw_rows)} rows nested under '{key}.rows'")
+                    break
+
+    if not raw_rows:
+        key_sample = {k: type(v).__name__ + (f"[{len(v)}]" if isinstance(v, (list, dict)) else "") for k, v in list(data.items())[:15]}
+        _diag("row_parse", "FAIL", f"Could not locate rows in any known structure. Key types: {key_sample}")
         return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
 
+    # Stage 5: Parse individual rows
     rows: List[CalculatedWipRow] = []
     row_errors: List[Dict[str, Any]] = []
     for i, r in enumerate(raw_rows):
@@ -927,11 +1000,11 @@ def extractor_node(state: WipState):
     else:
         _diag("row_parse", "OK", f"{len(rows)} rows parsed")
 
-    # Stage 5: Totals
+    # Stage 6: Totals
     totals = None
-    if data.get("totals"):
+    if totals_data:
         try:
-            totals = WipTotals(**data["totals"])
+            totals = WipTotals(**totals_data)
             _diag("totals_parse", "OK", "")
         except Exception as e:
             _diag("totals_parse", "FAIL", str(e))
@@ -979,9 +1052,10 @@ def analyst_node(state: WipState):
                 # Show what the model actually returned
                 preview = raw_preview[:200].replace('\n', ' ').strip()
                 struct_msg = f"JSON Parse Failed — model returned: \"{preview}...\""
-            elif failed_stage == "row_parse":
-                # JSON was valid but no 'rows' key
-                struct_msg = f"JSON valid but no rows found. Keys in response: {diag.get('stages', [{}])[-1].get('detail', '?')}"
+            elif failed_stage in ("row_locate", "row_parse"):
+                # JSON was valid but structure didn't match or rows couldn't parse
+                last_detail = failure_chain[-1] if failure_chain else "unknown structure"
+                struct_msg = f"Data structure issue: {last_detail}"
             else:
                 struct_msg = f"Extraction failed at: {failed_stage}"
 
