@@ -579,6 +579,40 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
         if ((r.over_billings_calc > r.total_contract_price * 0.15 and r.over_billings_calc > 25000) or (r.over_billings_calc > 100000))
     ]
 
+    # Early stage large jobs (< 25% complete, > $500k contract)
+    early_stage_jobs = []
+    for r in rows:
+        if r.estimated_total_costs > 0 and r.total_contract_price > 500000:
+            poc = r.cost_to_date / r.estimated_total_costs
+            remaining = r.estimated_total_costs - r.cost_to_date
+            if poc < 0.25 and remaining > 100000:
+                early_stage_jobs.append({
+                    "id": r.job_id, "name": r.job_name,
+                    "contract": r.total_contract_price,
+                    "pct_complete": poc,
+                    "remaining_cost": remaining,
+                })
+
+    # Billing lag jobs (billed < 80% of costs)
+    billing_lag_jobs = []
+    for r in rows:
+        if r.cost_to_date > 50000 and r.billed_to_date > 0:
+            ratio = r.billed_to_date / r.cost_to_date
+            if ratio < 0.80:
+                billing_lag_jobs.append({
+                    "id": r.job_id, "name": r.job_name,
+                    "cost_to_date": r.cost_to_date,
+                    "billed_to_date": r.billed_to_date,
+                    "billing_ratio": ratio,
+                    "cash_gap": r.cost_to_date - r.billed_to_date,
+                })
+
+    # Backlog health: aggregate completion signals
+    aggregate_poc = calc.cost_to_date / calc.estimated_total_costs if calc.estimated_total_costs else 0
+    total_remaining_cost = calc.estimated_total_costs - calc.cost_to_date
+    jobs_over_90 = sum(1 for r in rows if r.estimated_total_costs > 0 and r.cost_to_date / r.estimated_total_costs > 0.90)
+    jobs_under_25 = sum(1 for r in rows if r.estimated_total_costs > 0 and r.cost_to_date / r.estimated_total_costs < 0.25)
+
     # UB/OB extraction discrepancy signal (useful for diagnosing extraction vs accounting weirdness)
     ub_ob_mismatch_jobs = [r for r in rows if r.ub_ob_discrepancy_abs > 100]
 
@@ -586,10 +620,13 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
         "portfolio": {
             "total_jobs": len(rows),
             "total_contract_value": calc.total_contract_price,
-            "aggregate_poc": calc.cost_to_date / calc.estimated_total_costs if calc.estimated_total_costs else 0,
+            "aggregate_poc": aggregate_poc,
             "net_billing_position": calc.under_billings - calc.over_billings,
             "total_uegp": total_uegp,
             "total_gp_margin": calc.estimated_gross_profit / calc.total_contract_price if calc.total_contract_price else 0,
+            "total_remaining_cost": total_remaining_cost,
+            "jobs_over_90_pct": jobs_over_90,
+            "jobs_under_25_pct": jobs_under_25,
         },
         "cash_risk": {
             "severe_ub_count": len(severe_ub_jobs),
@@ -598,6 +635,9 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
                 for r in severe_ub_jobs
             ],
             "total_ub_exposure": total_ub_exposure,
+            "billing_lag_count": len(billing_lag_jobs),
+            "billing_lag_jobs": billing_lag_jobs[:5],
+            "total_billing_gap": sum(j["cash_gap"] for j in billing_lag_jobs),
         },
         "loss_risk": {
             "loss_job_count": len(loss_jobs),
@@ -624,6 +664,11 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
                 for r in concentration_jobs
             ]
         },
+        "exposure_risk": {
+            "early_stage_count": len(early_stage_jobs),
+            "early_stage_jobs": early_stage_jobs[:5],
+            "total_early_stage_remaining": sum(j["remaining_cost"] for j in early_stage_jobs),
+        },
         "overbilling_note": {
             "severe_ob_count": len(severe_ob_jobs),
             "total_ob": sum(r.over_billings_calc for r in severe_ob_jobs),
@@ -640,22 +685,38 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
 def compute_portfolio_risk_tier(risk_context: Dict[str, Any]) -> str:
     score = 0
 
+    # Cash risk: underbilling exposure
     if risk_context["cash_risk"]["total_ub_exposure"] > 500000:
         score += 4
     elif risk_context["cash_risk"]["total_ub_exposure"] > 100000:
         score += 2
 
+    # Cash risk: billing lag
+    if risk_context["cash_risk"]["billing_lag_count"] >= 3:
+        score += 2
+    elif risk_context["cash_risk"]["billing_lag_count"] >= 1:
+        score += 1
+
+    # Loss exposure
     if risk_context["loss_risk"]["loss_job_count"] >= 3:
         score += 3
     elif risk_context["loss_risk"]["loss_job_count"] >= 1:
         score += 2
 
+    # Margin erosion
     if risk_context["margin_risk"]["uegp_at_risk_pct"] > 0.3:
         score += 2
     elif risk_context["margin_risk"]["uegp_at_risk_pct"] > 0.15:
         score += 1
 
+    # Concentration
     if len(risk_context["concentration_risk"]["concentrated_jobs"]) > 0:
+        score += 1
+
+    # Early stage exposure
+    if risk_context["exposure_risk"]["early_stage_count"] >= 2:
+        score += 2
+    elif risk_context["exposure_risk"]["early_stage_count"] >= 1:
         score += 1
 
     if score >= 6:
@@ -752,6 +813,66 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
                     "detail": "A single large job going bad could significantly impact the contractor's overall financial position.",
                 }
             )
+
+        # Early Stage Exposure: large job with < 25% completion = maximum remaining risk
+        if r.estimated_total_costs > 0:
+            poc = r.cost_to_date / r.estimated_total_costs
+            remaining_cost = r.estimated_total_costs - r.cost_to_date
+            if poc < 0.25 and r.total_contract_price > 500000 and remaining_cost > 100000:
+                job_risk_tags.append("Early Stage Exposure")
+                risk_score += 12 + remaining_cost / 100000
+                risk_details.append(
+                    {
+                        "tag": "Early Stage Exposure",
+                        "summary": f"Only {poc:.0%} complete, ${remaining_cost:,.0f} in costs remaining",
+                        "detail": "Large job in early stages means maximum remaining exposure. Most of the risk is still ahead — cost overruns, disputes, and schedule delays are most likely to emerge as work ramps up.",
+                    }
+                )
+
+        # Cost Overrun Signal: costs approaching or exceeding contract without change order coverage
+        if r.total_contract_price > 0 and r.estimated_total_costs > 0:
+            cost_to_contract = r.estimated_total_costs / r.total_contract_price
+            if cost_to_contract > 0.97 and r.estimated_gross_profit >= 0:
+                # Margin is razor-thin but not yet negative (between 0-3%)
+                margin_pct = (r.estimated_gross_profit / r.total_contract_price * 100)
+                job_risk_tags.append("Cost Overrun Signal")
+                risk_score += 18
+                risk_details.append(
+                    {
+                        "tag": "Cost Overrun Signal",
+                        "summary": f"Costs at {cost_to_contract:.0%} of contract, only {margin_pct:.1f}% margin remaining",
+                        "detail": "Estimated costs have nearly consumed the entire contract value. Any additional cost growth flips this to a loss job. Check for pending change orders that might restore margin.",
+                    }
+                )
+
+        # Billing Lag: cash going out faster than coming in
+        if r.cost_to_date > 50000 and r.billed_to_date > 0:
+            billing_ratio = r.billed_to_date / r.cost_to_date
+            if billing_ratio < 0.80:
+                cash_gap = r.cost_to_date - r.billed_to_date
+                job_risk_tags.append("Billing Lag")
+                risk_score += 8 + cash_gap / 50000
+                risk_details.append(
+                    {
+                        "tag": "Billing Lag",
+                        "summary": f"Billed only {billing_ratio:.0%} of costs incurred (${cash_gap:,.0f} gap)",
+                        "detail": "Cash collections are significantly behind costs spent. This creates cash flow pressure — the contractor is funding this job out of pocket or from other jobs' cash. Sustained billing lag across multiple jobs signals liquidity stress.",
+                    }
+                )
+
+        # Stale Completion: high completion but still showing significant remaining costs
+        if r.estimated_total_costs > 0:
+            poc_check = r.cost_to_date / r.estimated_total_costs
+            if poc_check > 0.95 and r.cost_to_complete > r.total_contract_price * 0.05 and r.cost_to_complete > 25000:
+                job_risk_tags.append("Stale CTC")
+                risk_score += 5
+                risk_details.append(
+                    {
+                        "tag": "Stale CTC",
+                        "summary": f"{poc_check:.0%} complete but ${r.cost_to_complete:,.0f} CTC remaining",
+                        "detail": "Job appears nearly complete by percentage but still carries meaningful cost to complete. May indicate punch list issues, retainage disputes, or stale estimates that haven't been updated.",
+                    }
+                )
 
         if job_risk_tags:
             if risk_score >= 50:
@@ -1420,12 +1541,18 @@ def narrative_node(state: WipState):
             prompt=prompt,
             model_name=state.model_name,
             temperature=0.3,
-            max_tokens=250,
+            max_tokens=350,
             tracker=tracker,
             system_prompt="You are a surety underwriting analyst. Write exactly 2-4 sentences of prose. No bullets, no headers. Be specific and insightful.",
         )
 
         narrative = response.text.strip()
+
+        # Log finish reason for debugging truncation
+        if response.finish_reason:
+            print(f"    Narrative finish_reason: {response.finish_reason}")
+            print(f"    Narrative length: {len(narrative)} chars, ~{response.output_tokens} tokens")
+
         widget_data = dict(state.widget_data or {})
         widget_data["summary"] = {"text": narrative}
 
