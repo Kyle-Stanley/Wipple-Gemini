@@ -148,7 +148,7 @@ def extraction_node(state: BondState):
             pdf_bytes=file_bytes,
             response_mime_type="application/json",
             tracker=tracker,
-            system_prompt="You are a precise contract extraction engine. Output strict JSON only.",
+            system_prompt="You are a legal contract extraction engine specialized in surety bond forms. Extract structured data and return it as a single JSON object. CRITICAL: Return ONLY the raw JSON object. No markdown code fences. No explanatory text before or after. No commentary.",
         )
 
         data = parse_json_safely(response.text)
