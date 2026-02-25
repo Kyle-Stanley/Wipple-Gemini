@@ -51,12 +51,19 @@ def _env_override(key: str, default: str) -> str:
 
 
 SUPPORTED_MODELS: Dict[str, ModelConfig] = {
-    "claude-opus-4-5": ModelConfig(
-        model_id=_env_override("MODEL_ID_CLAUDE_OPUS_4_5", "claude-opus-4-5-20251101"),
+    "claude-opus-4-6": ModelConfig(
+        model_id=_env_override("MODEL_ID_CLAUDE_OPUS_4_6", "claude-opus-4-6"),
         provider=ModelProvider.ANTHROPIC,
-        display_name="Claude Opus 4.5",
+        display_name="Claude Opus 4.6",
         input_price_per_million=5.0,
         output_price_per_million=25.0,
+    ),
+    "claude-sonnet-4-6": ModelConfig(
+        model_id=_env_override("MODEL_ID_CLAUDE_SONNET_4_6", "claude-sonnet-4-6"),
+        provider=ModelProvider.ANTHROPIC,
+        display_name="Claude Sonnet 4.6",
+        input_price_per_million=3.0,
+        output_price_per_million=15.0,
     ),
     "claude-sonnet-4-5": ModelConfig(
         model_id=_env_override("MODEL_ID_CLAUDE_SONNET_4_5", "claude-sonnet-4-5-20250929"),
@@ -72,6 +79,13 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         input_price_per_million=1.0,
         output_price_per_million=5.0,
     ),
+    "gemini-3.1-pro": ModelConfig(
+        model_id=_env_override("MODEL_ID_GEMINI_3_1_PRO", "gemini-3.1-pro-preview"),
+        provider=ModelProvider.GOOGLE,
+        display_name="Gemini 3.1 Pro",
+        input_price_per_million=2.0,
+        output_price_per_million=12.0,
+    ),
     "gemini-3-pro": ModelConfig(
         model_id=_env_override("MODEL_ID_GEMINI_3_PRO", "gemini-3-pro-preview"),
         provider=ModelProvider.GOOGLE,
@@ -82,14 +96,14 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
     "gemini-3-flash": ModelConfig(
         model_id=_env_override("MODEL_ID_GEMINI_3_FLASH", "gemini-3-flash-preview"),
         provider=ModelProvider.GOOGLE,
-        display_name="Gemini 3 Flash (Preview)",
+        display_name="Gemini 3 Flash",
         input_price_per_million=0.50,
         output_price_per_million=3.00,
     ),
 }
 
 # Default model (may not be available if env keys are missing)
-DEFAULT_MODEL = "gemini-3-pro"
+DEFAULT_MODEL = "gemini-3.1-pro"
 
 
 @dataclass
