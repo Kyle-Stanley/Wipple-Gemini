@@ -108,23 +108,35 @@ def extraction_node(state: BondState):
     Analyze this Bond Form/Contract. Extract the following:
     1. The Parties (Principal, Obligee, Surety) and Penal Sum.
     2. Key Risk Clauses - extract ALL of the following (use "Not Present" if clause doesn't exist):
-       - security_required
-       - bond_type
-       - forms_provided
-       - adjustable_amount
-       - cancellation_terms (EXACT verbatim)
-       - cancellation_notice_period
-       - effective_duration
-       - forfeiture_language
-       - quick_payment_terms
-       - efficiency_guarantees
-       - enforcement_mechanisms
-    3. A list of ALL legal statutes, codes, or regulations explicitly cited.
+       - security_required: Yes/No and type details
+       - bond_type: Performance Bond / Payment Bond / Letter of Credit / Cash / Certificate of Deposit
+       - forms_provided: Yes/No - are exhibits/appendices included?
+       - adjustable_amount: Yes/No - can amount increase mid-term?
+       - cancellation_terms: The EXACT verbatim cancellation language
+       - cancellation_notice_period: e.g. "30 Days"
+       - effective_duration: Term or coverage period
+       - forfeiture_language: Exact forfeiture clause or "Not Present"
+       - quick_payment_terms: Payment within 30 days or less? Details or "Not Present"
+       - efficiency_guarantees: Performance/quality/output accountability or "Not Present"
+       - enforcement_mechanisms: Claims process, notice requirements, time limits, triggering events
+    3. A list of ALL legal statutes, codes, or regulations explicitly cited (e.g., "California Civil Code 1234", "Public Contract Code").
 
     Return JSON matching the structure:
     {
         "parties": { "principal_name": "...", "obligee_name": "...", "surety_name": "...", "penal_sum": "..." },
-        "risks": { ... },
+        "risks": {
+            "security_required": "...",
+            "bond_type": "...",
+            "forms_provided": "...",
+            "adjustable_amount": "...",
+            "cancellation_terms": "...",
+            "cancellation_notice_period": "...",
+            "effective_duration": "...",
+            "forfeiture_language": "...",
+            "quick_payment_terms": "...",
+            "efficiency_guarantees": "...",
+            "enforcement_mechanisms": "..."
+        },
         "identified_citations": ["Code A", "Regulation B"]
     }
     """
@@ -161,6 +173,9 @@ def _lookup_citation_worker(
     Worker that does ONE model call and returns:
       (citation, StatuteRef, input_tokens, output_tokens)
     """
+    # NOTE: We intentionally do NOT pass a shared MetricsTracker into this worker.
+    # Multiple threads incrementing one tracker can lose updates; instead we return
+    # token counts to the caller, which records them centrally.
     client = get_client()
 
     search_prompt = f"""
