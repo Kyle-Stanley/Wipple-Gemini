@@ -100,6 +100,7 @@ class WipState(BaseModel):
     validation_errors: List[Dict[str, Any]] = Field(default_factory=list)
     correction_suggestions: List[Dict[str, Any]] = Field(default_factory=list)
     correction_log: List[Dict[str, Any]] = Field(default_factory=list)
+    extraction_diagnostics: Dict[str, Any] = Field(default_factory=dict)
     surety_risk_context: Dict[str, Any] = Field(default_factory=dict)
     risk_rows: List[Dict[str, Any]] = Field(default_factory=list)
     widget_data: Dict[str, Any] = Field(default_factory=dict)
@@ -795,15 +796,22 @@ def extractor_node(state: WipState):
 
     tracker = MetricsTracker(model_name=state.model_name)
     client = get_client()
+    diagnostics: Dict[str, Any] = {"model": state.model_name, "stages": []}
+
+    def _diag(stage: str, status: str, detail: str = ""):
+        diagnostics["stages"].append({"stage": stage, "status": status, "detail": detail})
 
     try:
         with open(state.file_path, "rb") as f:
             file_bytes = f.read()
     except FileNotFoundError:
-        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics()}
+        _diag("file_read", "FAIL", f"File not found: {state.file_path}")
+        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
     except Exception as e:
-        print(f"File Read Error: {e}")
-        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics()}
+        _diag("file_read", "FAIL", str(e))
+        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
+
+    _diag("file_read", "OK", f"{len(file_bytes)} bytes")
 
     prompt = """
     Extract the WIP Schedule table.
@@ -862,6 +870,8 @@ def extractor_node(state: WipState):
     - Double-check Cost to Date vs Cost to Complete - they are different columns!
     """
 
+    # Stage 2: LLM call
+    raw_text = ""
     try:
         response = client.generate_content(
             prompt=prompt,
@@ -871,22 +881,64 @@ def extractor_node(state: WipState):
             tracker=tracker,
             system_prompt="You are a financial document extraction engine specialized in construction Work-In-Progress schedules. Extract structured data and return it as a single JSON object. CRITICAL: Return ONLY the raw JSON object. No markdown code fences. No explanatory text before or after. No commentary.",
         )
-
-        data = parse_json_safely(response.text)
-        rows = [CalculatedWipRow(**r) for r in (data.get("rows") or [])]
-
-        totals = None
-        if data.get("totals"):
-            try:
-                totals = WipTotals(**data["totals"])
-            except Exception as e:
-                print(f"Warning: Could not parse totals row: {e}")
-
-        return {"processed_data": rows, "totals_row": totals, "metrics_data": tracker.get_metrics()}
-
+        raw_text = response.text or ""
+        _diag("llm_call", "OK", f"{len(raw_text)} chars returned")
     except Exception as e:
-        print(f"Extraction Error: {e}")
-        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics()}
+        _diag("llm_call", "FAIL", str(e))
+        diagnostics["raw_response_preview"] = ""
+        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
+
+    # Stage 3: JSON parse
+    diagnostics["raw_response_preview"] = raw_text[:500] if raw_text else "(empty)"
+    data = None
+    try:
+        data = parse_json_safely(raw_text)
+        if data is None:
+            _diag("json_parse", "FAIL", "parse_json_safely returned None")
+        elif not isinstance(data, dict):
+            _diag("json_parse", "FAIL", f"Expected dict, got {type(data).__name__}")
+            data = None
+        else:
+            _diag("json_parse", "OK", f"Keys: {list(data.keys())}")
+    except Exception as e:
+        _diag("json_parse", "FAIL", str(e))
+
+    if data is None:
+        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
+
+    # Stage 4: Row parsing (with partial recovery)
+    raw_rows = data.get("rows") or []
+    if not raw_rows:
+        _diag("row_parse", "FAIL", f"No 'rows' key or empty. Available keys: {list(data.keys())}")
+        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
+
+    rows: List[CalculatedWipRow] = []
+    row_errors: List[Dict[str, Any]] = []
+    for i, r in enumerate(raw_rows):
+        try:
+            rows.append(CalculatedWipRow(**r))
+        except Exception as e:
+            row_errors.append({"row_index": i, "error": str(e), "raw_keys": list(r.keys()) if isinstance(r, dict) else str(type(r))})
+
+    if row_errors:
+        _diag("row_parse", "PARTIAL" if rows else "FAIL",
+               f"{len(rows)}/{len(raw_rows)} rows parsed, {len(row_errors)} failed")
+        diagnostics["row_parse_errors"] = row_errors[:10]
+    else:
+        _diag("row_parse", "OK", f"{len(rows)} rows parsed")
+
+    # Stage 5: Totals
+    totals = None
+    if data.get("totals"):
+        try:
+            totals = WipTotals(**data["totals"])
+            _diag("totals_parse", "OK", "")
+        except Exception as e:
+            _diag("totals_parse", "FAIL", str(e))
+    else:
+        _diag("totals_parse", "SKIP", "No totals in response")
+
+    return {"processed_data": rows, "totals_row": totals, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
 
 # ==========================================
 # 7. ANALYST NODE
@@ -900,14 +952,88 @@ def analyst_node(state: WipState):
         extracted_totals = state.totals_row
 
         if not rows:
+            diag = state.extraction_diagnostics or {}
+            stages = diag.get("stages", [])
+
+            # Build human-readable failure chain
+            failure_chain = []
+            last_ok_stage = "none"
+            failed_stage = "unknown"
+            for s in stages:
+                if s["status"] == "OK":
+                    last_ok_stage = s["stage"]
+                else:
+                    failure_chain.append(f"{s['stage']}: {s['detail']}")
+                    if failed_stage == "unknown":
+                        failed_stage = s["stage"]
+
+            raw_preview = diag.get("raw_response_preview", "(not captured)")
+            row_parse_errors = diag.get("row_parse_errors", [])
+
+            # Determine specific structural message based on where it failed
+            if failed_stage == "file_read":
+                struct_msg = f"File Read Failed: {failure_chain[0] if failure_chain else 'unknown error'}"
+            elif failed_stage == "llm_call":
+                struct_msg = f"Model Call Failed: {failure_chain[0] if failure_chain else 'API error'}"
+            elif failed_stage == "json_parse":
+                # Show what the model actually returned
+                preview = raw_preview[:200].replace('\n', ' ').strip()
+                struct_msg = f"JSON Parse Failed — model returned: \"{preview}...\""
+            elif failed_stage == "row_parse":
+                # JSON was valid but no 'rows' key
+                struct_msg = f"JSON valid but no rows found. Keys in response: {diag.get('stages', [{}])[-1].get('detail', '?')}"
+            else:
+                struct_msg = f"Extraction failed at: {failed_stage}"
+
+            # Formulaic message should explain what we know
+            if row_parse_errors:
+                formulaic_msg = f"{len(row_parse_errors)} rows failed to parse: {row_parse_errors[0].get('error', '')[:100]}"
+                formulaic_details = [{"id": f"row_{e['row_index']}", "msg": e["error"][:120]} for e in row_parse_errors[:5]]
+            else:
+                formulaic_msg = f"No data to validate (extraction failed at {failed_stage} stage)"
+                formulaic_details = []
+
             return {
-                "final_json": {"error": "No data found"},
+                "final_json": {"error": "No data extracted", "extraction_diagnostics": diag},
                 "validation_errors": [],
                 "correction_suggestions": [],
                 "correction_log": [],
                 "surety_risk_context": {},
                 "risk_rows": [],
-                "widget_data": {},
+                "widget_data": {
+                    "validations": {
+                        "structural": {
+                            "passed": False,
+                            "message": struct_msg,
+                            "details": [{"id": "DIAG", "msg": c} for c in failure_chain],
+                        },
+                        "formulaic": {
+                            "passed": False,
+                            "message": formulaic_msg,
+                            "details": formulaic_details,
+                            "jobIssues": [],
+                        },
+                        "totals": {"passed": False, "message": "No data to validate", "details": []},
+                    },
+                    "extraction_failure": {
+                        "summary": " → ".join(failure_chain) if failure_chain else "Unknown failure",
+                        "failed_stage": failed_stage,
+                        "last_ok_stage": last_ok_stage,
+                        "stages": stages,
+                        "raw_preview": raw_preview[:500],
+                        "row_parse_errors": row_parse_errors[:5],
+                    },
+                    "metrics": {
+                        "row1_1": {"label": "Contract Value", "value": "—"},
+                        "row1_2": {"label": "UEGP", "value": "—"},
+                        "row1_3": {"label": "CTC", "value": "—"},
+                        "row2_1": {"label": "Earned Rev", "value": "—"},
+                        "row2_2": {"label": "GP %", "value": "—"},
+                        "row2_3": {"label": "Net UB / OB", "value": "—"},
+                    },
+                    "riskTier": "UNKNOWN",
+                    "riskRowsAll": [],
+                },
             }
 
         validations = build_validations()
@@ -1152,29 +1278,43 @@ def analyst_node(state: WipState):
 # ==========================================
 
 SURETY_NARRATIVE_PROMPT = """
-You are a surety underwriting analyst writing a brief summary for a senior underwriter.
+You are a senior surety underwriting analyst preparing an executive summary for the chief underwriter. This summary accompanies a WIP schedule review and should demonstrate the caliber of analysis expected at a top-10 surety.
 
-CONTEXT: We bonded this contractor. If they default, we need to recover what we're owed. Our concerns, in priority order:
+SURETY PERSPECTIVE: We have bonded this contractor. Our exposure is the penal sum of outstanding bonds. If the contractor defaults mid-project, we inherit the obligation to complete or pay. Every data point should be evaluated through this lens: "What does this mean for our recovery position and likelihood of claim?"
 
-1. CASH POSITION - Severe underbilling means work done but cash not collected. This is our biggest concern because it directly impacts recovery.
-2. LOSS JOBS - Negative margin jobs burn cash and reduce their ability to pay us.
-3. MARGIN EROSION - Jobs where profit is fading signal estimating problems or emerging losses.
-4. CONCENTRATION - One big job going bad can sink everything.
+ANALYTICAL FRAMEWORK (priority order):
 
-Overbilling is less urgent - it means they've collected ahead of work, which is actually better for our recovery position (though it can mask problems). Mention it only if extreme.
+1. CASH FLOW & LIQUIDITY SIGNAL
+   - Underbilling = work performed but unbilled = cash NOT collected. This is the single biggest red flag because it directly reduces recovery in a default scenario. Quantify the exposure.
+   - Overbilling = cash collected ahead of work = favorable for recovery (but can mask front-loading or manipulation). Only flag if extreme or suspicious.
+   - Net billing position relative to portfolio size tells the real story.
 
-INSTRUCTIONS:
-- Write 3-4 sentences maximum as a single paragraph
-- DO NOT repeat basic stats like job count, total contract value, or risk tier - those are already displayed separately
-- Focus on INSIGHT: What patterns do you see? What should the underwriter watch? What's the "so what"?
-- Connect the dots between data points (e.g., "underbilling combined with thin margins means...")
-- Be specific with dollar amounts when discussing concerns
-- If the portfolio is healthy, explain WHY it's healthy, don't just say it is
+2. LOSS EXPOSURE & MARGIN INTEGRITY
+   - Loss jobs represent direct erosion of the contractor's net worth and bonding capacity.
+   - GP fade (actual profit lagging expected profit at current completion) often precedes loss recognition — it means the contractor's estimates may be stale.
+   - Thin margins (<5% GP) leave no buffer. One change order or weather delay flips these to losses.
 
-RISK ASSESSMENT:
+3. COMPLETION & CONCENTRATION
+   - Early-stage large jobs have the most remaining exposure. Late-stage jobs are de-risking.
+   - Single-job concentration means one default cascades. Diversified portfolios absorb hits.
+
+4. DATA QUALITY CONTEXT
+   {correction_context}
+
+WHAT TO WRITE:
+- 4-6 sentences as flowing prose (no bullets, no headers, no bold).
+- Open with the single most important finding — the one thing the chief underwriter needs to know first.
+- Connect signals to conclusions: don't just report numbers, explain what they MEAN for our bond program.
+- Distinguish between systemic concerns (patterns across jobs) vs isolated issues (one bad job).
+- If the portfolio is genuinely healthy, say so with conviction and explain the structural reasons why (e.g., "margins are thick across the board with balanced billing positions").
+- End with a forward-looking statement: what to watch at next review, or what additional information would sharpen the picture.
+- DO NOT repeat stats already displayed in the dashboard (job count, total contract value, risk tier label). The underwriter can see those. Add insight they can't get from the numbers alone.
+
+RISK DATA:
 {risk_context}
 
 SUMMARY:"""
+
 
 def narrative_node(state: WipState):
     print("--- GENERATING NARRATIVE ---")
@@ -1196,15 +1336,42 @@ def narrative_node(state: WipState):
             widget_data["summary"] = {"text": f"Analysis error: {risk_context.get('error')}"}
             return {"narrative": widget_data["summary"]["text"], "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
 
-        prompt = SURETY_NARRATIVE_PROMPT.format(risk_context=json.dumps(risk_context, indent=2))
+        # Build correction context for the narrative
+        correction_log = state.correction_log or []
+        correction_suggestions = state.correction_suggestions or []
+        validation_errors = state.validation_errors or []
+
+        if not correction_log and not validation_errors:
+            correction_context = "All extraction checks passed. Data quality is high confidence."
+        else:
+            parts = []
+            if correction_log:
+                parts.append(f"{len(correction_log)} auto-corrections were applied (column swaps or digit fixes).")
+            if validation_errors:
+                parts.append(f"{len(validation_errors)} validation issues remain post-correction.")
+            if correction_suggestions:
+                low_conf = [s for s in correction_suggestions if s.get("confidence") != "high"]
+                if low_conf:
+                    parts.append(f"{len(low_conf)} suggested fixes were not applied (low confidence).")
+            correction_context = " ".join(parts) + " Factor data quality into your confidence level."
+
+        prompt = SURETY_NARRATIVE_PROMPT.format(
+            risk_context=json.dumps(risk_context, indent=2),
+            correction_context=correction_context,
+        )
 
         response = client.generate_content(
             prompt=prompt,
             model_name=state.model_name,
             temperature=0.3,
-            max_tokens=250,
+            max_tokens=400,
             tracker=tracker,
-            system_prompt="You are a concise underwriting analyst. Keep to 3-4 sentences. No bullets.",
+            system_prompt=(
+                "You are a senior surety underwriting analyst at a top-10 surety company. "
+                "Write with precision, authority, and analytical depth. "
+                "Prose only — no bullets, no headers, no formatting. "
+                "Every sentence should earn its place."
+            ),
         )
 
         narrative = response.text.strip()
