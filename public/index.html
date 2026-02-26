@@ -103,10 +103,17 @@
         .fade-slide { animation: fadeSlide 0.35s ease forwards; }
 
         /* Wipple Logo Loading Animation */
-        .wipple-loader-container { display: flex; align-items: center; gap: 10px; }
-        .wipple-loader-text { color: var(--text-secondary); font-size: 0.85rem; }
+        .wipple-loader-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            padding: 20px 0;
+        }
+        .wipple-loader-text { color: var(--text-secondary); font-size: 13px; }
+        .wipple-loader-subtext { color: var(--text-muted); font-size: 11.5px; margin-top: -8px; }
         .wipple-loader {
-            position: relative; width: 24px; height: 14px;
+            position: relative; width: 44px; height: 26px;
             display: inline-block; vertical-align: middle;
             animation: pulse 1.5s ease-in-out infinite;
         }
@@ -143,6 +150,9 @@
             letter-spacing: -0.3px;
             margin-right: 4px;
         }
+        body.light .dark-only { display: none !important; }
+        body.light .light-only { display: inline !important; }
+        body:not(.light) .light-only { display: none !important; }
 
         /* SEGMENTED CONTROLS */
         .seg-control {
@@ -276,7 +286,11 @@
         #upload-stage {
             max-width: 520px;
             margin: 0 auto;
-            padding: 48px 20px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: calc(100vh - 46px);
             transition: opacity 0.3s;
         }
         #upload-stage.hidden { display: none; }
@@ -348,8 +362,19 @@
             padding: 24px 20px 60px;
         }
         .results-single.wide { max-width: 1340px; }
+        .results-single.centered {
+            min-height: calc(100vh - 46px);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
 
         .agent-status { color: var(--text-secondary); font-size: 12.5px; padding: 4px 0; }
+        .agent-status.centered-status {
+            text-align: center;
+            font-size: 13.5px;
+            padding: 6px 0;
+        }
 
         /* ========================================
            COMPARE LAYOUT
@@ -576,6 +601,7 @@
         .confidence-high { background: var(--risk-low-bg); color: var(--risk-low); }
         .confidence-medium { background: var(--risk-med-bg); color: var(--risk-med); }
         .confidence-low { background: rgba(156,163,175,0.2); color: var(--text-secondary); }
+        .confidence-flag { background: var(--risk-med-bg); color: var(--risk-med); }
 
         /* ========================================
            DASHBOARD
@@ -894,8 +920,9 @@
     <!-- ========== HEADER ========== -->
     <header id="app-header">
         <div class="header-left">
-            <img src="logo2_bw.png" alt="Wipple" style="height:22px;" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline'">
-            <span class="header-logo" style="display:none;">wipple</span>
+            <img src="logo2_bw.png" alt="Wipple" class="header-logo-img dark-only" style="height:22px;" onerror="this.style.display='none'; document.querySelector('.header-logo-fallback').style.display='inline'">
+            <img src="wipple_logo_light.png" alt="Wipple" class="header-logo-img light-only" style="height:22px;display:none;" onerror="this.style.display='none'">
+            <span class="header-logo header-logo-fallback" style="display:none;">wipple</span>
 
             <div class="seg-control" id="mode-toggle">
                 <button class="seg-btn active" data-mode="single">Single</button>
@@ -1037,14 +1064,16 @@ const modalBackdrop = $('modal-backdrop');
 // ==========================================
 // HELPERS
 // ==========================================
-function getLoadingHtml() {
+function getLoadingHtml(statusText) {
+    const mainText = statusText || 'Analyzing...';
     return `<div class="wipple-loader-container">
-        <span class="wipple-loader-text">One moment...</span>
         <div class="wipple-loader">
             <img src="wipple-blue.png" alt="" class="logo-blue">
             <img src="wipple-green.png" alt="" class="logo-green">
             <img src="wipple-red.png" alt="" class="logo-red">
         </div>
+        <span class="wipple-loader-text">${mainText}</span>
+        <span class="wipple-loader-subtext">This may take a couple of minutes</span>
     </div>`;
 }
 
@@ -1199,10 +1228,21 @@ function setStage(stage, force) {
         btn.classList.toggle('active', btn.dataset.stage === stage);
     });
 
-    // Show/hide stages
-    uploadStage.style.display = stage === 'upload' ? '' : 'none';
-    resultsStage.style.display = stage !== 'upload' ? '' : 'none';
-    resultsStage.classList.toggle('active', stage !== 'upload');
+    // Show/hide stages — use opacity for results to preserve animations
+    if (stage === 'upload') {
+        uploadStage.style.display = '';
+        resultsStage.style.opacity = '0';
+        resultsStage.style.pointerEvents = 'none';
+        resultsStage.style.position = 'absolute';
+        resultsStage.style.width = '100%';
+    } else {
+        uploadStage.style.display = 'none';
+        resultsStage.style.opacity = '1';
+        resultsStage.style.pointerEvents = '';
+        resultsStage.style.position = '';
+        resultsStage.style.width = '';
+        resultsStage.classList.add('active');
+    }
 
     if (stage !== 'upload') {
         if (state.mode === 'compare') {
@@ -1244,7 +1284,16 @@ function resetAll() {
     dashboardContainer.innerHTML = '';
     comparePanelA.innerHTML = '';
     comparePanelB.innerHTML = '';
+    resultsSingle.classList.remove('centered');
     $('new-analysis-bar').classList.remove('active');
+
+    // Reset results stage visibility
+    resultsStage.style.opacity = '';
+    resultsStage.style.pointerEvents = '';
+    resultsStage.style.position = '';
+    resultsStage.style.width = '';
+    resultsStage.classList.remove('active');
+    resultsStage.style.display = 'none';
 
     // Reset file display
     $('drop-empty').style.display = '';
@@ -1324,27 +1373,29 @@ function handleSingleMode() {
     container.innerHTML = '';
     dashboardContainer.innerHTML = '';
 
-    addStatus(container, `Analyzing ${state.file.name}...`);
-    showLoading(container);
+    // Center the validation container during loading
+    resultsSingle.classList.add('centered');
+
+    showLoading(container, `Analyzing ${state.file.name}...`);
 
     const formData = new FormData();
     formData.append('file', state.file);
     formData.append('model', state.modelA);
 
     streamSSE(API_ENDPOINT, formData, {
-        onStatus: (msg) => { removeLoading(container); addStatus(container, msg); showLoading(container); },
-        onRouter: () => { removeLoading(container); showLoading(container); },
-        onResultWip: (payload) => { removeLoading(container); handleWipResult(payload, container, dashboardContainer); },
-        onBondStep1: (data) => { removeLoading(container); renderBondWidget1(data, container); showLoading(container); },
-        onBondStep2: (data) => { renderBondWidget2(data, container); },
-        onBondStep3: (data) => { renderBondWidget3(data, container); },
+        onStatus: (msg) => { showLoading(container, msg); },
+        onRouter: () => {},
+        onResultWip: (payload) => { removeLoading(container); resultsSingle.classList.remove('centered'); handleWipResult(payload, container, dashboardContainer); },
+        onBondStep1: (data) => { removeLoading(container); resultsSingle.classList.remove('centered'); renderBondWidget1(data, container); showLoading(container, 'Researching statutes...'); },
+        onBondStep2: (data) => { removeLoading(container); renderBondWidget2(data, container); showLoading(container, 'Generating opinion...'); },
+        onBondStep3: (data) => { removeLoading(container); renderBondWidget3(data, container); },
         onBondFinal: (data) => {
             state.fullAnalysisContext = data;
             if (data.metrics) appendHtml(container, renderMetricsFooterHtml(data.metrics));
             if (window.saveAnalysis) window.saveAnalysis(data);
             finish(container);
         },
-        onError: (msg) => { removeLoading(container); addStatus(container, `Error: ${msg}`); finish(container); },
+        onError: (msg) => { removeLoading(container); resultsSingle.classList.remove('centered'); addStatus(container, `Error: ${msg}`); finish(container); },
         onDone: () => { removeLoading(container); finish(container); },
     });
 }
@@ -1356,9 +1407,8 @@ function handleCompareMode() {
     $('compare-model-a-name').textContent = MODEL_NAMES[state.modelA] || state.modelA;
     $('compare-model-b-name').textContent = MODEL_NAMES[state.modelB] || state.modelB;
 
-    addStatus(comparePanelA, 'Starting analysis...');
-    addStatus(comparePanelB, 'Starting analysis...');
-    showLoading(comparePanelA); showLoading(comparePanelB);
+    showLoading(comparePanelA, 'Starting analysis...');
+    showLoading(comparePanelB, 'Starting analysis...');
 
     let doneCount = 0;
     const checkDone = () => { if (++doneCount >= 2) finish(null); };
@@ -1374,8 +1424,8 @@ function handleCompareMode() {
 
 function buildCompareCallbacks(panel, onComplete) {
     return {
-        onStatus: (msg) => { removeLoading(panel); addStatus(panel, msg); showLoading(panel); },
-        onRouter: () => { removeLoading(panel); showLoading(panel); },
+        onStatus: (msg) => { showLoading(panel, msg); },
+        onRouter: () => {},
         onResultWip: (payload) => {
             removeLoading(panel);
             const data = payload.data;
@@ -1387,8 +1437,8 @@ function buildCompareCallbacks(panel, onComplete) {
             if (window.mountPendingCharts) window.mountPendingCharts();
             if (window.saveAnalysis) window.saveAnalysis(data);
         },
-        onBondStep1: (data) => { removeLoading(panel); renderBondWidget1(data, panel); showLoading(panel); },
-        onBondStep2: (data) => { renderBondWidget2(data, panel); },
+        onBondStep1: (data) => { removeLoading(panel); renderBondWidget1(data, panel); showLoading(panel, 'Researching statutes...'); },
+        onBondStep2: (data) => { removeLoading(panel); renderBondWidget2(data, panel); showLoading(panel, 'Generating opinion...'); },
         onBondStep3: (data) => { renderBondWidget3(data, panel); },
         onBondFinal: (data) => {
             if (data.metrics) appendHtml(panel, renderMetricsFooterHtml(data.metrics));
@@ -1470,11 +1520,19 @@ function appendHtml(container, html) {
 }
 
 let loadingEls = new WeakMap();
-function showLoading(container) {
-    if (loadingEls.has(container)) return;
+function showLoading(container, statusText) {
+    // Update existing loader text if present
+    if (loadingEls.has(container)) {
+        const existing = loadingEls.get(container);
+        if (statusText) {
+            const textEl = existing.querySelector('.wipple-loader-text');
+            if (textEl) textEl.textContent = statusText;
+        }
+        return;
+    }
     const div = document.createElement('div');
-    div.className = 'agent-status';
-    div.innerHTML = getLoadingHtml();
+    div.className = 'agent-status centered-status';
+    div.innerHTML = getLoadingHtml(statusText);
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
     loadingEls.set(container, div);
@@ -1557,8 +1615,12 @@ function renderValidationHtml(vals) {
 
             const errors = (job.errors || []).map(e => `<div class="error-line">✗ ${e.message}</div>`).join('');
             const corrections = (job.corrections || []).map(c => {
-                const cls = c.confidence === 'high' ? 'confidence-high' : c.confidence === 'medium' ? 'confidence-medium' : 'confidence-low';
-                return `<div class="correction-line"><span class="correction-arrow">→</span><span><strong>Suggested fix:</strong> Change ${c.field} from ${c.current} to ${c.suggested}<span class="confidence-badge ${cls}">${c.confidence}</span></span><div class="correction-reasoning">${c.reasoning}</div></div>`;
+                const cls = c.confidence === 'high' ? 'confidence-high' : c.confidence === 'medium' ? 'confidence-medium' : c.confidence === 'flag' ? 'confidence-low' : 'confidence-low';
+                const labelText = c.confidence === 'flag' ? 'FLAGGED' : c.confidence;
+                const actionText = c.confidence === 'flag'
+                    ? `<strong>⚠ Flagged for review:</strong> ${c.field} (${c.current}) — likely column misread`
+                    : `<strong>Suggested fix:</strong> Change ${c.field} from ${c.current} to ${c.suggested}`;
+                return `<div class="correction-line"><span class="correction-arrow">${c.confidence === 'flag' ? '⚠' : '→'}</span><span>${actionText}<span class="confidence-badge ${cls}">${labelText}</span></span><div class="correction-reasoning">${c.reasoning}</div></div>`;
             }).join('');
 
             return `<div class="job-issue-flat"><div class="job-issue-header"><span class="job-issue-id">${job.jobId}</span><span class="job-issue-summary">${parts.join(', ')}</span></div><div>${errors}${corrections}</div></div>`;
