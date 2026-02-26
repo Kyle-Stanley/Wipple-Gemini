@@ -370,10 +370,14 @@ def _get_candidates_for_validation(row: CalculatedWipRow, validation_name: str) 
 
 def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Generate correction suggestions with cross-validation ranking.
+    Generate correction suggestions ONLY for clear OCR/extraction errors.
 
-    When multiple validations implicate the same field, that field's score
-    is reduced (= more likely the real culprit).
+    Strategy:
+    - Compute algebraic fix candidates for each validation failure
+    - Cross-validate: if multiple validations implicate the same field, boost confidence
+    - ONLY suggest fixes where digit_change_score <= 2 (1-2 digit OCR misreads)
+    - For anything else (score > 2), flag the job without a specific suggestion
+      so the underwriter knows to look but we don't propose garbage numbers
     """
     # Collect ALL candidates across ALL errors for this row
     all_candidates: List[tuple] = []  # (validation_name, candidate_dict)
@@ -408,26 +412,47 @@ def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> 
         scored.sort(key=lambda x: x[0])
         effective, raw, best, cross_count = scored[0]
 
-        confidence = "high" if effective <= 2 else "medium" if effective <= 4 else "low"
-
-        suggestions.append(
-            {
-                "job_id": row.job_id,
-                "field": best["field"],
-                "current_value": best["current"],
-                "suggested_value": best["suggested"],
-                "confidence": confidence,
-                "digit_changes": raw,
-                "effective_score": effective,
-                "cross_validation_count": cross_count,
-                "reasoning": (
-                    f"Changing {best['field']} from ${best['current']:,.0f} to ${best['suggested']:,.0f} "
-                    f"({raw} digit change"
-                    + (f", {cross_count} validations agree" if cross_count > 1 else "")
-                    + f") would fix: {best['formula']}"
-                ),
-            }
-        )
+        # ── OCR-ONLY GATE ──
+        # Only suggest a specific fix if 1-2 digits differ (clear misread).
+        # Otherwise flag the job as needing review without a concrete suggestion.
+        if raw <= 2:
+            confidence = "high" if effective <= 1 else "medium"
+            suggestions.append(
+                {
+                    "job_id": row.job_id,
+                    "field": best["field"],
+                    "current_value": best["current"],
+                    "suggested_value": best["suggested"],
+                    "confidence": confidence,
+                    "digit_changes": raw,
+                    "effective_score": effective,
+                    "cross_validation_count": cross_count,
+                    "reasoning": (
+                        f"Likely OCR misread: {best['field']} ${best['current']:,.0f} → ${best['suggested']:,.0f} "
+                        f"({raw} digit change"
+                        + (f", {cross_count} validations agree" if cross_count > 1 else "")
+                        + f") fixes: {best['formula']}"
+                    ),
+                }
+            )
+        else:
+            # Flag only — don't suggest a specific number
+            suggestions.append(
+                {
+                    "job_id": row.job_id,
+                    "field": best["field"],
+                    "current_value": best["current"],
+                    "suggested_value": None,  # No suggestion — too many digits differ
+                    "confidence": "flag",
+                    "digit_changes": raw,
+                    "effective_score": effective,
+                    "cross_validation_count": cross_count,
+                    "reasoning": (
+                        f"Validation failed on {best['formula']} but fix requires {raw} digit changes — "
+                        f"likely a column misread rather than OCR error. Manual review recommended."
+                    ),
+                }
+            )
 
     return suggestions
 
@@ -496,7 +521,7 @@ def apply_corrections(
     # Index digit corrections by job_id (high confidence only)
     digit_fixes: Dict[str, List[Dict]] = {}
     for d in digit_corrections:
-        if d.get("confidence") == "high":
+        if d.get("confidence") == "high" and d.get("suggested_value") is not None:
             digit_fixes.setdefault(d["job_id"], []).append(d)
 
     for r in rows:
@@ -1447,11 +1472,12 @@ def analyst_node(state: WipState):
                 cl["job_id"] == job_id and cl.get("field") == s.get("field")
                 for cl in correction_log if cl["type"] == "digit_fix"
             )
+            suggested_display = f"${s['suggested_value']:,.0f}" if s.get('suggested_value') is not None else "Manual review needed"
             jobs_with_issues[job_id]["corrections"].append(
                 {
                     "field": s["field"],
                     "current": f"${s['current_value']:,.0f}",
-                    "suggested": f"${s['suggested_value']:,.0f}",
+                    "suggested": suggested_display,
                     "confidence": s["confidence"],
                     "cross_validation_count": s.get("cross_validation_count", 1),
                     "applied": applied,
@@ -1695,7 +1721,7 @@ def narrative_node(state: WipState):
             prompt=prompt,
             model_name=state.model_name,
             temperature=0.3,
-            max_tokens=350,
+            max_tokens=500,
             tracker=tracker,
             system_prompt="You are a surety underwriting analyst. Write exactly 2-4 sentences of prose. No bullets, no headers. Be specific and insightful.",
         )
