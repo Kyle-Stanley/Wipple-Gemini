@@ -393,7 +393,10 @@ class ModelClient:
         if temperature is not None:
             gen_config_kwargs["temperature"] = temperature
         if max_tokens is not None:
-            gen_config_kwargs["max_output_tokens"] = max_tokens
+            # Google's max_output_tokens includes thinking/reasoning tokens,
+            # unlike Anthropic where it's visible output only.
+            # Apply multiplier so reasoning doesn't starve the actual response.
+            gen_config_kwargs["max_output_tokens"] = max_tokens * 4
         if system_prompt:
             gen_config_kwargs["system_instruction"] = system_prompt
 
