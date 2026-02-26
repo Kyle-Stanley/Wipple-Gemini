@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Wipple</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js" onerror="console.error('Wipple: React CDN failed to load')"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" onerror="console.error('Wipple: ReactDOM CDN failed to load')"></script>
+    <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js" onerror="console.error('Wipple: Recharts CDN failed to load')"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
@@ -131,7 +131,7 @@
         #app-header {
             background: var(--header-bg);
             border-bottom: 1px solid var(--border);
-            height: 46px;
+            height: 54px;
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -289,7 +289,7 @@
             display: flex;
             flex-direction: column;
             justify-content: center;
-            min-height: calc(100vh - 46px);
+            min-height: calc(100vh - 54px);
             transition: opacity 0.3s;
         }
         #upload-stage.hidden { display: none; }
@@ -362,7 +362,7 @@
         }
         .results-single.wide { max-width: 1340px; }
         .results-single.centered {
-            min-height: calc(100vh - 46px);
+            min-height: calc(100vh - 54px);
             display: flex;
             flex-direction: column;
             justify-content: center;
@@ -383,7 +383,7 @@
             grid-template-columns: 1fr 1px 1fr;
             max-width: 1800px;
             margin: 0 auto;
-            min-height: calc(100vh - 46px);
+            min-height: calc(100vh - 54px);
         }
         .compare-divider { background: var(--border); }
         .compare-panel { display: flex; flex-direction: column; overflow: hidden; }
@@ -710,7 +710,7 @@
 
         /* Risk detail expand */
         .risk-details-panel {
-            background: rgba(0,0,0,0.15);
+            background: var(--surface-alt);
             max-height: 0;
             overflow: hidden;
             transition: max-height 0.3s ease-out, padding 0.3s ease;
@@ -861,10 +861,11 @@
             display: none;
             position: fixed;
             bottom: 0; left: 0; right: 0;
-            padding: 12px 24px;
-            background: linear-gradient(180deg, transparent 0%, var(--bg) 30%);
+            padding: 0 24px 14px;
             z-index: 30;
             text-align: center;
+            background: linear-gradient(180deg, transparent 0%, var(--bg) 50%);
+            padding-top: 44px;
         }
         .new-analysis-bar.active { display: block; }
         .new-analysis-btn {
@@ -919,8 +920,8 @@
     <!-- ========== HEADER ========== -->
     <header id="app-header">
         <div class="header-left">
-            <img src="logo2_bw.png" alt="Wipple" class="header-logo-img dark-only" style="height:22px;" onerror="this.style.display='none'; document.querySelector('.header-logo-fallback').style.display='inline'">
-            <img src="wipple_logo_light.png" alt="Wipple" class="header-logo-img light-only" style="height:22px;display:none;" onerror="this.style.display='none'">
+            <img src="logo2_bw.png" alt="Wipple" class="header-logo-img dark-only" style="height:44px;" onerror="this.style.display='none'; document.querySelector('.header-logo-fallback').style.display='inline'">
+            <img src="wipple_logo_light.png" alt="Wipple" class="header-logo-img light-only" style="height:44px;display:none;" onerror="this.style.display='none'">
             <span class="header-logo header-logo-fallback" style="display:none;">wipple</span>
 
             <div class="seg-control" id="mode-toggle">
@@ -2132,9 +2133,22 @@ window.downloadCSV = (e) => {
 };
 </script>
 
-<!-- ========== RECHARTS (pre-compiled, no Babel needed) ========== -->
+<!-- ========== RECHARTS (pre-compiled, waits for dependencies) ========== -->
 <script>
-(function() {
+(function initCharts() {
+    // Guard: wait for React + ReactDOM + Recharts to be available
+    if (typeof React === 'undefined' || typeof ReactDOM === 'undefined' || typeof Recharts === 'undefined') {
+        // Retry up to 50 times (5 seconds total)
+        if (!window.__chartRetries) window.__chartRetries = 0;
+        if (window.__chartRetries++ < 50) {
+            setTimeout(initCharts, 100);
+            return;
+        }
+        console.warn('Wipple: React/Recharts CDN failed to load — charts disabled');
+        window.mountPendingCharts = function() {};
+        return;
+    }
+
     var h = React.createElement;
     var RC = Recharts;
     var BarChart = RC.BarChart, Bar = RC.Bar, XAxis = RC.XAxis, YAxis = RC.YAxis;
@@ -2210,6 +2224,9 @@ window.downloadCSV = (e) => {
             if (marginEl && charts.margin && charts.margin.length) ReactDOM.createRoot(marginEl).render(h(MarginChart, { data: charts.margin }));
         });
     };
+
+    // Mount anything already queued (in case data arrived before CDN)
+    window.mountPendingCharts();
 })();
 </script>
 </body>
