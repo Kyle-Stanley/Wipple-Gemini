@@ -7,7 +7,9 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js" onerror="console.error('Wipple: React CDN failed to load')"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" onerror="console.error('Wipple: ReactDOM CDN failed to load')"></script>
+    <script crossorigin src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js" onerror="console.error('Wipple: PropTypes CDN failed to load')"></script>
     <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js" onerror="console.error('Wipple: Recharts CDN failed to load')"></script>
+    
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
@@ -2135,17 +2137,20 @@ window.downloadCSV = (e) => {
 
 <!-- ========== RECHARTS (pre-compiled, waits for dependencies) ========== -->
 <script>
+// 1. Define a safe fallback immediately to prevent 'undefined' errors
+window.mountPendingCharts = function() {
+    // Silently queue until Recharts finishes loading
+};
+
 (function initCharts() {
-    // Guard: wait for React + ReactDOM + Recharts to be available
-    if (typeof React === 'undefined' || typeof ReactDOM === 'undefined' || typeof Recharts === 'undefined') {
-        // Retry up to 50 times (5 seconds total)
+    // Guard: wait for React + ReactDOM + Recharts + PropTypes to be available
+    if (typeof React === 'undefined' || typeof ReactDOM === 'undefined' || typeof Recharts === 'undefined' || typeof PropTypes === 'undefined') {
         if (!window.__chartRetries) window.__chartRetries = 0;
         if (window.__chartRetries++ < 50) {
             setTimeout(initCharts, 100);
             return;
         }
         console.warn('Wipple: React/Recharts CDN failed to load — charts disabled');
-        window.mountPendingCharts = function() {};
         return;
     }
 
@@ -2213,19 +2218,29 @@ window.downloadCSV = (e) => {
         );
     }
 
+    // 2. Override the fallback with the actual mounting logic
     window.mountPendingCharts = function() {
         if (!window.__chartQueue || !window.__chartQueue.length) return;
         var queue = window.__chartQueue.splice(0);
+        
         queue.forEach(function(item) {
             var id = item.id, charts = item.charts;
             var billingEl = document.getElementById(id + '-billing');
             var marginEl = document.getElementById(id + '-margin');
-            if (billingEl && charts.billing && charts.billing.length) ReactDOM.createRoot(billingEl).render(h(BillingChart, { data: charts.billing }));
-            if (marginEl && charts.margin && charts.margin.length) ReactDOM.createRoot(marginEl).render(h(MarginChart, { data: charts.margin }));
+            
+            // Safely create or reuse React root instances
+            if (billingEl && charts.billing && charts.billing.length) {
+                if (!billingEl._reactRoot) billingEl._reactRoot = ReactDOM.createRoot(billingEl);
+                billingEl._reactRoot.render(h(BillingChart, { data: charts.billing }));
+            }
+            if (marginEl && charts.margin && charts.margin.length) {
+                if (!marginEl._reactRoot) marginEl._reactRoot = ReactDOM.createRoot(marginEl);
+                marginEl._reactRoot.render(h(MarginChart, { data: charts.margin }));
+            }
         });
     };
 
-    // Mount anything already queued (in case data arrived before CDN)
+    // 3. Mount anything that was queued while libraries were loading
     window.mountPendingCharts();
 })();
 </script>
