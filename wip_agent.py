@@ -268,11 +268,6 @@ def digit_change_score(current: float, target: float) -> int:
     """
     Score how many digit-level changes separate two numbers.
     Lower = more likely a single OCR/extraction misread.
-
-    Handles:
-    - Same-length digit misreads (e.g., 1234 → 1834)
-    - Dropped/added single digit (e.g., 150000 → 15000, 11000 → 1100)
-    - Sign misreads (parenthetical negatives parsed as positive)
     """
     if current == 0 and target == 0:
         return 0
@@ -287,7 +282,6 @@ def digit_change_score(current: float, target: float) -> int:
     len_diff = abs(len(curr_str) - len(targ_str))
 
     # Dropped/added single digit (including trailing zeros)
-    # e.g., 150000 → 15000, 11000 → 1100, 234567 → 23456
     if len_diff == 1:
         longer = curr_str if len(curr_str) > len(targ_str) else targ_str
         shorter = targ_str if len(curr_str) > len(targ_str) else curr_str
@@ -369,31 +363,19 @@ def _get_candidates_for_validation(row: CalculatedWipRow, validation_name: str) 
 
 
 def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Generate correction suggestions ONLY for clear OCR/extraction errors.
-
-    Strategy:
-    - Compute algebraic fix candidates for each validation failure
-    - Cross-validate: if multiple validations implicate the same field, boost confidence
-    - ONLY suggest fixes where digit_change_score <= 2 (1-2 digit OCR misreads)
-    - For anything else (score > 2), flag the job without a specific suggestion
-      so the underwriter knows to look but we don't propose garbage numbers
-    """
-    # Collect ALL candidates across ALL errors for this row
+    """Generate correction suggestions ONLY for clear OCR/extraction errors."""
     all_candidates: List[tuple] = []  # (validation_name, candidate_dict)
     for error in errors:
         candidates = _get_candidates_for_validation(row, error["validation"])
         for c in candidates:
             all_candidates.append((error["validation"], c))
 
-    # Count how many distinct validations implicate each field
     field_validation_count: Dict[str, int] = {}
     seen: Dict[str, set] = {}
     for vname, c in all_candidates:
         seen.setdefault(c["field"], set()).add(vname)
     field_validation_count = {f: len(v) for f, v in seen.items()}
 
-    # Score and pick best fix per error
     suggestions: List[Dict[str, Any]] = []
 
     for error in errors:
@@ -405,16 +387,12 @@ def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> 
         for c in candidates:
             base_score = digit_change_score(c["current"], c["suggested"])
             cross_count = field_validation_count.get(c["field"], 1)
-            # Cross-validation boost: each additional validation agreeing reduces score by 1
             effective_score = max(0, base_score - (cross_count - 1))
             scored.append((effective_score, base_score, c, cross_count))
 
         scored.sort(key=lambda x: x[0])
         effective, raw, best, cross_count = scored[0]
 
-        # ── OCR-ONLY GATE ──
-        # Only suggest a specific fix if 1-2 digits differ (clear misread).
-        # Otherwise flag the job as needing review without a concrete suggestion.
         if raw <= 2:
             confidence = "high" if effective <= 1 else "medium"
             suggestions.append(
@@ -436,13 +414,12 @@ def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> 
                 }
             )
         else:
-            # Flag only — don't suggest a specific number
             suggestions.append(
                 {
                     "job_id": row.job_id,
                     "field": best["field"],
                     "current_value": best["current"],
-                    "suggested_value": None,  # No suggestion — too many digits differ
+                    "suggested_value": None,
                     "confidence": "flag",
                     "digit_changes": raw,
                     "effective_score": effective,
@@ -462,13 +439,7 @@ def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> 
 # ==========================================
 
 def detect_column_swaps(rows: List[CalculatedWipRow]) -> List[Dict[str, Any]]:
-    """
-    Detect likely Cost to Date <-> Cost to Complete column swaps.
-
-    Signal: if revenue-based percent complete (revenues_earned / total_contract_price)
-    diverges significantly from cost-based percent complete (cost_to_date / estimated_total_costs),
-    AND swapping CTD/CTC would bring them into alignment, the columns are probably swapped.
-    """
+    """Detect likely Cost to Date <-> Cost to Complete column swaps."""
     swaps: List[Dict[str, Any]] = []
     for r in rows:
         if r.estimated_total_costs <= 0 or r.total_contract_price <= 0:
@@ -479,13 +450,11 @@ def detect_column_swaps(rows: List[CalculatedWipRow]) -> List[Dict[str, Any]]:
         revenue_poc = r.revenues_earned / r.total_contract_price
         cost_poc = r.cost_to_date / r.estimated_total_costs
 
-        # Revenue suggests far along but cost suggests early, and CTC > CTD
         if (revenue_poc > 0.5 and cost_poc < 0.5
                 and r.cost_to_complete > r.cost_to_date
                 and r.cost_to_complete > 0):
 
             swapped_poc = r.cost_to_complete / r.estimated_total_costs
-            # Swap only if it brings cost POC closer to revenue POC
             if abs(swapped_poc - revenue_poc) < abs(cost_poc - revenue_poc):
                 swaps.append({
                     "job_id": r.job_id,
@@ -508,24 +477,17 @@ def apply_corrections(
     column_swaps: List[Dict[str, Any]],
     digit_corrections: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """
-    Apply high-confidence corrections in-place and return a log of what changed.
-
-    Tier 1: Column swaps (always applied).
-    Tier 2: Digit corrections with 'high' confidence.
-    """
+    """Apply high-confidence corrections in-place and return a log."""
     correction_log: List[Dict[str, Any]] = []
 
     swap_jobs = {s["job_id"] for s in column_swaps}
 
-    # Index digit corrections by job_id (high confidence only)
     digit_fixes: Dict[str, List[Dict]] = {}
     for d in digit_corrections:
         if d.get("confidence") == "high" and d.get("suggested_value") is not None:
             digit_fixes.setdefault(d["job_id"], []).append(d)
 
     for r in rows:
-        # Apply column swaps
         if r.job_id in swap_jobs:
             old_ctd, old_ctc = r.cost_to_date, r.cost_to_complete
             r.cost_to_date = old_ctc
@@ -537,7 +499,6 @@ def apply_corrections(
                 "confidence": "high",
             })
 
-        # Apply digit corrections
         if r.job_id in digit_fixes:
             for fix in digit_fixes[r.job_id]:
                 field = fix["field"]
@@ -556,7 +517,7 @@ def apply_corrections(
     return correction_log
 
 # ==========================================
-# 5. SURETY RISK ANALYSIS (updated to use *_calc)
+# 5. SURETY RISK ANALYSIS
 # ==========================================
 
 def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> Dict[str, Any]:
@@ -604,7 +565,6 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
         if ((r.over_billings_calc > r.total_contract_price * 0.15 and r.over_billings_calc > 25000) or (r.over_billings_calc > 100000))
     ]
 
-    # Early stage large jobs (< 25% complete, > $500k contract)
     early_stage_jobs = []
     for r in rows:
         if r.estimated_total_costs > 0 and r.total_contract_price > 500000:
@@ -618,7 +578,6 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
                     "remaining_cost": remaining,
                 })
 
-    # Billing lag jobs (billed < 80% of costs)
     billing_lag_jobs = []
     for r in rows:
         if r.cost_to_date > 50000 and r.billed_to_date > 0:
@@ -632,13 +591,11 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
                     "cash_gap": r.cost_to_date - r.billed_to_date,
                 })
 
-    # Backlog health: aggregate completion signals
     aggregate_poc = calc.cost_to_date / calc.estimated_total_costs if calc.estimated_total_costs else 0
     total_remaining_cost = calc.estimated_total_costs - calc.cost_to_date
     jobs_over_90 = sum(1 for r in rows if r.estimated_total_costs > 0 and r.cost_to_date / r.estimated_total_costs > 0.90)
     jobs_under_25 = sum(1 for r in rows if r.estimated_total_costs > 0 and r.cost_to_date / r.estimated_total_costs < 0.25)
 
-    # UB/OB extraction discrepancy signal (useful for diagnosing extraction vs accounting weirdness)
     ub_ob_mismatch_jobs = [r for r in rows if r.ub_ob_discrepancy_abs > 100]
 
     return {
@@ -710,35 +667,29 @@ def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> 
 def compute_portfolio_risk_tier(risk_context: Dict[str, Any]) -> str:
     score = 0
 
-    # Cash risk: underbilling exposure
     if risk_context["cash_risk"]["total_ub_exposure"] > 500000:
         score += 4
     elif risk_context["cash_risk"]["total_ub_exposure"] > 100000:
         score += 2
 
-    # Cash risk: billing lag
     if risk_context["cash_risk"]["billing_lag_count"] >= 3:
         score += 2
     elif risk_context["cash_risk"]["billing_lag_count"] >= 1:
         score += 1
 
-    # Loss exposure
     if risk_context["loss_risk"]["loss_job_count"] >= 3:
         score += 3
     elif risk_context["loss_risk"]["loss_job_count"] >= 1:
         score += 2
 
-    # Margin erosion
     if risk_context["margin_risk"]["uegp_at_risk_pct"] > 0.3:
         score += 2
     elif risk_context["margin_risk"]["uegp_at_risk_pct"] > 0.15:
         score += 1
 
-    # Concentration
     if len(risk_context["concentration_risk"]["concentrated_jobs"]) > 0:
         score += 1
 
-    # Early stage exposure
     if risk_context["exposure_risk"]["early_stage_count"] >= 2:
         score += 2
     elif risk_context["exposure_risk"]["early_stage_count"] >= 1:
@@ -759,7 +710,6 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
         risk_details = []
         risk_score = 0
 
-        # Use calculated UB/OB for risk tagging (more reliable for surety lens)
         ub = r.under_billings_calc
         ob = r.over_billings_calc
 
@@ -839,7 +789,6 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
                 }
             )
 
-        # Early Stage Exposure: large job with < 25% completion = maximum remaining risk
         if r.estimated_total_costs > 0:
             poc = r.cost_to_date / r.estimated_total_costs
             remaining_cost = r.estimated_total_costs - r.cost_to_date
@@ -854,11 +803,9 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
                     }
                 )
 
-        # Cost Overrun Signal: costs approaching or exceeding contract without change order coverage
         if r.total_contract_price > 0 and r.estimated_total_costs > 0:
             cost_to_contract = r.estimated_total_costs / r.total_contract_price
             if cost_to_contract > 0.97 and r.estimated_gross_profit >= 0:
-                # Margin is razor-thin but not yet negative (between 0-3%)
                 margin_pct = (r.estimated_gross_profit / r.total_contract_price * 100)
                 job_risk_tags.append("Cost Overrun Signal")
                 risk_score += 18
@@ -870,7 +817,6 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
                     }
                 )
 
-        # Billing Lag: cash going out faster than coming in
         if r.cost_to_date > 50000 and r.billed_to_date > 0:
             billing_ratio = r.billed_to_date / r.cost_to_date
             if billing_ratio < 0.80:
@@ -885,7 +831,6 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
                     }
                 )
 
-        # Stale Completion: high completion but still showing significant remaining costs
         if r.estimated_total_costs > 0:
             poc_check = r.cost_to_date / r.estimated_total_costs
             if poc_check > 0.95 and r.cost_to_complete > r.total_contract_price * 0.05 and r.cost_to_complete > 25000:
@@ -919,10 +864,8 @@ def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[
                     "riskDetails": risk_details,
                     "percentComplete": f"{poc:.1%}",
                     "contractValue": r.total_contract_price,
-                    # Calculated (preferred for risk)
                     "underBillings": ub,
                     "overBillings": ob,
-                    # Extracted (debug signal)
                     "underBillingsExtracted": r.under_billings,
                     "overBillingsExtracted": r.over_billings,
                     "ubObDiscrepancyAbs": r.ub_ob_discrepancy_abs,
@@ -1016,7 +959,6 @@ def extractor_node(state: WipState):
     - Double-check Cost to Date vs Cost to Complete - they are different columns!
     """
 
-    # Stage 2: LLM call
     raw_text = ""
     try:
         response = client.generate_content(
@@ -1034,7 +976,6 @@ def extractor_node(state: WipState):
         diagnostics["raw_response_preview"] = ""
         return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
 
-    # Stage 3: JSON parse
     diagnostics["raw_response_preview"] = raw_text[:500] if raw_text else "(empty)"
     parsed = None
     try:
@@ -1047,14 +988,12 @@ def extractor_node(state: WipState):
     except Exception as e:
         _diag("json_parse", "FAIL", str(e))
 
-    # Stage 3b: Normalize parsed JSON into {"rows": [...], "totals": {...}} structure
     data = None
     _row_field_keys = {"job_id", "total_contract_price", "cost_to_date"}
 
     if isinstance(parsed, dict):
         data = parsed
     elif isinstance(parsed, list) and len(parsed) > 0:
-        # Bare array of rows: [{row1}, {row2}, ...]
         if isinstance(parsed[0], dict):
             data = {"rows": parsed}
             _diag("json_normalize", "OK", f"Wrapped top-level array ({len(parsed)} dicts) into rows")
@@ -1064,17 +1003,14 @@ def extractor_node(state: WipState):
     if data is None:
         return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
 
-    # Stage 4: Row extraction with aggressive structural recovery
     raw_rows = []
     totals_data = data.get("totals")
 
-    # Path A: Standard {"rows": [...]} structure
     candidate = data.get("rows")
     if isinstance(candidate, list) and len(candidate) > 0:
         raw_rows = candidate
         _diag("row_locate", "OK", f"Found {len(raw_rows)} rows under 'rows' key")
 
-    # Path B: Alternative key names
     if not raw_rows:
         for alt_key in ("data", "jobs", "wip_rows", "schedule", "wip_schedule", "job_rows", "wip_data", "extracted_data"):
             candidate = data.get(alt_key)
@@ -1083,7 +1019,6 @@ def extractor_node(state: WipState):
                 _diag("row_locate", "OK", f"Found {len(raw_rows)} rows under '{alt_key}' key")
                 break
 
-    # Path C: Scan all values — find any list of dicts that looks like rows
     if not raw_rows:
         for key, val in data.items():
             if key == "totals":
@@ -1094,13 +1029,11 @@ def extractor_node(state: WipState):
                     _diag("row_locate", "OK", f"Found {len(raw_rows)} row-like dicts under '{key}' key")
                     break
 
-    # Path D: Top-level dict has row field names directly
     if not raw_rows and _row_field_keys.issubset(set(data.keys())):
         first_val = data.get("job_id")
         non_meta_data = {k: v for k, v in data.items() if k != "totals"}
 
         if isinstance(first_val, list):
-            # Columnar format: {"job_id": ["101","102"], "cost_to_date": [1000, 2000]}
             num_rows = len(first_val)
             raw_rows = [
                 {k: (v[i] if isinstance(v, list) and i < len(v) else v) for k, v in non_meta_data.items()}
@@ -1108,11 +1041,9 @@ def extractor_node(state: WipState):
             ]
             _diag("row_locate", "OK", f"Converted columnar format ({num_rows} rows)")
         else:
-            # Single flat row (all fields at top level)
             raw_rows = [non_meta_data]
             _diag("row_locate", "OK", "Wrapped single flat object as 1 row")
 
-    # Path E: Single nested wrapper — {"wip_schedule": {"rows": [...]}}
     if not raw_rows:
         for key, val in data.items():
             if key == "totals":
@@ -1130,7 +1061,6 @@ def extractor_node(state: WipState):
         _diag("row_parse", "FAIL", f"Could not locate rows in any known structure. Key types: {key_sample}")
         return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
 
-    # Stage 5: Parse individual rows
     rows: List[CalculatedWipRow] = []
     row_errors: List[Dict[str, Any]] = []
     for i, r in enumerate(raw_rows):
@@ -1146,7 +1076,6 @@ def extractor_node(state: WipState):
     else:
         _diag("row_parse", "OK", f"{len(rows)} rows parsed")
 
-    # Stage 6: Totals
     totals = None
     if totals_data:
         try:
@@ -1174,7 +1103,6 @@ def analyst_node(state: WipState):
             diag = state.extraction_diagnostics or {}
             stages = diag.get("stages", [])
 
-            # Build human-readable failure chain
             failure_chain = []
             last_ok_stage = "none"
             failed_stage = "unknown"
@@ -1189,23 +1117,19 @@ def analyst_node(state: WipState):
             raw_preview = diag.get("raw_response_preview", "(not captured)")
             row_parse_errors = diag.get("row_parse_errors", [])
 
-            # Determine specific structural message based on where it failed
             if failed_stage == "file_read":
                 struct_msg = f"File Read Failed: {failure_chain[0] if failure_chain else 'unknown error'}"
             elif failed_stage == "llm_call":
                 struct_msg = f"Model Call Failed: {failure_chain[0] if failure_chain else 'API error'}"
             elif failed_stage == "json_parse":
-                # Show what the model actually returned
                 preview = raw_preview[:200].replace('\n', ' ').strip()
                 struct_msg = f"JSON Parse Failed — model returned: \"{preview}...\""
             elif failed_stage in ("row_locate", "row_parse"):
-                # JSON was valid but structure didn't match or rows couldn't parse
                 last_detail = failure_chain[-1] if failure_chain else "unknown structure"
                 struct_msg = f"Data structure issue: {last_detail}"
             else:
                 struct_msg = f"Extraction failed at: {failed_stage}"
 
-            # Formulaic message should explain what we know
             if row_parse_errors:
                 formulaic_msg = f"{len(row_parse_errors)} rows failed to parse: {row_parse_errors[0].get('error', '')[:100]}"
                 formulaic_details = [{"id": f"row_{e['row_index']}", "msg": e["error"][:120]} for e in row_parse_errors[:5]]
@@ -1258,7 +1182,6 @@ def analyst_node(state: WipState):
 
         validations = build_validations()
 
-        # ---- PHASE 1: Initial UB/OB calc + validation (pre-correction) ----
         for r in rows:
             variance = r.revenues_earned - r.billed_to_date
             if variance > 0:
@@ -1278,13 +1201,9 @@ def analyst_node(state: WipState):
                 suggestions = suggest_corrections(r, row_errors)
                 all_correction_suggestions.extend(suggestions)
 
-        # ---- PHASE 2: Detect column swaps ----
         column_swaps = detect_column_swaps(rows)
-
-        # ---- PHASE 3: Apply corrections ----
         correction_log = apply_corrections(rows, column_swaps, all_correction_suggestions)
 
-        # ---- PHASE 4: Recompute UB/OB on corrected data ----
         for r in rows:
             variance = r.revenues_earned - r.billed_to_date
             if variance > 0:
@@ -1294,16 +1213,13 @@ def analyst_node(state: WipState):
                 r.under_billings_calc = 0.0
                 r.over_billings_calc = abs(variance)
 
-        # ---- PHASE 5: Re-validate post-correction ----
         post_correction_errors: List[Dict[str, Any]] = []
         for r in rows:
             row_errors = run_validations(r, validations)
             post_correction_errors.extend(row_errors)
 
-        # Use post-correction errors as the "final" validation state
         all_validation_errors = post_correction_errors
 
-        # ---- PHASE 6: Aggregate totals from corrected data ----
         calc = WipTotals()
         for r in rows:
             calc.total_contract_price += r.total_contract_price
@@ -1318,7 +1234,6 @@ def analyst_node(state: WipState):
             calc.over_billings += r.over_billings_calc
             calc.uegp += r.uegp
 
-        # ---- PHASE 7: Full totals validation (all columns) ----
         _totals_fields = [
             ("total_contract_price", "Contract Value"),
             ("estimated_total_costs", "Est Total Costs"),
@@ -1333,7 +1248,7 @@ def analyst_node(state: WipState):
         totals_pass = False
         totals_msg = "No Totals Row"
         totals_details: List[Dict[str, Any]] = []
-        totals_detail_rows: List[Dict[str, Any]] = []  # For dashboard expandable
+        totals_detail_rows: List[Dict[str, Any]] = []
 
         if extracted_totals:
             mismatches = []
@@ -1369,20 +1284,15 @@ def analyst_node(state: WipState):
                         "msg": f"{dname}: Calc ${cv:,.0f} vs Report ${ev:,.0f} (diff ${diff:,.0f})",
                     })
 
-        # ---- PHASE 8: Risk analysis on corrected data ----
         surety_risk_context = build_surety_risk_context(rows, calc)
         surety_risk_context["risk_tier"] = compute_portfolio_risk_tier(surety_risk_context)
-
         risk_rows = build_risk_rows(rows, calc)
 
-        # ---- Build dashboard-compatible widget data ----
         t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
         gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
-
         net_ub_ob = calc.under_billings - calc.over_billings
         net_ub_ob_label = f"Under ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Over ${abs(net_ub_ob)/1000:.0f}k"
 
-        # --- Structural validation details ---
         struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
         struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
 
@@ -1394,8 +1304,6 @@ def analyst_node(state: WipState):
             {"label": "Missing job IDs", "value": f"{missing_ids} found" if missing_ids else "0 found", "match": missing_ids == 0},
         ]
 
-        # --- Formulaic validation details (aggregated per formula type) ---
-        # Count pass/fail per validation type across all rows
         validation_type_labels = {
             "contract_cost_gp": "Contract − Est Cost = Est GP",
             "cost_to_complete_check": "Est Cost = CTD + CTC",
@@ -1406,12 +1314,10 @@ def analyst_node(state: WipState):
             "gp_percentage_bounds": "GP% within normal range",
         }
 
-        # Run fresh count per validation type
         formula_detail_rows = []
         for v in validations:
             pass_count = 0
             fail_count = 0
-            fail_note = ""
             for r in rows:
                 row_dict = r.model_dump()
                 required_present = all(row_dict.get(field) is not None for field in v.requires)
@@ -1446,8 +1352,6 @@ def analyst_node(state: WipState):
         for e in all_validation_errors:
             errors_by_job.setdefault(e["job_id"], []).append(e)
 
-        formula_errors_display = [{"id": e["job_id"], "msg": e["message"]} for e in all_validation_errors]
-
         formula_pass = len(all_validation_errors) == 0
         if formula_pass and correction_log:
             formula_msg = f"Column Math Validated (after {len(correction_log)} auto-corrections)"
@@ -1456,7 +1360,6 @@ def analyst_node(state: WipState):
         else:
             formula_msg = f"Column Math Issues ({len(errors_by_job)} rows)"
 
-        # Build per-job issue display (corrections + remaining errors)
         jobs_with_issues: Dict[str, Dict[str, Any]] = {}
         for e in all_validation_errors:
             job_id = e["job_id"]
@@ -1485,7 +1388,6 @@ def analyst_node(state: WipState):
                 }
             )
 
-        # Include column swap info in job issues
         for swap in column_swaps:
             job_id = swap["job_id"]
             jobs_with_issues.setdefault(job_id, {"errors": [], "corrections": []})
@@ -1503,21 +1405,16 @@ def analyst_node(state: WipState):
 
         corrections_display = [{"jobId": job_id, **data} for job_id, data in jobs_with_issues.items()]
 
-        # --- Chart data computation ---
         def _build_chart_data(rows: List[CalculatedWipRow], calc: WipTotals) -> Dict[str, Any]:
-            """Derive billing, exposure, and margin chart arrays from extracted data."""
-
-            # Billing position: top jobs by |UB - OB|, sorted under→over
             billing_rows = []
             for r in rows:
-                net = r.over_billings_calc - r.under_billings_calc  # positive = overbilled
-                if abs(net) > 1000:  # skip near-zero
+                net = r.over_billings_calc - r.under_billings_calc
+                if abs(net) > 1000:
                     short_name = (r.job_name or r.job_id)[:18]
-                    billing_rows.append({"name": short_name, "value": round(net / 1000)})  # in $K
+                    billing_rows.append({"name": short_name, "value": round(net / 1000)})
             billing_rows.sort(key=lambda x: x["value"])
-            billing_chart = billing_rows[:15]  # top 15 by magnitude
+            billing_chart = billing_rows 
 
-            # Exposure: top jobs by remaining cost, colored by risk tier
             risk_tier_lookup = {rr["jobId"]: rr["riskTier"] for rr in risk_rows}
             exposure_rows = []
             for r in rows:
@@ -1527,20 +1424,19 @@ def analyst_node(state: WipState):
                     short_name = (r.job_name or r.job_id)[:18]
                     exposure_rows.append({
                         "name": short_name,
-                        "completed": round(r.cost_to_date / 1000),  # in $K
+                        "completed": round(r.cost_to_date / 1000),
                         "remaining": round(remaining / 1000),
                         "tier": tier if tier != "NONE" else "LOW",
                     })
             exposure_rows.sort(key=lambda x: x["remaining"], reverse=True)
-            exposure_chart = exposure_rows[:12]
+            exposure_chart = exposure_rows
 
-            # Margin: estimated GP% vs actual GP% per job
             margin_rows = []
             for r in rows:
                 if r.total_contract_price > 100000 and r.estimated_total_costs > 0:
                     est_gp_pct = round((r.estimated_gross_profit / r.total_contract_price) * 100, 1)
                     poc = r.cost_to_date / r.estimated_total_costs
-                    if poc > 0.05:  # skip barely-started jobs
+                    if poc > 0.05:
                         actual_gp_pct = round((r.gross_profit_to_date / r.revenues_earned) * 100, 1) if r.revenues_earned else 0
                         short_name = (r.job_name or r.job_id)[:18]
                         margin_rows.append({
@@ -1548,9 +1444,8 @@ def analyst_node(state: WipState):
                             "estimated": est_gp_pct,
                             "actual": actual_gp_pct,
                         })
-            # Sort by divergence (most concerning first)
             margin_rows.sort(key=lambda x: x["estimated"] - x["actual"], reverse=True)
-            margin_chart = margin_rows[:12]
+            margin_chart = margin_rows
 
             return {
                 "billing": billing_chart,
@@ -1560,7 +1455,6 @@ def analyst_node(state: WipState):
 
         charts = _build_chart_data(rows, calc)
 
-        # --- KPIs ---
         kpis = [
             {"label": "Contract Value", "value": f"${calc.total_contract_price/1e6:.1f}M"},
             {"label": "UEGP", "value": f"${t_uegp/1e6:.1f}M"},
@@ -1570,7 +1464,6 @@ def analyst_node(state: WipState):
             {"label": "Net Position", "value": net_ub_ob_label, "negative": net_ub_ob >= 0},
         ]
 
-        # --- Assemble widget_data in dashboard schema ---
         widget_data = {
             "validations": {
                 "structural": {
@@ -1595,7 +1488,6 @@ def analyst_node(state: WipState):
             "corrections_applied": correction_log,
             "riskTier": surety_risk_context["risk_tier"],
             "riskRowsAll": risk_rows,
-            # Legacy format for backward compatibility
             "metrics": {
                 "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},
                 "row1_2": {"label": "UEGP", "value": f"${t_uegp/1000000:.2f}M"},
@@ -1649,7 +1541,7 @@ def analyst_node(state: WipState):
         }
 
 # ==========================================
-# 8. NARRATIVE NODE (metrics via from_dict, no bare except)
+# 8. NARRATIVE NODE
 # ==========================================
 
 SURETY_NARRATIVE_PROMPT = """You are a surety underwriting analyst. Write a 2-4 sentence executive abstract of this WIP schedule for the chief underwriter.
@@ -1693,7 +1585,6 @@ def narrative_node(state: WipState):
             widget_data["summary"] = {"text": f"Analysis error: {risk_context.get('error')}"}
             return {"narrative": widget_data["summary"]["text"], "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
 
-        # Build correction context for the narrative
         correction_log = state.correction_log or []
         correction_suggestions = state.correction_suggestions or []
         validation_errors = state.validation_errors or []
@@ -1728,7 +1619,6 @@ def narrative_node(state: WipState):
 
         narrative = response.text.strip()
 
-        # Log finish reason for debugging truncation
         if response.finish_reason:
             print(f"    Narrative finish_reason: {response.finish_reason}")
             print(f"    Narrative length: {len(narrative)} chars, ~{response.output_tokens} tokens")
@@ -1761,7 +1651,7 @@ def narrative_node(state: WipState):
         return {"narrative": fallback, "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
 
 # ==========================================
-# 9. OUTPUT NODE (propagate error)
+# 9. OUTPUT NODE
 # ==========================================
 
 def output_node(state: WipState):
@@ -1779,7 +1669,6 @@ def output_node(state: WipState):
             "metrics": state.metrics_data or {},
         }
 
-        # If upstream set an error, surface it
         if state.final_json and "error" in state.final_json:
             payload["error"] = state.final_json.get("error")
             if "traceback" in state.final_json:
