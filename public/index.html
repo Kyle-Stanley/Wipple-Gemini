@@ -8,7 +8,6 @@
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
-    <script crossorigin src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
@@ -2133,80 +2132,85 @@ window.downloadCSV = (e) => {
 };
 </script>
 
-<!-- ========== RECHARTS (Babel for JSX) ========== -->
-<script type="text/babel">
-const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid, ReferenceLine } = Recharts;
+<!-- ========== RECHARTS (pre-compiled, no Babel needed) ========== -->
+<script>
+(function() {
+    var h = React.createElement;
+    var RC = Recharts;
+    var BarChart = RC.BarChart, Bar = RC.Bar, XAxis = RC.XAxis, YAxis = RC.YAxis;
+    var Tooltip = RC.Tooltip, ResponsiveContainer = RC.ResponsiveContainer, Cell = RC.Cell;
+    var CartesianGrid = RC.CartesianGrid, ReferenceLine = RC.ReferenceLine;
 
-const getThemeColors = () => {
-    const s = getComputedStyle(document.body);
-    return {
-        border: s.getPropertyValue('--border').trim(),
-        borderStrong: s.getPropertyValue('--border-strong').trim(),
-        textMuted: s.getPropertyValue('--text-muted').trim(),
-        textSecondary: s.getPropertyValue('--text-secondary').trim(),
-        text: s.getPropertyValue('--text').trim(),
-        surface: s.getPropertyValue('--surface').trim(),
-        surfaceHover: s.getPropertyValue('--surface-hover').trim(),
-        negative: s.getPropertyValue('--negative').trim(),
-        positive: s.getPropertyValue('--positive').trim(),
-        chartBar1: s.getPropertyValue('--chart-bar1').trim(),
+    var getThemeColors = function() {
+        var s = getComputedStyle(document.body);
+        return {
+            border: s.getPropertyValue('--border').trim(),
+            borderStrong: s.getPropertyValue('--border-strong').trim(),
+            textMuted: s.getPropertyValue('--text-muted').trim(),
+            textSecondary: s.getPropertyValue('--text-secondary').trim(),
+            text: s.getPropertyValue('--text').trim(),
+            surface: s.getPropertyValue('--surface').trim(),
+            surfaceHover: s.getPropertyValue('--surface-hover').trim(),
+            negative: s.getPropertyValue('--negative').trim(),
+            positive: s.getPropertyValue('--positive').trim(),
+            chartBar1: s.getPropertyValue('--chart-bar1').trim(),
+        };
     };
-};
 
-const ttStyle = () => {
-    const c = getThemeColors();
-    return { background: c.surface, border: `1px solid ${c.border}`, borderRadius: 5, fontSize: 11, fontFamily: 'Inter, sans-serif', padding: '6px 10px', color: c.text };
-};
+    var ttStyle = function() {
+        var c = getThemeColors();
+        return { background: c.surface, border: '1px solid ' + c.border, borderRadius: 5, fontSize: 11, fontFamily: 'Inter, sans-serif', padding: '6px 10px', color: c.text };
+    };
 
-function BillingChart({ data }) {
-    const c = getThemeColors();
-    if (!data?.length) return <div style={{color:c.textMuted,fontSize:12,textAlign:'center',padding:20}}>No billing data</div>;
-    return (
-        <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={data} layout="vertical" margin={{top:2,right:20,bottom:2,left:2}}>
-                <CartesianGrid horizontal={false} stroke={c.border} strokeDasharray="3 3"/>
-                <XAxis type="number" tick={{fill:c.textMuted,fontSize:10,fontFamily:'Inter'}} tickFormatter={v=>`${v<0?'-':''}$${Math.abs(v/1000).toFixed(1)}M`} axisLine={false} tickLine={false}/>
-                <YAxis type="category" dataKey="name" tick={{fill:c.textSecondary,fontSize:10,fontFamily:'Inter'}} axisLine={false} tickLine={false} width={85}/>
-                <ReferenceLine x={0} stroke={c.borderStrong}/>
-                <Tooltip cursor={{fill:c.surfaceHover}} contentStyle={ttStyle()} labelStyle={{color:c.text,fontWeight:600,marginBottom:2}} formatter={v=>[`$${Math.abs(v).toLocaleString()}k ${v<0?'under':'over'}billed`,'']}/>
-                <Bar dataKey="value" radius={3} maxBarSize={14}>
-                    {data.map((d,i)=><Cell key={i} fill={d.value<0?c.negative:c.positive} opacity={0.75}/>)}
-                </Bar>
-            </BarChart>
-        </ResponsiveContainer>
-    );
-}
+    function BillingChart(props) {
+        var data = props.data;
+        var c = getThemeColors();
+        if (!data || !data.length) return h('div', { style: { color: c.textMuted, fontSize: 12, textAlign: 'center', padding: 20 } }, 'No billing data');
+        return h(ResponsiveContainer, { width: '100%', height: 250 },
+            h(BarChart, { data: data, layout: 'vertical', margin: { top: 2, right: 20, bottom: 2, left: 2 } },
+                h(CartesianGrid, { horizontal: false, stroke: c.border, strokeDasharray: '3 3' }),
+                h(XAxis, { type: 'number', tick: { fill: c.textMuted, fontSize: 10, fontFamily: 'Inter' }, tickFormatter: function(v) { return (v < 0 ? '-' : '') + '$' + Math.abs(v / 1000).toFixed(1) + 'M'; }, axisLine: false, tickLine: false }),
+                h(YAxis, { type: 'category', dataKey: 'name', tick: { fill: c.textSecondary, fontSize: 10, fontFamily: 'Inter' }, axisLine: false, tickLine: false, width: 85 }),
+                h(ReferenceLine, { x: 0, stroke: c.borderStrong }),
+                h(Tooltip, { cursor: { fill: c.surfaceHover }, contentStyle: ttStyle(), labelStyle: { color: c.text, fontWeight: 600, marginBottom: 2 }, formatter: function(v) { return ['$' + Math.abs(v).toLocaleString() + 'k ' + (v < 0 ? 'under' : 'over') + 'billed', '']; } }),
+                h(Bar, { dataKey: 'value', radius: 3, maxBarSize: 14 },
+                    data.map(function(d, i) { return h(Cell, { key: i, fill: d.value < 0 ? c.negative : c.positive, opacity: 0.75 }); })
+                )
+            )
+        );
+    }
 
-function MarginChart({ data }) {
-    const c = getThemeColors();
-    if (!data?.length) return <div style={{color:c.textMuted,fontSize:12,textAlign:'center',padding:20}}>No margin data</div>;
-    return (
-        <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={data} margin={{top:2,right:20,bottom:24,left:2}}>
-                <CartesianGrid vertical={false} stroke={c.border} strokeDasharray="3 3"/>
-                <XAxis dataKey="name" tick={{fill:c.textMuted,fontSize:10,fontFamily:'Inter'}} axisLine={false} tickLine={false} angle={-12} textAnchor="end" interval={0}/>
-                <YAxis tick={{fill:c.textMuted,fontSize:10,fontFamily:'Inter'}} tickFormatter={v=>`${v}%`} axisLine={false} tickLine={false}/>
-                <ReferenceLine y={0} stroke={c.borderStrong}/>
-                <Tooltip cursor={{fill:c.surfaceHover}} contentStyle={ttStyle()} labelStyle={{color:c.text,fontWeight:600,marginBottom:2}} formatter={(v,n)=>[`${v}%`,n==='estimated'?'Estimated GP%':'Actual GP%']}/>
-                <Bar dataKey="estimated" fill={c.chartBar1} opacity={0.25} radius={[3,3,0,0]} maxBarSize={22} name="estimated"/>
-                <Bar dataKey="actual" radius={[3,3,0,0]} maxBarSize={22} name="actual">
-                    {data.map((d,i)=><Cell key={i} fill={d.actual<0?c.negative:c.positive} opacity={0.7}/>)}
-                </Bar>
-            </BarChart>
-        </ResponsiveContainer>
-    );
-}
+    function MarginChart(props) {
+        var data = props.data;
+        var c = getThemeColors();
+        if (!data || !data.length) return h('div', { style: { color: c.textMuted, fontSize: 12, textAlign: 'center', padding: 20 } }, 'No margin data');
+        return h(ResponsiveContainer, { width: '100%', height: 250 },
+            h(BarChart, { data: data, margin: { top: 2, right: 20, bottom: 24, left: 2 } },
+                h(CartesianGrid, { vertical: false, stroke: c.border, strokeDasharray: '3 3' }),
+                h(XAxis, { dataKey: 'name', tick: { fill: c.textMuted, fontSize: 10, fontFamily: 'Inter' }, axisLine: false, tickLine: false, angle: -12, textAnchor: 'end', interval: 0 }),
+                h(YAxis, { tick: { fill: c.textMuted, fontSize: 10, fontFamily: 'Inter' }, tickFormatter: function(v) { return v + '%'; }, axisLine: false, tickLine: false }),
+                h(ReferenceLine, { y: 0, stroke: c.borderStrong }),
+                h(Tooltip, { cursor: { fill: c.surfaceHover }, contentStyle: ttStyle(), labelStyle: { color: c.text, fontWeight: 600, marginBottom: 2 }, formatter: function(v, n) { return [v + '%', n === 'estimated' ? 'Estimated GP%' : 'Actual GP%']; } }),
+                h(Bar, { dataKey: 'estimated', fill: c.chartBar1, opacity: 0.25, radius: [3, 3, 0, 0], maxBarSize: 22, name: 'estimated' }),
+                h(Bar, { dataKey: 'actual', radius: [3, 3, 0, 0], maxBarSize: 22, name: 'actual' },
+                    data.map(function(d, i) { return h(Cell, { key: i, fill: d.actual < 0 ? c.negative : c.positive, opacity: 0.7 }); })
+                )
+            )
+        );
+    }
 
-window.mountPendingCharts = function() {
-    if (!window.__chartQueue?.length) return;
-    const queue = window.__chartQueue.splice(0);
-    queue.forEach(({ id, charts }) => {
-        const billingEl = document.getElementById(id + '-billing');
-        const marginEl = document.getElementById(id + '-margin');
-        if (billingEl && charts.billing?.length) ReactDOM.createRoot(billingEl).render(<BillingChart data={charts.billing}/>);
-        if (marginEl && charts.margin?.length) ReactDOM.createRoot(marginEl).render(<MarginChart data={charts.margin}/>);
-    });
-};
+    window.mountPendingCharts = function() {
+        if (!window.__chartQueue || !window.__chartQueue.length) return;
+        var queue = window.__chartQueue.splice(0);
+        queue.forEach(function(item) {
+            var id = item.id, charts = item.charts;
+            var billingEl = document.getElementById(id + '-billing');
+            var marginEl = document.getElementById(id + '-margin');
+            if (billingEl && charts.billing && charts.billing.length) ReactDOM.createRoot(billingEl).render(h(BillingChart, { data: charts.billing }));
+            if (marginEl && charts.margin && charts.margin.length) ReactDOM.createRoot(marginEl).render(h(MarginChart, { data: charts.margin }));
+        });
+    };
+})();
 </script>
 </body>
 </html>
