@@ -604,6 +604,38 @@
         .job-issue-flat { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 14px; }
         .job-issue-flat:last-child { border-bottom: none; }
         .job-issue-header { display: flex; align-items: center; padding: 4px 0; margin-bottom: 8px; }
+        /* Formulaic validation table */
+        .fvt-wrap { width: 100%; }
+        .fvt-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+        .fvt-count { font-size: 11px; color: var(--text-muted); }
+        .fvt-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
+        .fvt-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .fvt-th { background: var(--surface-alt); padding: 6px 8px; color: var(--text-muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.3px; position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        .fvt-th-num { text-align: right; }
+        .fvt-th-id { min-width: 80px; }
+        .fvt-th-name { min-width: 120px; }
+        .fvt-td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.03); color: var(--text); white-space: nowrap; }
+        .fvt-td-id { font-weight: 600; font-size: 11.5px; display: flex; align-items: center; gap: 5px; }
+        .fvt-td-name { color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+        .fvt-td:not(.fvt-td-id):not(.fvt-td-name) { text-align: right; font-family: ui-monospace, monospace; }
+        .fvt-neg { color: var(--negative); }
+        .fvt-row:hover td { background: var(--surface-hover); }
+        .fvt-row-error td { background: rgba(224,82,82,0.04); }
+        .fvt-row-error:hover td { background: rgba(224,82,82,0.08); }
+        .fvt-cell-error { color: var(--risk-high) !important; font-weight: 700; background: rgba(224,82,82,0.12) !important; }
+        .fvt-chevron { flex-shrink: 0; color: var(--risk-high); transition: transform 0.15s; }
+        .fvt-expand-row td { padding: 0; }
+        .fvt-expand-cell { background: var(--surface-alt); border-bottom: 1px solid var(--border); }
+        .fvt-expand-inner { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 10px 14px; }
+        .fvt-expand-col { padding: 0 12px; border-right: 1px solid var(--border); }
+        .fvt-expand-col:last-child { border-right: none; }
+        .fvt-expand-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; margin-bottom: 6px; }
+        .fvt-err-line { font-size: 11px; color: var(--risk-high); padding: 2px 0; }
+        .fvt-fix-line { font-size: 11px; padding: 2px 0; }
+        .fvt-fix-flag { color: var(--risk-med); }
+        .fvt-fix-suggest { color: var(--accent); }
+        .fvt-fix-applied { color: var(--risk-low); }
+
         .column-error-list { padding: 4px 0; }
         .column-error-row { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); }
         .column-error-row:last-child { border-bottom: none; }
@@ -1457,7 +1489,7 @@ function buildCompareCallbacks(panel, onComplete) {
             removeLoading(panel);
             const data = payload.data;
             const wd = data.widget_data || {};
-            if (wd.validations) appendHtml(panel, renderValidationHtml(wd.validations));
+            if (wd.validations) appendHtml(panel, renderValidationHtml(wd.validations, data.clean_table));
             
             if ((wd.kpis && wd.kpis.length > 0) || (wd.metrics && wd.metrics.row1_1)) {
                 const chatId = 'chat-' + Math.random().toString(36).substr(2, 6);
@@ -1691,10 +1723,27 @@ function setupChatInterface(chatId, modelKey, tableData, totals, fullContext) {
 // ==========================================
 // CORE WIDGET RENDERERS
 // ==========================================
-function renderValidationHtml(vals) {
+function renderValidationHtml(vals, tableRows) {
     if (!vals) return '';
 
     const genId = () => 'v-' + Math.random().toString(36).substr(2, 8);
+
+    // Human-readable validation names
+    const VAL_LABELS = {
+        contract_cost_gp:         'Contract − Est Cost ≠ Est GP',
+        cost_to_complete_check:   'Est Cost − CTD ≠ CTC',
+        earned_revenue_from_gp:   'CTD + GP to Date ≠ Earned Rev',
+        earned_revenue_from_poc:  'Earned Rev ≠ Contract × POC',
+        underbilling_overbilling: 'UB/OB mismatch',
+        remaining_gp_check:       'GP to Date exceeds Est GP',
+        gp_percentage_bounds:     'GP% out of normal range',
+    };
+
+    // Which table columns each field key maps to
+    const FIELD_COLS = ['total_contract_price','estimated_total_costs','estimated_gross_profit',
+                        'revenues_earned','cost_to_date','gross_profit_to_date',
+                        'billed_to_date','cost_to_complete'];
+    const COL_LABELS = ['Contract','Est Cost','Est GP','Earned Rev','CTD','GP to Date','Billed','CTC'];
 
     function renderColumnErrors(columnErrors) {
         return `<div class="column-error-list">${columnErrors.map(ce => {
@@ -1710,26 +1759,134 @@ function renderValidationHtml(vals) {
         }).join('')}</div>`;
     }
 
-    function renderJobIssues(jobIssues) {
-        if (!jobIssues || !jobIssues.length) return '';
-        return jobIssues.map(job => {
-            const parts = [];
-            if (job.errors?.length) parts.push(`${job.errors.length} validation${job.errors.length > 1 ? 's' : ''} failed`);
-            if (job.corrections?.length) parts.push(`${job.corrections.length} suggested fix${job.corrections.length > 1 ? 'es' : ''}`);
+    function renderFormulaicTable(tableRows, jobIssues) {
+        if (!tableRows || !tableRows.length) return '';
 
-            const errors = (job.errors || []).map(e => `<div class="error-line">✗ ${e.message}</div>`).join('');
-            const corrections = (job.corrections || []).map(c => {
-                const cls = c.confidence === 'high' ? 'confidence-high' : c.confidence === 'medium' ? 'confidence-medium' : c.confidence === 'flag' ? 'confidence-low' : 'confidence-low';
-                const labelText = c.confidence === 'flag' ? 'FLAGGED' : c.confidence;
-                const actionText = c.confidence === 'flag'
-                    ? `<strong>⚠ Flagged for review:</strong> ${c.field} (${c.current}) — likely column misread`
-                    : `<strong>Suggested fix:</strong> Change ${c.field} from ${c.current} to ${c.suggested}`;
-                return `<div class="correction-line"><span class="correction-arrow">${c.confidence === 'flag' ? '⚠' : '→'}</span><span>${actionText}<span class="confidence-badge ${cls}">${labelText}</span></span><div class="correction-reasoning">${c.reasoning}</div></div>`;
+        // Build lookup: jobId -> issue data
+        const issueMap = {};
+        (jobIssues || []).forEach(j => { issueMap[j.jobId] = j; });
+
+        // Collect all implicated root_cause_fields across all errors for a job
+        function getRedFields(jobId) {
+            const issue = issueMap[jobId];
+            if (!issue) return new Set();
+            const fields = new Set();
+            (issue.errors || []).forEach(e => {
+                if (e.root_cause_field) fields.add(e.root_cause_field);
+            });
+            (issue.corrections || []).forEach(c => {
+                if (c.field && !c.field.includes('↔')) fields.add(c.field);
+            });
+            return fields;
+        }
+
+        const tableId = 'fvt-' + Math.random().toString(36).substr(2,6);
+        let showErrors = false;
+
+        // Build rows HTML
+        function buildRows(errOnly) {
+            return tableRows.map(r => {
+                const issue = issueMap[r.job_id];
+                const hasIssue = !!issue;
+                if (errOnly && !hasIssue) return '';
+
+                const redFields = getRedFields(r.job_id);
+                const rowCls = hasIssue ? 'fvt-row fvt-row-error' : 'fvt-row';
+                const detId = tableId + '-' + r.job_id.replace(/[^a-zA-Z0-9]/g,'_');
+
+                const cells = FIELD_COLS.map((f, i) => {
+                    const val = r[f];
+                    const isRed = redFields.has(f);
+                    const formatted = val != null && val !== 0 ? fmtLegacy(val) : '—';
+                    const neg = val < 0 ? ' fvt-neg' : '';
+                    return `<td class="fvt-td${isRed ? ' fvt-cell-error' : ''}${neg}">${formatted}</td>`;
+                }).join('');
+
+                const chevron = hasIssue
+                    ? `<svg class="fvt-chevron" id="${detId}-ico" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>`
+                    : '';
+
+                const clickAttr = hasIssue ? `onclick="toggleFvt('${detId}')"` : '';
+
+                // Expand panel
+                let expandHtml = '';
+                if (hasIssue) {
+                    const errLines = (issue.errors || []).map(e =>
+                        `<div class="fvt-err-line">✗ ${VAL_LABELS[e.validation] || e.validation}</div>`
+                    ).join('');
+
+                    const fixLines = (issue.corrections || []).map(c => {
+                        if (c.confidence === 'flag') {
+                            const fieldLabel = c.field.replace(/_/g,' ').replace(/\b\w/g, x=>x.toUpperCase());
+                            return `<div class="fvt-fix-line fvt-fix-flag">⚠ ${fieldLabel}: ${c.current} — likely wrong column</div>`;
+                        } else if (c.applied) {
+                            const fieldLabel = c.field.replace(/_/g,' ').replace(/\b\w/g, x=>x.toUpperCase());
+                            return `<div class="fvt-fix-line fvt-fix-applied">✓ ${fieldLabel}: ${c.current} → ${c.suggested} <span class="confidence-badge confidence-high">Applied</span></div>`;
+                        } else {
+                            const fieldLabel = c.field.replace(/_/g,' ').replace(/\b\w/g, x=>x.toUpperCase());
+                            return `<div class="fvt-fix-line fvt-fix-suggest">→ ${fieldLabel}: ${c.current} → ${c.suggested}</div>`;
+                        }
+                    }).join('');
+
+                    expandHtml = `<tr id="${detId}" class="fvt-expand-row" style="display:none;"><td colspan="${FIELD_COLS.length + 2}" class="fvt-expand-cell"><div class="fvt-expand-inner"><div class="fvt-expand-col"><div class="fvt-expand-label">Failing Checks</div>${errLines}</div><div class="fvt-expand-col"><div class="fvt-expand-label">Suggested Fixes</div>${fixLines || '<div class="fvt-err-line" style="color:var(--text-muted)">No fixes available</div>'}</div></div></td></tr>`;
+                }
+
+                return `<tr class="${rowCls}" ${clickAttr} style="cursor:${hasIssue ? 'pointer' : 'default'}">
+                    <td class="fvt-td fvt-td-id">${r.job_id}${chevron}</td>
+                    <td class="fvt-td fvt-td-name">${(r.job_name || '').substring(0,20)}</td>
+                    ${cells}
+                </tr>${expandHtml}`;
             }).join('');
+        }
 
-            return `<div class="job-issue-flat"><div class="job-issue-header"><span class="job-issue-id">${job.jobId}</span><span class="job-issue-summary">${parts.join(', ')}</span></div><div>${errors}${corrections}</div></div>`;
-        }).join('');
+        const errorCount = Object.keys(issueMap).length;
+
+        return `<div class="fvt-wrap">
+            <div class="fvt-toolbar">
+                <span class="fvt-count">${errorCount} job${errorCount !== 1 ? 's' : ''} with issues</span>
+                <div class="seg-control">
+                    <button class="seg-btn active" id="${tableId}-all" onclick="fvtFilter('${tableId}', false)">All Jobs</button>
+                    <button class="seg-btn" id="${tableId}-err" onclick="fvtFilter('${tableId}', true)">Errors Only</button>
+                </div>
+            </div>
+            <div class="fvt-scroll">
+                <table class="fvt-table" id="${tableId}">
+                    <thead><tr>
+                        <th class="fvt-th fvt-th-id">Job</th>
+                        <th class="fvt-th fvt-th-name">Name</th>
+                        ${COL_LABELS.map(l => `<th class="fvt-th fvt-th-num">${l}</th>`).join('')}
+                    </tr></thead>
+                    <tbody id="${tableId}-body">${buildRows(false)}</tbody>
+                </table>
+            </div>
+        </div>`;
     }
+
+    window.toggleFvt = (id) => {
+        const row = document.getElementById(id);
+        const ico = document.getElementById(id + '-ico');
+        if (!row) return;
+        const hidden = row.style.display === 'none';
+        row.style.display = hidden ? '' : 'none';
+        if (ico) ico.style.transform = hidden ? 'rotate(90deg)' : '';
+    };
+
+    window.fvtFilter = (tableId, errOnly) => {
+        // Toggle button states
+        document.getElementById(tableId + '-all').classList.toggle('active', !errOnly);
+        document.getElementById(tableId + '-err').classList.toggle('active', errOnly);
+        // Rebuild table body
+        const tbody = document.getElementById(tableId + '-body');
+        if (!tbody) return;
+        // Re-render by toggling row visibility (error rows always visible, clean rows hidden when errOnly)
+        Array.from(tbody.querySelectorAll('tr.fvt-row')).forEach(tr => {
+            if (errOnly && !tr.classList.contains('fvt-row-error')) {
+                tr.style.display = 'none';
+            } else {
+                tr.style.display = '';
+            }
+        });
+    };
 
     function renderDetails(key, obj) {
         const id = genId();
@@ -1739,8 +1896,8 @@ function renderValidationHtml(vals) {
             return `<div id="${id}" class="val-details ${bgCls}">${renderColumnErrors(obj.columnErrors)}</div>`;
         }
 
-        if (key === 'formulaic' && obj.jobIssues?.length) {
-            return `<div id="${id}" class="val-details ${bgCls}">${renderJobIssues(obj.jobIssues)}</div>`;
+        if (key === 'formulaic' && (obj.jobIssues?.length || obj.columnErrors?.length)) {
+            return `<div id="${id}" class="val-details ${bgCls}" style="max-height:none;">${renderFormulaicTable(tableRows, obj.jobIssues)}</div>`;
         }
 
         if (!obj.details?.length) return '';
@@ -1933,7 +2090,7 @@ function handleWipResult(payload, valContainer, dashContainer) {
     // 1. Validation widget in validation container
     if (wd.validations) {
         valContainer.innerHTML = '';
-        appendHtml(valContainer, renderValidationHtml(wd.validations));
+        appendHtml(valContainer, renderValidationHtml(wd.validations, data.clean_table));
     }
 
     // 2. "Open Dashboard" button
