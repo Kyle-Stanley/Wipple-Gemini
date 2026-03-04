@@ -624,11 +624,17 @@
         .fvt-wrap.fvt-maximized .fvt-scroll { flex: 1; max-height: none !important; border-radius: 0 0 8px 8px; }
         .fvt-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); }
         .fvt-count { font-size: 11px; color: var(--text-muted); }
-        .btn-retry { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--accent); color: var(--accent); background: transparent; cursor: pointer; transition: all 0.15s; }
-        .btn-retry:hover { background: var(--accent); color: var(--bg); }
-        .fvt-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
+        .action-nav-btn { font-size: 13px; font-weight: 600; padding: 10px 24px; border-radius: 6px; cursor: pointer; transition: all 0.15s; min-width: 180px; text-align: center; }
+        .action-nav-back { border: 1px solid var(--accent); color: var(--accent); background: transparent; }
+        .action-nav-back:hover { background: rgba(var(--accent-rgb, 180,140,100), 0.1); }
+        .action-nav-fwd { border: none; color: var(--bg); background: var(--accent); }
+        .action-nav-fwd:hover { opacity: 0.85; }
+        .fvt-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; padding: 0 2px; }
+        .fvt-table { border-spacing: 0; }
+        .fvt-td:first-child, .fvt-th:first-child { padding-left: 14px; }
+        .fvt-td:last-child, .fvt-th:last-child { padding-right: 14px; }
         .fvt-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-        .fvt-th { background: var(--surface-alt); padding: 6px 8px; color: var(--text-muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.3px; position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        .fvt-th { background: var(--bg); padding: 6px 8px; color: var(--text); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.3px; position: sticky; top: 0; z-index: 2; border-bottom: 2px solid var(--border-strong, var(--border)); white-space: nowrap; }
         .fvt-th-num { text-align: right; }
         .fvt-th-id { min-width: 80px; }
         .fvt-th-name { min-width: 120px; }
@@ -645,8 +651,8 @@
         .fvt-expand-row { transition: all 0.2s ease; }
         .fvt-expand-row td { padding: 0; }
         .fvt-expand-cell { background: var(--surface-alt); border-bottom: 1px solid var(--border); }
-        .val-details.fvt-details-panel { max-height: 480px !important; background: var(--surface) !important; border-left: none !important; }
-        .val-details.fvt-details-panel.open { max-height: 480px !important; }
+        .val-details.fvt-details-panel { background: var(--surface) !important; border-left: none !important; }
+        .val-details.fvt-details-panel.open { max-height: 520px; }
         .fvt-expand-inner { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 10px 14px; }
         .fvt-expand-col { padding: 0 12px; border-right: 1px solid var(--border); }
         .fvt-expand-col:last-child { border-right: none; }
@@ -1766,8 +1772,8 @@ function renderValidationHtml(vals, tableRows) {
     // Which table columns each field key maps to
     const FIELD_COLS = ['total_contract_price','estimated_total_costs','estimated_gross_profit',
                         'revenues_earned','cost_to_date','gross_profit_to_date',
-                        'billed_to_date','cost_to_complete'];
-    const COL_LABELS = ['Contract','Est Cost','Est GP','Earned Rev','CTD','GP to Date','Billed','CTC'];
+                        'billed_to_date','cost_to_complete','under_billings','over_billings'];
+    const COL_LABELS = ['Contract','Est Cost','Est GP','Earned Rev','CTD','GP to Date','Billed','CTC','UB','OB'];
 
     function renderColumnErrors(columnErrors) {
         return `<div class="column-error-list">${columnErrors.map(ce => {
@@ -1877,14 +1883,10 @@ function renderValidationHtml(vals, tableRows) {
 
         const errorCount = Object.keys(issueMap).length;
 
-        const hasRetry = !!(state && state.retryFeedback);
         return `<div class="fvt-wrap" id="fvt-wrap-${tableId}">
             <div class="fvt-toolbar">
                 <span class="fvt-count">${errorCount} job${errorCount !== 1 ? 's' : ''} with issues</span>
                 <div style="display:flex;align-items:center;gap:8px;">
-                    ${hasRetry ? `<button onclick="retryWithFeedback()" class="btn-retry" title="Re-run extraction with column error feedback">
-                        ↺ Retry with Feedback
-                    </button>` : ''}
                     <div class="seg-control">
                         <button class="seg-btn active" id="${tableId}-all" onclick="fvtFilter('${tableId}', false)">All Jobs</button>
                         <button class="seg-btn" id="${tableId}-err" onclick="fvtFilter('${tableId}', true)">Errors Only</button>
@@ -2188,10 +2190,14 @@ function handleWipResult(payload, valContainer, dashContainer) {
         appendHtml(valContainer, renderValidationHtml(wd.validations, data.clean_table));
     }
 
-    // 2. "Open Dashboard" button
+    // 2. Action buttons — Retry (if feedback available) + Open Dashboard
     const openBtn = document.createElement('div');
-    openBtn.style.cssText = 'text-align:center; margin-top:28px; animation: fadeSlide 0.4s forwards;';
-    openBtn.innerHTML = `<button class="new-analysis-btn" id="open-dashboard-btn">Open Dashboard →</button>`;
+    openBtn.style.cssText = 'display:flex; justify-content:center; gap:12px; margin-top:28px; animation: fadeSlide 0.4s forwards;';
+    const hasRetryFeedback = !!(state && state.retryFeedback);
+    openBtn.innerHTML = `
+        ${hasRetryFeedback ? `<button class="action-nav-btn action-nav-back" id="retry-feedback-btn" onclick="retryWithFeedback()">↺ Retry with Feedback</button>` : ''}
+        <button class="action-nav-btn action-nav-fwd" id="open-dashboard-btn">Open Dashboard →</button>
+    `;
     valContainer.appendChild(openBtn);
 
     // 3. Build dashboard content
