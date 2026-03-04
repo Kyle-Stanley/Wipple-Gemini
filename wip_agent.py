@@ -16,6 +16,9 @@ from model_client import (
     get_client,
     MetricsTracker,
     DEFAULT_MODEL,
+    OPTIMAL_MIX_KEY,
+    OPTIMAL_MIX_PRIMARY,
+    OPTIMAL_MIX_FALLBACK,
     parse_json_safely,
 )
 
@@ -89,6 +92,7 @@ class CalculatedWipRow(FullWipRow):
 class WipState(BaseModel):
     file_path: str
     model_name: str = DEFAULT_MODEL
+    extraction_feedback: str = ""  # Passed on retry runs; empty on first pass
 
     # Metrics tracker stored as dict for Pydantic serialization
     metrics_data: Dict[str, Any] = Field(default_factory=dict)
@@ -1214,18 +1218,62 @@ def extractor_node(state: WipState):
     }
     """
 
-    raw_text = ""
-    try:
+    SYSTEM_PROMPT = (
+        "You are a precise financial data extraction engine. Your sole function is to extract "
+        "structured data from construction Work-In-Progress (WIP) schedules and return it as valid JSON. "
+        "You have deep knowledge of construction accounting: job costing, percent complete billing, "
+        "earned value, and the algebraic relationships between WIP columns. You never infer, estimate, "
+        "or fabricate values — you extract only what is explicitly present in the document. "
+        "Return ONLY the raw JSON object with no markdown, no commentary, no preamble."
+    )
+
+    # Inject feedback from a prior failed run if present
+    active_prompt = prompt
+    if state.extraction_feedback:
+        active_prompt = (
+            f"FEEDBACK FROM PRIOR EXTRACTION ATTEMPT:\n"
+            f"{state.extraction_feedback}\n\n"
+            "Apply this feedback carefully before extracting. Pay special attention to the "
+            "flagged column(s) and verify your mapping is correct before outputting.\n\n"
+        ) + prompt
+
+    def _run_extraction(model_name: str) -> str:
+        """Run a single extraction attempt with the given model. Returns raw text."""
         response = client.generate_content(
-            prompt=prompt,
-            model_name=state.model_name,
+            prompt=active_prompt,
+            model_name=model_name,
             pdf_bytes=file_bytes,
             response_mime_type="application/json",
             tracker=tracker,
-            system_prompt="You are a precise financial data extraction engine. Your sole function is to extract structured data from construction Work-In-Progress (WIP) schedules and return it as valid JSON. You have deep knowledge of construction accounting: job costing, percent complete billing, earned value, and the algebraic relationships between WIP columns. You never infer, estimate, or fabricate values — you extract only what is explicitly present in the document. Return ONLY the raw JSON object with no markdown, no commentary, no preamble.",
+            system_prompt=SYSTEM_PROMPT,
         )
-        raw_text = response.text or ""
-        _diag("llm_call", "OK", f"{len(raw_text)} chars returned")
+        return response.text or ""
+
+    raw_text = ""
+    actual_model = state.model_name
+    try:
+        if state.model_name == OPTIMAL_MIX_KEY:
+            # Tier 1: Flash-Lite
+            print(f"--- OPTIMAL MIX: trying {OPTIMAL_MIX_PRIMARY} ---")
+            raw_text = _run_extraction(OPTIMAL_MIX_PRIMARY)
+            actual_model = OPTIMAL_MIX_PRIMARY
+            _diag("llm_call_tier1", "OK", f"{OPTIMAL_MIX_PRIMARY}: {len(raw_text)} chars")
+
+            # Quick validation: can we even parse it?
+            try:
+                parse_json_safely(raw_text)
+            except Exception:
+                # Unparseable — escalate immediately
+                print(f"--- OPTIMAL MIX: tier 1 unparseable, escalating to {OPTIMAL_MIX_FALLBACK} ---")
+                raw_text = _run_extraction(OPTIMAL_MIX_FALLBACK)
+                actual_model = OPTIMAL_MIX_FALLBACK
+                _diag("llm_call_tier2", "OK", f"escalated to {OPTIMAL_MIX_FALLBACK}: {len(raw_text)} chars")
+        else:
+            raw_text = _run_extraction(state.model_name)
+            _diag("llm_call", "OK", f"{len(raw_text)} chars returned")
+
+        diagnostics["actual_model"] = actual_model
+
     except Exception as e:
         _diag("llm_call", "FAIL", str(e))
         diagnostics["raw_response_preview"] = ""
@@ -1631,7 +1679,20 @@ def analyst_node(state: WipState):
                 f"Column Error: {field_label} — corrected across {ce['rows_corrected']} rows "
                 f"({ce['rows_resolved']}/{ce['total_rows']} rows resolved)"
             )
-        elif formula_pass and correction_log:
+            # Build feedback string for retry — surfaced in the API response so the
+            # frontend can pass it back on a retry request
+            _pct = int(ce["row_resolution_rate"] * 100)
+            _feedback_for_retry = (
+                f"{ce['rows_resolved']} of {ce['total_rows']} jobs failed formula validation "
+                f"({_pct}% failure rate). This is a strong indicator of a column mapping error "
+                f"on the '{field_label}' column. On your next attempt, pay very careful attention "
+                f"to the '{field_label}' column. Double-check that you are reading the correct "
+                f"column and not an adjacent one with a similar name or value."
+            )
+        else:
+            _feedback_for_retry = ""
+
+        if formula_pass and correction_log:
             formula_msg = f"Column Math Validated (after {len(correction_log)} auto-corrections)"
         elif formula_pass:
             formula_msg = "Column Math Validated"
@@ -1761,6 +1822,7 @@ def analyst_node(state: WipState):
                     "details": formula_detail_rows,
                     "jobIssues": [] if portfolio_column_errors else corrections_display,
                     "columnErrors": portfolio_column_errors,
+                    "retryFeedback": _feedback_for_retry,
                 },
                 "totals": {
                     "passed": totals_pass,
@@ -1952,6 +2014,7 @@ def output_node(state: WipState):
             "surety_risk_context": state.surety_risk_context or {},
             "widget_data": state.widget_data or {},
             "metrics": state.metrics_data or {},
+            "actual_model": state.extraction_diagnostics.get("actual_model", state.model_name) if state.extraction_diagnostics else state.model_name,
         }
 
         if state.final_json and "error" in state.final_json:
