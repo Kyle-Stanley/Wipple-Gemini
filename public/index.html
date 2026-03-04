@@ -604,6 +604,14 @@
         .job-issue-flat { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 14px; }
         .job-issue-flat:last-child { border-bottom: none; }
         .job-issue-header { display: flex; align-items: center; padding: 4px 0; margin-bottom: 8px; }
+        .column-error-card { padding: 14px 16px; }
+        .column-error-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+        .column-error-icon { font-size: 15px; color: var(--accent); }
+        .column-error-title { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }
+        .column-error-field { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+        .column-error-field strong { color: var(--accent); }
+        .column-error-stats { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+        .column-error-stats strong { color: var(--text); }
         .job-issue-id { font-weight: 700; color: var(--text); font-size: 0.9rem; min-width: 90px; }
         .job-issue-summary { color: var(--text-secondary); font-size: 0.8rem; flex: 1; }
         .error-line { color: var(--risk-high); font-size: 0.8rem; padding: 4px 0 4px 12px; }
@@ -1062,12 +1070,11 @@
 const API_ENDPOINT = "https://api.wipple.ai/analyze-stream";
 
 const MODELS = [
-    { key: "gemini-3.1-pro", label: "Gemini 3.1 Pro", desc: "Most capable" },
-    { key: "gemini-3-flash", label: "Gemini 3 Flash", desc: "Fast & cost-effective" },
-    { key: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", desc: "Fastest & cheapest" },
-    { key: "claude-opus-4-6", label: "Claude Opus 4.6", desc: "Highest accuracy" },
-    { key: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", desc: "Balanced performance" },
+    { key: "gemini-3-pro", label: "Gemini 3 Pro", desc: "Fast, cost-effective" },
+    { key: "gemini-3-flash", label: "Gemini 3 Flash", desc: "Ultra fast" },
+    { key: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", desc: "Balanced performance" },
     { key: "claude-haiku-4-5", label: "Claude Haiku 4.5", desc: "Lightweight" },
+    { key: "claude-opus-4-5", label: "Claude Opus 4.5", desc: "Highest accuracy" },
 ];
 
 const MODEL_NAMES = {};
@@ -1078,8 +1085,8 @@ let state = {
     mode: 'single',
     stage: 'upload',
     file: null,
-    modelA: 'gemini-3.1-pro',
-    modelB: 'claude-sonnet-4-6',
+    modelA: 'gemini-3-pro',
+    modelB: 'claude-sonnet-4-5',
     isProcessing: false,
     validationDone: false,
     dashboardReady: false,
@@ -1690,6 +1697,27 @@ function renderValidationHtml(vals) {
 
     const genId = () => 'v-' + Math.random().toString(36).substr(2, 8);
 
+    function renderColumnErrors(columnErrors) {
+        return columnErrors.map(ce => {
+            const field = ce.field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const pct = Math.round(ce.resolution_rate * 100);
+            return `
+                <div class="column-error-card">
+                    <div class="column-error-header">
+                        <span class="column-error-icon">⚠</span>
+                        <span class="column-error-title">Column Extraction Error Detected</span>
+                        <span class="confidence-badge confidence-high">Auto-Corrected</span>
+                    </div>
+                    <div class="column-error-field">Field: <strong>${field}</strong></div>
+                    <div class="column-error-stats">
+                        Resolved <strong>${ce.errors_resolved}</strong> of <strong>${ce.total_errors}</strong> validation errors
+                        (${pct}%) across <strong>${ce.rows_corrected}</strong> rows.
+                        The extracted value was replaced with the algebraically correct value derived from surrounding columns.
+                    </div>
+                </div>`;
+        }).join('');
+    }
+
     function renderJobIssues(jobIssues) {
         if (!jobIssues || !jobIssues.length) return '';
         return jobIssues.map(job => {
@@ -1714,6 +1742,10 @@ function renderValidationHtml(vals) {
     function renderDetails(key, obj) {
         const id = genId();
         const bgCls = obj.passed ? 'pass-bg' : 'fail-bg';
+
+        if (key === 'formulaic' && obj.columnErrors?.length) {
+            return `<div id="${id}" class="val-details ${bgCls}">${renderColumnErrors(obj.columnErrors)}</div>`;
+        }
 
         if (key === 'formulaic' && obj.jobIssues?.length) {
             return `<div id="${id}" class="val-details ${bgCls}">${renderJobIssues(obj.jobIssues)}</div>`;
@@ -1747,7 +1779,7 @@ function renderValidationHtml(vals) {
     }
 
     function renderRow(label, obj, key) {
-        const hasDetails = (obj.details?.length > 0) || (key === 'formulaic' && obj.jobIssues?.length > 0);
+        const hasDetails = (obj.details?.length > 0) || (key === 'formulaic' && (obj.jobIssues?.length > 0 || obj.columnErrors?.length > 0));
         const rowId = genId();
         const passCls = obj.passed ? 'pass' : 'fail';
 
