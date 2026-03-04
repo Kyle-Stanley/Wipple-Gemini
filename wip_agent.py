@@ -1102,36 +1102,74 @@ def extractor_node(state: WipState):
     _diag("file_read", "OK", f"{len(file_bytes)} bytes")
 
     prompt = """
-    Extract the WIP Schedule table.
-    1. Extract every job row with all financial columns, Job Name, and Job ID.
-    2. Extract the "TOTALS" row from the bottom of the report.
+    Extract all job rows and the TOTALS row from this WIP schedule.
 
-    CRITICAL COLUMN IDENTIFICATION:
+    TYPICAL COLUMN ORDER (left to right):
+    Job ID → Job Name → Contract Price → Estimated Total Costs → Estimated Gross Profit → Revenues Earned → Cost to Date → Gross Profit to Date → Billed to Date → Cost to Complete → Under Billings → Over Billings
 
-    1. COST TO DATE (cost_to_date): Money ALREADY SPENT on the job.
-       - Column headers: "Cost to Date", "Costs to Date", "Costs Incurred", "Actual Costs"
-       - This is cumulative costs incurred so far
-       - Usually a LARGER number than Cost to Complete for jobs in progress
+    Use this order as a positional tiebreaker when column headers are ambiguous or truncated.
 
-    2. COST TO COMPLETE (cost_to_complete): Money STILL NEEDED to finish the job.
-       - Column headers: "Cost to Complete", "CTC", "Estimated Cost to Complete", "Remaining Costs"
-       - This is how much more needs to be spent
-       - Formula: Estimated Total Costs - Cost to Date = Cost to Complete
-       - For completed jobs (100% done), this should be 0 or near 0
+    COLUMN IDENTIFICATION — all 10 fields:
 
-    3. ESTIMATED TOTAL COSTS (estimated_total_costs): The full projected cost budget for the job from start to finish.
-       - Column headers: "Estimated Cost", "Total Est Cost", "Est Total Costs", "Revised Est Cost",
-         "Total Projected Costs", "Total Projected Cost", "Projected Total Cost"
-       - This is the contractor's total cost forecast: what has already been spent plus what remains.
-       - Formula: Cost to Date + Cost to Complete = Estimated Total Costs
+    1. total_contract_price — The full agreed contract value.
+       Headers: "Contract", "Contract Price", "Contract Amount", "Total Contract", "Revised Contract"
 
-    VALIDATION: For each row, verify: Cost to Date + Cost to Complete = Estimated Total Costs
+    2. estimated_total_costs — The projected total cost to complete the entire job.
+       Headers: "Estimated Cost", "Est Total Cost", "Total Est Cost", "Revised Est Cost",
+                "Total Projected Costs", "Total Projected Cost", "Projected Total Cost"
+       Formula: Cost to Date + Cost to Complete = Estimated Total Costs
+       !! DO NOT confuse with "Total Cost to Date" or "Costs Incurred to Date" — those are cost_to_date.
 
-    UNDER vs OVER BILLINGS:
-    - UNDER BILLINGS (UB): Earned Revenue > Billed to Date (work done but not yet billed)
-    - OVER BILLINGS (OB): Billed to Date > Earned Revenue (billed ahead of work)
+    3. estimated_gross_profit — Projected profit margin on the job.
+       Headers: "Est GP", "Estimated GP", "Gross Profit", "Est Gross Profit", "Projected GP"
+       Formula: Contract Price - Estimated Total Costs = Estimated Gross Profit
 
-    Return JSON:
+    4. revenues_earned — Revenue recognized based on percent complete.
+       Headers: "Earned Revenue", "Revenue Earned", "Revenues Earned", "Earned Rev",
+                "Income Earned", "Billings Earned"
+       Formula: Contract Price × (Cost to Date ÷ Estimated Total Costs)
+
+    5. cost_to_date — Actual costs incurred on the job so far.
+       Headers: "Cost to Date", "Costs to Date", "Costs Incurred", "Actual Cost", "Cost Incurred to Date",
+                "Total Cost to Date"
+       This is a cumulative running total. For active jobs it is typically LESS than Estimated Total Costs.
+
+    6. gross_profit_to_date — Actual gross profit earned so far.
+       Headers: "GP to Date", "Gross Profit to Date", "GP Earned", "Profit to Date"
+       Formula: Revenues Earned - Cost to Date
+
+    7. billed_to_date — Total amount invoiced to the owner.
+       Headers: "Billed to Date", "Billings to Date", "Total Billed", "Progress Billings", "Amount Billed"
+
+    8. cost_to_complete — Remaining costs needed to finish the job.
+       Headers: "Cost to Complete", "CTC", "Est Cost to Complete", "Remaining Cost", "Costs to Complete"
+       Formula: Estimated Total Costs - Cost to Date
+       For completed jobs this should be 0 or near 0.
+
+    9. under_billings — Amount earned but not yet billed (asset).
+       Only populated when Revenues Earned > Billed to Date.
+       Headers: "Under Billings", "Underbillings", "CIE", "Costs in Excess", "Unbilled Revenue"
+
+    10. over_billings — Amount billed in excess of earnings (liability).
+        Only populated when Billed to Date > Revenues Earned.
+        Headers: "Over Billings", "Overbillings", "BIE", "Billings in Excess", "Deferred Revenue"
+
+    MULTI-PAGE DOCUMENTS:
+    If the schedule spans multiple pages, continue extracting all job rows. Ignore subtotal rows mid-document (page subtotals, division subtotals). Only treat the final "TOTALS" or "GRAND TOTAL" row at the very end as the totals object.
+
+    PRE-OUTPUT VERIFICATION:
+    Before returning, check every row satisfies:
+      (a) Cost to Date + Cost to Complete ≈ Estimated Total Costs
+      (b) Contract Price - Estimated Total Costs ≈ Estimated Gross Profit
+    If a row fails both checks, re-examine the source document — you likely mapped a column incorrectly.
+
+    RULES:
+    - Values in parentheses like (100) are negative: -100
+    - Missing or blank fields are 0
+    - All values are plain numbers, no currency symbols or commas
+    - Job IDs may be numeric or alphanumeric — extract exactly as shown
+
+    Return this exact JSON structure:
     {
         "rows": [
             {
@@ -1151,13 +1189,17 @@ def extractor_node(state: WipState):
         ],
         "totals": {
             "total_contract_price": number,
-            ... (same fields as rows)
+            "estimated_total_costs": number,
+            "estimated_gross_profit": number,
+            "revenues_earned": number,
+            "cost_to_date": number,
+            "gross_profit_to_date": number,
+            "billed_to_date": number,
+            "cost_to_complete": number,
+            "under_billings": number,
+            "over_billings": number
         }
     }
-    RULES:
-    - (100) in parens is negative -100.
-    - Empty fields are 0.
-    - Double-check Cost to Date vs Cost to Complete - they are different columns!
     """
 
     raw_text = ""
@@ -1168,7 +1210,7 @@ def extractor_node(state: WipState):
             pdf_bytes=file_bytes,
             response_mime_type="application/json",
             tracker=tracker,
-            system_prompt="You are a financial document extraction engine specialized in construction Work-In-Progress schedules. Extract structured data and return it as a single JSON object. CRITICAL: Return ONLY the raw JSON object. No markdown code fences. No explanatory text before or after. No commentary.",
+            system_prompt="You are a precise financial data extraction engine. Your sole function is to extract structured data from construction Work-In-Progress (WIP) schedules and return it as valid JSON. You have deep knowledge of construction accounting: job costing, percent complete billing, earned value, and the algebraic relationships between WIP columns. You never infer, estimate, or fabricate values — you extract only what is explicitly present in the document. Return ONLY the raw JSON object with no markdown, no commentary, no preamble.",
         )
         raw_text = response.text or ""
         _diag("llm_call", "OK", f"{len(raw_text)} chars returned")
