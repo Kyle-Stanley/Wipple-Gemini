@@ -624,6 +624,8 @@
         .fvt-wrap.fvt-maximized .fvt-scroll { flex: 1; max-height: none !important; border-radius: 0 0 8px 8px; }
         .fvt-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); }
         .fvt-count { font-size: 11px; color: var(--text-muted); }
+        .btn-retry { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--accent); color: var(--accent); background: transparent; cursor: pointer; transition: all 0.15s; }
+        .btn-retry:hover { background: var(--accent); color: var(--bg); }
         .fvt-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
         .fvt-table { width: 100%; border-collapse: collapse; font-size: 11px; }
         .fvt-th { background: var(--surface-alt); padding: 6px 8px; color: var(--text-muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.3px; position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -1119,6 +1121,7 @@
 const API_ENDPOINT = "https://api.wipple.ai/analyze-stream";
 
 const MODELS = [
+    { key: "optimal-mix",           label: "✦ Optimal Mix",          desc: "Flash-Lite → Pro fallback" },
     { key: "gemini-3.1-pro",        label: "Gemini 3.1 Pro",        desc: "Most capable" },
     { key: "gemini-3-flash",         label: "Gemini 3 Flash",         desc: "Fast & cost-effective" },
     { key: "gemini-3.1-flash-lite",  label: "Gemini 3.1 Flash-Lite",  desc: "Fastest & cheapest" },
@@ -1132,6 +1135,7 @@ MODELS.forEach(m => MODEL_NAMES[m.key] = m.label);
 
 let state = {
     theme: 'dark',
+    retryFeedback: null,
     mode: 'single',
     stage: 'upload',
     file: null,
@@ -1461,6 +1465,7 @@ function handleSingleMode() {
     const formData = new FormData();
     formData.append('file', state.file);
     formData.append('model', state.modelA);
+    if (state.retryFeedback) formData.append('feedback', state.retryFeedback);
 
     streamSSE(API_ENDPOINT, formData, {
         onStatus: (msg) => { showLoading(container, msg); },
@@ -1785,17 +1790,30 @@ function renderValidationHtml(vals, tableRows) {
         const issueMap = {};
         (jobIssues || []).forEach(j => { issueMap[j.jobId] = j; });
 
-        // Collect all implicated root_cause_fields across all errors for a job
+        // Collect implicated root_cause_fields for a job.
+        // Use errors[].root_cause_field as the authoritative source — the backend
+        // already deduped same-value fields. Only fall back to corrections if no
+        // error-level root cause is present (e.g. column swap suggestions).
         function getRedFields(jobId) {
             const issue = issueMap[jobId];
             if (!issue) return new Set();
             const fields = new Set();
+
+            // Primary: error-level root causes (backend-resolved, deduped)
             (issue.errors || []).forEach(e => {
-                if (e.root_cause_field) fields.add(e.root_cause_field);
+                if (e.root_cause_field && !e.is_cascade) fields.add(e.root_cause_field);
             });
-            (issue.corrections || []).forEach(c => {
-                if (c.field && !c.field.includes('↔')) fields.add(c.field);
-            });
+
+            // Secondary: only add correction fields if they aren't shadowed by an
+            // existing root cause with the same value
+            if (fields.size === 0) {
+                (issue.corrections || []).forEach(c => {
+                    if (c.field && !c.field.includes('↔') && c.confidence !== 'flag') {
+                        fields.add(c.field);
+                    }
+                });
+            }
+
             return fields;
         }
 
@@ -1859,10 +1877,14 @@ function renderValidationHtml(vals, tableRows) {
 
         const errorCount = Object.keys(issueMap).length;
 
+        const hasRetry = !!(state && state.retryFeedback);
         return `<div class="fvt-wrap" id="fvt-wrap-${tableId}">
             <div class="fvt-toolbar">
                 <span class="fvt-count">${errorCount} job${errorCount !== 1 ? 's' : ''} with issues</span>
                 <div style="display:flex;align-items:center;gap:8px;">
+                    ${hasRetry ? `<button onclick="retryWithFeedback()" class="btn-retry" title="Re-run extraction with column error feedback">
+                        ↺ Retry with Feedback
+                    </button>` : ''}
                     <div class="seg-control">
                         <button class="seg-btn active" id="${tableId}-all" onclick="fvtFilter('${tableId}', false)">All Jobs</button>
                         <button class="seg-btn" id="${tableId}-err" onclick="fvtFilter('${tableId}', true)">Errors Only</button>
@@ -1892,6 +1914,14 @@ function renderValidationHtml(vals, tableRows) {
         const hidden = row.style.display === 'none';
         row.style.display = hidden ? '' : 'none';
         if (ico) ico.style.transform = hidden ? 'rotate(90deg)' : '';
+    };
+
+    window.retryWithFeedback = () => {
+        if (!state.file || !state.retryFeedback) return;
+        // Reset result area and re-run with feedback attached
+        $('results').innerHTML = '';
+        $('result-area').style.display = 'none';
+        handleAnalyze();
     };
 
     window.fvtMaximize = (tableId) => {
@@ -2154,6 +2184,7 @@ function handleWipResult(payload, valContainer, dashContainer) {
     // 1. Validation widget in validation container
     if (wd.validations) {
         valContainer.innerHTML = '';
+        state.retryFeedback = wd?.validations?.formulaic?.retryFeedback || null;
         appendHtml(valContainer, renderValidationHtml(wd.validations, data.clean_table));
     }
 
@@ -2407,7 +2438,7 @@ function renderMetricsFooterHtml(metrics) {
         <div class="metrics-footer">
             <div>
                 <div class="metrics-model-label">Analyzed with</div>
-                <div class="metrics-model-name">${metrics.model_display_name || metrics.model_name}</div>
+                <div class="metrics-model-name">${metrics.model_display_name || metrics.model_name}${data.actual_model && data.actual_model !== metrics.model_name ? ` <span style="font-size:10px;color:var(--text-muted);font-weight:400;">via ${data.actual_model}</span>` : ''}</div>
             </div>
             <div class="metrics-stats">
                 <div class="metrics-stat"><div class="metrics-stat-value">${timeStr}</div><div class="metrics-stat-label">Time</div></div>
