@@ -604,14 +604,12 @@
         .job-issue-flat { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 14px; }
         .job-issue-flat:last-child { border-bottom: none; }
         .job-issue-header { display: flex; align-items: center; padding: 4px 0; margin-bottom: 8px; }
-        .column-error-card { padding: 14px 16px; }
-        .column-error-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-        .column-error-icon { font-size: 15px; color: var(--accent); }
-        .column-error-title { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }
-        .column-error-field { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
-        .column-error-field strong { color: var(--accent); }
-        .column-error-stats { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
-        .column-error-stats strong { color: var(--text); }
+        .column-error-list { padding: 4px 0; }
+        .column-error-row { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+        .column-error-row:last-child { border-bottom: none; }
+        .column-error-icon { font-size: 12px; color: var(--risk-med); flex-shrink: 0; }
+        .column-error-field-name { font-size: 12px; font-weight: 600; color: var(--text); min-width: 160px; }
+        .column-error-detail { font-size: 11px; color: var(--text-muted); flex: 1; }
         .job-issue-id { font-weight: 700; color: var(--text); font-size: 0.9rem; min-width: 90px; }
         .job-issue-summary { color: var(--text-secondary); font-size: 0.8rem; flex: 1; }
         .error-line { color: var(--risk-high); font-size: 0.8rem; padding: 4px 0 4px 12px; }
@@ -1699,24 +1697,17 @@ function renderValidationHtml(vals) {
     const genId = () => 'v-' + Math.random().toString(36).substr(2, 8);
 
     function renderColumnErrors(columnErrors) {
-        return columnErrors.map(ce => {
+        return `<div class="column-error-list">${columnErrors.map(ce => {
             const field = ce.field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-            const pct = Math.round(ce.resolution_rate * 100);
-            return `
-                <div class="column-error-card">
-                    <div class="column-error-header">
-                        <span class="column-error-icon">⚠</span>
-                        <span class="column-error-title">Column Extraction Error Detected</span>
-                        <span class="confidence-badge confidence-high">Auto-Corrected</span>
-                    </div>
-                    <div class="column-error-field">Field: <strong>${field}</strong></div>
-                    <div class="column-error-stats">
-                        Resolved <strong>${ce.errors_resolved}</strong> of <strong>${ce.total_errors}</strong> validation errors
-                        (${pct}%) across <strong>${ce.rows_corrected}</strong> rows.
-                        The extracted value was replaced with the algebraically correct value derived from surrounding columns.
-                    </div>
-                </div>`;
-        }).join('');
+            const rowsResolved = ce.rows_resolved || ce.rows_corrected;
+            const totalRows = ce.total_rows || ce.rows_corrected;
+            return `<div class="column-error-row">
+                <span class="column-error-icon">⚠</span>
+                <span class="column-error-field-name">${field}</span>
+                <span class="column-error-detail">corrected &middot; ${rowsResolved}/${totalRows} rows resolved</span>
+                <span class="confidence-badge confidence-high">Auto-Corrected</span>
+            </div>`;
+        }).join('')}</div>`;
     }
 
     function renderJobIssues(jobIssues) {
