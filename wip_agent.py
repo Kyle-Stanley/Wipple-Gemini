@@ -445,7 +445,9 @@ def resolve_root_causes(
 ) -> Dict[str, Any]:
     """
     For a single row with N failing validations, simulate substituting each candidate
-    field value and measure how many failures resolve. Returns root cause tags per validation.
+    field value and measure how many failures resolve. Uses exclusive validation failure
+    counting to disambiguate tied fields (e.g. Est Cost == CTD) without name heuristics.
+    Returns root cause tags per validation.
     """
     if not errors:
         return {"by_validation": {}, "root_causes": []}
@@ -484,25 +486,49 @@ def resolve_root_causes(
     max_resolutions = max(resolution_counts.values())
     root_fields = {f for f, c in resolution_counts.items() if c == max_resolutions and c > 0}
 
-    # Tie-break: when multiple fields resolve equally, prefer estimated/projected fields
-    # over actuals. E.g. if Est Cost == CTD (model grabbed same column for both),
-    # estimated_total_costs is the more likely extraction error than cost_to_date.
-    _field_priority = [
-        "estimated_total_costs", "estimated_gross_profit", "total_contract_price",
-        "revenues_earned", "gross_profit_to_date", "cost_to_complete",
-        "billed_to_date", "cost_to_date",
-    ]
+    # Tie-break using exclusive validation failures.
+    # When multiple fields resolve the same number of failures (e.g. Est Cost == CTD),
+    # count how many FAILING validations each tied field appears in EXCLUSIVELY —
+    # i.e. the other tied fields are NOT in that validation's fields_involved list.
+    # The field with more exclusive failures is the actual bad column.
+    # This uses the algebraic structure of the validation system itself rather than
+    # any name-based heuristic, so it works regardless of which values happen to be equal.
     if len(root_fields) > 1:
-        for preferred in _field_priority:
-            if preferred in root_fields:
-                root_fields = {preferred}
-                break
+        failing_validation_names = {e["validation"] for e in errors}
+        exclusive_failure_counts: Dict[str, int] = {f: 0 for f in root_fields}
+
+        for v in validations:
+            if v.name not in failing_validation_names:
+                continue
+            tied_fields_in_v = [f for f in root_fields if f in v.fields_involved]
+            if len(tied_fields_in_v) == 1:
+                # This validation is exclusive to one of the tied fields
+                exclusive_failure_counts[tied_fields_in_v[0]] += 1
+
+        max_exclusive = max(exclusive_failure_counts.values())
+        if max_exclusive > 0:
+            # At least one field has exclusive failures — keep only those
+            root_fields = {f for f, c in exclusive_failure_counts.items() if c == max_exclusive}
+        # If all tied fields have 0 exclusive failures (every failing validation
+        # involves all of them), we cannot disambiguate algebraically.
+        # In that case, keep all root_fields — the frontend will show them all as suspect.
+
+    # Build shadowed set: fields sharing the exact same extracted value as a confirmed
+    # root field are the same bad column read twice — suppress them from per-validation tags.
+    confirmed_root_values = {getattr(row, f, None) for f in root_fields}
+    shadowed_fields: set = set()
+    for field in list(resolution_counts.keys()):
+        if field in root_fields:
+            continue
+        if getattr(row, field, None) in confirmed_root_values:
+            shadowed_fields.add(field)
 
     by_validation: Dict[str, Dict] = {}
     for error in errors:
         vname = error["validation"]
         v_candidates = _get_candidates_for_validation(row, vname)
-        root_candidate = next((c for c in v_candidates if c["field"] in root_fields), None)
+        eligible = [c for c in v_candidates if c["field"] not in shadowed_fields]
+        root_candidate = next((c for c in eligible if c["field"] in root_fields), None)
         if root_candidate:
             field = root_candidate["field"]
             by_validation[vname] = {
@@ -512,7 +538,11 @@ def resolve_root_causes(
                 "resolutions": resolution_counts[field],
             }
         else:
-            best_field = max(resolution_counts, key=resolution_counts.get)
+            best_field = max(
+                (f for f in resolution_counts if f not in shadowed_fields),
+                key=resolution_counts.get,
+                default=max(resolution_counts, key=resolution_counts.get),
+            )
             by_validation[vname] = {
                 "is_cascade": True,
                 "root_cause_field": best_field,
