@@ -1545,7 +1545,13 @@ def analyst_node(state: WipState):
             job_id = e["job_id"]
             jobs_with_issues.setdefault(job_id, {"errors": [], "corrections": []})
             jobs_with_issues[job_id]["errors"].append(
-                {"validation": e["validation"], "message": e["message"], "category": e["category"]}
+                {
+                    "validation": e["validation"],
+                    "message": e["message"],
+                    "category": e["category"],
+                    "root_cause_field": e.get("root_cause_field"),
+                    "is_cascade": e.get("is_cascade", False),
+                }
             )
 
         for s in all_correction_suggestions:
