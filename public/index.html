@@ -1062,11 +1062,12 @@
 const API_ENDPOINT = "https://api.wipple.ai/analyze-stream";
 
 const MODELS = [
-    { key: "gemini-3-pro", label: "Gemini 3 Pro", desc: "Fast, cost-effective" },
-    { key: "gemini-3-flash", label: "Gemini 3 Flash", desc: "Ultra fast" },
-    { key: "claude-sonnet-4-5", label: "Claude Sonnet 4.5", desc: "Balanced performance" },
+    { key: "gemini-3.1-pro", label: "Gemini 3.1 Pro", desc: "Most capable" },
+    { key: "gemini-3-flash", label: "Gemini 3 Flash", desc: "Fast & cost-effective" },
+    { key: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", desc: "Fastest & cheapest" },
+    { key: "claude-opus-4-6", label: "Claude Opus 4.6", desc: "Highest accuracy" },
+    { key: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", desc: "Balanced performance" },
     { key: "claude-haiku-4-5", label: "Claude Haiku 4.5", desc: "Lightweight" },
-    { key: "claude-opus-4-5", label: "Claude Opus 4.5", desc: "Highest accuracy" },
 ];
 
 const MODEL_NAMES = {};
@@ -1077,8 +1078,8 @@ let state = {
     mode: 'single',
     stage: 'upload',
     file: null,
-    modelA: 'gemini-3-pro',
-    modelB: 'claude-sonnet-4-5',
+    modelA: 'gemini-3.1-pro',
+    modelB: 'claude-sonnet-4-6',
     isProcessing: false,
     validationDone: false,
     dashboardReady: false,
