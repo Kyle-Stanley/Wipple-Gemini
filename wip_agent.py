@@ -1104,6 +1104,13 @@ def extractor_node(state: WipState):
     prompt = """
     Extract all job rows and the TOTALS row from this WIP schedule.
 
+    BEFORE EXTRACTING ANY ROWS:
+    1. Scan the entire header row(s) and number every column left to right (1, 2, 3...)
+    2. Column headers may span multiple lines — treat wrapped text as a single header
+    3. Explicitly assign each column number to one of the 10 field names below
+    4. Only after the full column map is established, extract every row using those fixed positions
+    5. Apply the exact same column mapping to row 1 as to every other row
+
     TYPICAL COLUMN ORDER (left to right):
     Job ID → Job Name → Contract Price → Estimated Total Costs → Estimated Gross Profit → Revenues Earned → Cost to Date → Gross Profit to Date → Billed to Date → Cost to Complete → Under Billings → Over Billings
 
@@ -1118,7 +1125,8 @@ def extractor_node(state: WipState):
        Headers: "Estimated Cost", "Est Total Cost", "Total Est Cost", "Revised Est Cost",
                 "Total Projected Costs", "Total Projected Cost", "Projected Total Cost"
        Formula: Cost to Date + Cost to Complete = Estimated Total Costs
-       !! DO NOT confuse with "Total Cost to Date" or "Costs Incurred to Date" — those are cost_to_date.
+       !! DO NOT use "Total Cost to Date", "Costs to Date", or "Costs Incurred to Date" — those are cost_to_date.
+       !! DO NOT use any column that contains a running actual spend figure — estimated_total_costs is always a BUDGET, not an actual.
 
     3. estimated_gross_profit — Projected profit margin on the job.
        Headers: "Est GP", "Estimated GP", "Gross Profit", "Est Gross Profit", "Projected GP"
@@ -1133,6 +1141,10 @@ def extractor_node(state: WipState):
        Headers: "Cost to Date", "Costs to Date", "Costs Incurred", "Actual Cost", "Cost Incurred to Date",
                 "Total Cost to Date"
        This is a cumulative running total. For active jobs it is typically LESS than Estimated Total Costs.
+       SPLIT COST COLUMNS: Some documents break costs into sub-periods, e.g.:
+         "Prior Period Costs" | "Current Year Costs" | "Total Cost to Date"
+       In this case, ignore the sub-period columns entirely. Map ONLY the "Total Cost to Date" column to cost_to_date.
+       The sub-period columns are breakdowns of cost_to_date, not separate fields.
 
     6. gross_profit_to_date — Actual gross profit earned so far.
        Headers: "GP to Date", "Gross Profit to Date", "GP Earned", "Profit to Date"
