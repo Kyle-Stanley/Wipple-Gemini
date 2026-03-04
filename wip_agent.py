@@ -607,8 +607,11 @@ def detect_portfolio_column_errors(
         job_error_count = len([e for e in rc.get("by_validation", {}).values()])
         for cause in rc.get("root_causes", []):
             field = cause["field"]
-            # A row is "resolved" by this field if it fixes ALL of that row's errors
-            if cause["resolutions"] >= job_error_count and job_error_count > 0:
+            # A row is "resolved" by this field if it fixes the majority (>50%) of
+            # that row's errors. Using majority rather than all-or-nothing because
+            # some rows may have independent secondary errors (e.g. GP% bounds)
+            # that wouldn't resolve even if the column misread is fixed.
+            if job_error_count > 0 and cause["resolutions"] / job_error_count >= 0.5:
                 field_rows_resolved.setdefault(field, set()).add(job_id)
             field_values.setdefault(field, {})[job_id] = cause["suggested_value"]
 
@@ -1508,8 +1511,10 @@ def analyst_node(state: WipState):
                 suggestions = suggest_corrections(r, row_errors)
                 all_correction_suggestions.extend(suggestions)
 
-        # Portfolio-level column error detection — must run before column swaps
-        # so corrections are applied before the swap check re-reads row values
+        # Portfolio-level column error detection runs on pre-correction data.
+        # We intentionally do NOT auto-correct here — column errors are flagged
+        # for retry instead. Detection must happen before apply_corrections so
+        # the row values and error counts are still in their original extracted state.
         portfolio_column_errors = detect_portfolio_column_errors(
             rows, all_root_cause_results, len(pre_correction_errors), validations
         )
@@ -1530,6 +1535,21 @@ def analyst_node(state: WipState):
         for r in rows:
             row_errors = run_validations(r, validations)
             post_correction_errors.extend(row_errors)
+
+        # Re-attach root_cause_field tags to post-correction errors by matching
+        # job_id + validation name from the pre-correction tagging pass.
+        # post_correction_errors is a fresh list with no tags, but the root cause
+        # analysis (which runs on unmodified rows) is still valid.
+        _rc_tag_index: Dict[tuple, Dict] = {
+            (e["job_id"], e["validation"]): e
+            for e in pre_correction_errors
+            if e.get("root_cause_field")
+        }
+        for e in post_correction_errors:
+            pre = _rc_tag_index.get((e["job_id"], e["validation"]))
+            if pre:
+                e["root_cause_field"] = pre.get("root_cause_field")
+                e["is_cascade"] = pre.get("is_cascade", False)
 
         all_validation_errors = post_correction_errors
 
