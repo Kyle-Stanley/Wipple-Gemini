@@ -1,1913 +1,2518 @@
-# =====================
-# wip_agent.py (UPDATED)
-# =====================
-from __future__ import annotations
-
-import json
-import logging
-import traceback
-from typing import List, Dict, Any, Optional, Callable, Tuple
-from dataclasses import dataclass
-from pydantic import BaseModel, Field, computed_field
-from langgraph.graph import StateGraph, END
-
-# Model client abstraction
-from model_client import (
-    get_client,
-    MetricsTracker,
-    DEFAULT_MODEL,
-    parse_json_safely,
-)
-
-logger = logging.getLogger(__name__)
-
-# ==========================================
-# 2. DATA MODELS
-# ==========================================
-
-class FullWipRow(BaseModel):
-    job_id: str = Field(description="Job Number or ID")
-    job_name: Optional[str] = Field(default="", description="Job Name")
-    total_contract_price: float = Field(default=0.0)
-    estimated_total_costs: float = Field(default=0.0)
-    estimated_gross_profit: float = Field(default=0.0)
-    revenues_earned: float = Field(default=0.0)
-    cost_to_date: float = Field(default=0.0)
-    gross_profit_to_date: float = Field(default=0.0)
-    billed_to_date: float = Field(default=0.0)
-    cost_to_complete: float = Field(default=0.0)
-
-    # Extracted from document (as-is)
-    under_billings: float = Field(default=0.0)
-    over_billings: float = Field(default=0.0)
-
-    # Calculated from earned vs billed (populated in analyst_node)
-    under_billings_calc: float = Field(default=0.0, description="Calculated UB from revenues_earned - billed_to_date")
-    over_billings_calc: float = Field(default=0.0, description="Calculated OB from billed_to_date - revenues_earned")
-
-
-class WipTotals(BaseModel):
-    total_contract_price: float = 0.0
-    estimated_total_costs: float = 0.0
-    estimated_gross_profit: float = 0.0
-    revenues_earned: float = 0.0
-    cost_to_date: float = 0.0
-    gross_profit_to_date: float = 0.0
-    billed_to_date: float = 0.0
-    cost_to_complete: float = 0.0
-    under_billings: float = 0.0
-    over_billings: float = 0.0
-    uegp: float = 0.0
-
-
-class CalculatedWipRow(FullWipRow):
-    @computed_field
-    @property
-    def percent_complete(self) -> float:
-        if self.estimated_total_costs and self.estimated_total_costs > 0:
-            val = self.cost_to_date / self.estimated_total_costs
-            return min(val, 1.0)
-        return 0.0
-
-    @computed_field
-    @property
-    def uegp(self) -> float:
-        return self.estimated_gross_profit - self.gross_profit_to_date
-
-    @computed_field
-    @property
-    def billing_variance(self) -> float:
-        return self.revenues_earned - self.billed_to_date
-
-    @computed_field
-    @property
-    def ub_ob_discrepancy_abs(self) -> float:
-        """How far the extracted UB/OB differs from the computed UB/OB."""
-        return abs(self.under_billings - self.under_billings_calc) + abs(self.over_billings - self.over_billings_calc)
-
-
-class WipState(BaseModel):
-    file_path: str
-    model_name: str = DEFAULT_MODEL
-
-    # Metrics tracker stored as dict for Pydantic serialization
-    metrics_data: Dict[str, Any] = Field(default_factory=dict)
-
-    processed_data: List[CalculatedWipRow] = Field(default_factory=list)
-    totals_row: Optional[WipTotals] = None
-    calculated_totals: Optional[WipTotals] = None
-
-    validation_errors: List[Dict[str, Any]] = Field(default_factory=list)
-    correction_suggestions: List[Dict[str, Any]] = Field(default_factory=list)
-    correction_log: List[Dict[str, Any]] = Field(default_factory=list)
-    extraction_diagnostics: Dict[str, Any] = Field(default_factory=dict)
-    surety_risk_context: Dict[str, Any] = Field(default_factory=dict)
-    risk_rows: List[Dict[str, Any]] = Field(default_factory=list)
-    widget_data: Dict[str, Any] = Field(default_factory=dict)
-
-    narrative: str = ""
-    final_json: Dict[str, Any] = Field(default_factory=dict)
-
-# ==========================================
-# 3. VALIDATION REGISTRY
-# ==========================================
-
-@dataclass
-class Validation:
-    name: str
-    requires: List[str]
-    check: Callable[[CalculatedWipRow], Optional[str]]
-    tolerance_type: str  # "absolute" or "percentage" (kept for future framework refactor)
-    tolerance_value: float
-    category: str  # "core_math", "billing", "profitability", "completion"
-    fields_involved: List[str]  # Fields that could be the source of error
-
-
-def _check_billing_position(r: CalculatedWipRow) -> Optional[str]:
-    """Validates that extracted UB/OB values match the earned revenue vs billed calculation."""
-    variance = r.revenues_earned - r.billed_to_date
-
-    if variance > 0:
-        expected_ub, expected_ob = variance, 0.0
-    else:
-        expected_ub, expected_ob = 0.0, abs(variance)
-
-    ub_diff = abs(r.under_billings - expected_ub)
-    ob_diff = abs(r.over_billings - expected_ob)
-
-    if ub_diff > 100 or ob_diff > 100:
-        return f"UB/OB doesn't match variance (expected UB ${expected_ub:,.0f}, OB ${expected_ob:,.0f})"
-    return None
-
-
-def build_validations() -> List[Validation]:
-    return [
-        Validation(
-            name="contract_cost_gp",
-            requires=["total_contract_price", "estimated_total_costs", "estimated_gross_profit"],
-            check=lambda r: (
-                f"Contract - Est Cost != Est GP (diff ${abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit):,.0f})"
-                if abs((r.total_contract_price - r.estimated_total_costs) - r.estimated_gross_profit) > 100
-                else None
-            ),
-            tolerance_type="absolute",
-            tolerance_value=100,
-            category="core_math",
-            fields_involved=["total_contract_price", "estimated_total_costs", "estimated_gross_profit"],
-        ),
-        Validation(
-            name="cost_to_complete_check",
-            requires=["estimated_total_costs", "cost_to_date", "cost_to_complete"],
-            check=lambda r: (
-                f"Est Cost - Cost to Date != CTC (diff ${abs((r.estimated_total_costs - r.cost_to_date) - r.cost_to_complete):,.0f})"
-                if abs((r.estimated_total_costs - r.cost_to_date) - r.cost_to_complete) > 100
-                else None
-            ),
-            tolerance_type="absolute",
-            tolerance_value=100,
-            category="core_math",
-            fields_involved=["estimated_total_costs", "cost_to_date", "cost_to_complete"],
-        ),
-        Validation(
-            name="earned_revenue_from_gp",
-            requires=["revenues_earned", "cost_to_date", "gross_profit_to_date"],
-            check=lambda r: (
-                f"Cost + GP to Date != Earned Rev (diff ${abs(r.revenues_earned - (r.cost_to_date + r.gross_profit_to_date)):,.0f})"
-                if abs(r.revenues_earned - (r.cost_to_date + r.gross_profit_to_date)) > 100
-                else None
-            ),
-            tolerance_type="absolute",
-            tolerance_value=100,
-            category="core_math",
-            fields_involved=["revenues_earned", "cost_to_date", "gross_profit_to_date"],
-        ),
-        Validation(
-            name="remaining_gp_check",
-            requires=["estimated_gross_profit", "gross_profit_to_date"],
-            check=lambda r: (
-                "UEGP calculation mismatch"
-                if r.estimated_gross_profit > 0 and r.gross_profit_to_date > r.estimated_gross_profit * 1.05
-                else None
-            ),
-            tolerance_type="percentage",
-            tolerance_value=0.05,
-            category="core_math",
-            fields_involved=["estimated_gross_profit", "gross_profit_to_date"],
-        ),
-        Validation(
-            name="earned_revenue_from_poc",
-            requires=["revenues_earned", "total_contract_price", "cost_to_date", "estimated_total_costs"],
-            check=lambda r: (
-                f"Earned Rev != Contract x POC (diff ${abs(r.revenues_earned - (r.total_contract_price * (r.cost_to_date / r.estimated_total_costs if r.estimated_total_costs else 0))):,.0f})"
-                if r.estimated_total_costs
-                and abs(r.revenues_earned - (r.total_contract_price * (r.cost_to_date / r.estimated_total_costs)))
-                > max(5000, r.total_contract_price * 0.02)
-                else None
-            ),
-            tolerance_type="percentage",
-            tolerance_value=0.02,
-            category="completion",
-            fields_involved=["revenues_earned", "total_contract_price", "cost_to_date", "estimated_total_costs"],
-        ),
-        Validation(
-            name="underbilling_overbilling",
-            requires=["revenues_earned", "billed_to_date", "under_billings", "over_billings"],
-            check=_check_billing_position,
-            tolerance_type="absolute",
-            tolerance_value=100,
-            category="billing",
-            fields_involved=["revenues_earned", "billed_to_date", "under_billings", "over_billings"],
-        ),
-        Validation(
-            name="gp_percentage_bounds",
-            requires=["estimated_gross_profit", "total_contract_price"],
-            check=lambda r: (
-                f"Unusually high GP% ({(r.estimated_gross_profit / r.total_contract_price * 100):.1f}%)"
-                if r.total_contract_price > 0 and r.estimated_gross_profit / r.total_contract_price > 0.50
-                else None
-            ),
-            tolerance_type="percentage",
-            tolerance_value=0.50,
-            category="profitability",
-            fields_involved=["estimated_gross_profit", "total_contract_price"],
-        ),
-    ]
-
-
-def run_validations(row: CalculatedWipRow, validations: List[Validation]) -> List[Dict[str, Any]]:
-    """Run all applicable validations for a row."""
-    errors: List[Dict[str, Any]] = []
-    row_dict = row.model_dump()
-
-    for v in validations:
-        required_present = all(row_dict.get(field) is not None for field in v.requires)
-        has_nonzero = any(row_dict.get(field, 0) != 0 for field in v.requires)
-
-        if not required_present or not has_nonzero:
-            continue
-
-        error_msg = v.check(row)
-        if error_msg:
-            errors.append(
-                {
-                    "job_id": row.job_id,
-                    "validation": v.name,
-                    "category": v.category,
-                    "message": error_msg,
-                    "fields_involved": v.fields_involved,
-                }
-            )
-
-    return errors
-
-# ==========================================
-# 4. CORRECTION SUGGESTIONS (unchanged)
-# ==========================================
-
-def digit_change_score(current: float, target: float) -> int:
-    """
-    Score how many digit-level changes separate two numbers.
-    Lower = more likely a single OCR/extraction misread.
-    """
-    if current == 0 and target == 0:
-        return 0
-    if current == 0 or target == 0:
-        return 100
-
-    curr_str = str(int(abs(current)))
-    targ_str = str(int(abs(target)))
-
-    sign_penalty = 50 if (current < 0) != (target < 0) else 0
-
-    len_diff = abs(len(curr_str) - len(targ_str))
-
-    # Dropped/added single digit (including trailing zeros)
-    if len_diff == 1:
-        longer = curr_str if len(curr_str) > len(targ_str) else targ_str
-        shorter = targ_str if len(curr_str) > len(targ_str) else curr_str
-        for i in range(len(longer)):
-            if longer[:i] + longer[i + 1:] == shorter:
-                return 1 + sign_penalty  # Single digit drop/insert
-        # No single removal works — fall through to padded comparison
-
-    if len_diff > 1:
-        return 30 + len_diff * 10 + sign_penalty
-
-    # Same length (or len_diff==1 where no single removal matched): pad and count
-    max_len = max(len(curr_str), len(targ_str))
-    curr_padded = curr_str.zfill(max_len)
-    targ_padded = targ_str.zfill(max_len)
-
-    digit_diffs = sum(1 for a, b in zip(curr_padded, targ_padded) if a != b)
-
-    return digit_diffs + sign_penalty
-
-def find_best_fix(candidates: List[Dict]) -> Optional[Dict]:
-    if not candidates:
-        return None
-
-    scored = []
-    for c in candidates:
-        score = digit_change_score(c["current"], c["suggested"])
-        scored.append((score, c))
-
-    scored.sort(key=lambda x: x[0])
-    best_score, best = scored[0]
-
-    best["digit_changes"] = best_score
-    best["confidence"] = "high" if best_score <= 2 else "medium" if best_score <= 4 else "low"
-    return best
-
-
-def _get_candidates_for_validation(row: CalculatedWipRow, validation_name: str) -> List[Dict]:
-    """Generate algebraic fix candidates for a given validation failure."""
-    candidates = []
-
-    if validation_name == "contract_cost_gp":
-        expected_gp = row.total_contract_price - row.estimated_total_costs
-        expected_cost = row.total_contract_price - row.estimated_gross_profit
-        expected_contract = row.estimated_total_costs + row.estimated_gross_profit
-        candidates = [
-            {"field": "estimated_gross_profit", "current": row.estimated_gross_profit, "suggested": expected_gp, "formula": "Contract - Est Cost = Est GP"},
-            {"field": "estimated_total_costs", "current": row.estimated_total_costs, "suggested": expected_cost, "formula": "Contract - Est Cost = Est GP"},
-            {"field": "total_contract_price", "current": row.total_contract_price, "suggested": expected_contract, "formula": "Contract - Est Cost = Est GP"},
-        ]
-
-    elif validation_name == "cost_to_complete_check":
-        expected_ctc = row.estimated_total_costs - row.cost_to_date
-        expected_cost = row.cost_to_complete + row.cost_to_date
-        expected_ctd = row.estimated_total_costs - row.cost_to_complete
-        candidates = [
-            {"field": "cost_to_complete", "current": row.cost_to_complete, "suggested": expected_ctc, "formula": "Est Cost - Cost to Date = CTC"},
-            {"field": "estimated_total_costs", "current": row.estimated_total_costs, "suggested": expected_cost, "formula": "Est Cost - Cost to Date = CTC"},
-            {"field": "cost_to_date", "current": row.cost_to_date, "suggested": expected_ctd, "formula": "Est Cost - Cost to Date = CTC"},
-        ]
-
-    elif validation_name == "earned_revenue_from_gp":
-        expected_rev = row.cost_to_date + row.gross_profit_to_date
-        expected_gp_td = row.revenues_earned - row.cost_to_date
-        expected_ctd = row.revenues_earned - row.gross_profit_to_date
-        candidates = [
-            {"field": "revenues_earned", "current": row.revenues_earned, "suggested": expected_rev, "formula": "Cost to Date + GP to Date = Earned Rev"},
-            {"field": "gross_profit_to_date", "current": row.gross_profit_to_date, "suggested": expected_gp_td, "formula": "Cost to Date + GP to Date = Earned Rev"},
-            {"field": "cost_to_date", "current": row.cost_to_date, "suggested": expected_ctd, "formula": "Cost to Date + GP to Date = Earned Rev"},
-        ]
-
-    elif validation_name == "earned_revenue_from_poc":
-        if row.estimated_total_costs > 0:
-            poc = row.cost_to_date / row.estimated_total_costs
-            expected_rev = row.total_contract_price * poc
-            candidates = [{"field": "revenues_earned", "current": row.revenues_earned, "suggested": expected_rev, "formula": "Earned Rev = Contract x POC"}]
-
-    return candidates
-
-
-def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Generate correction suggestions ONLY for clear OCR/extraction errors."""
-    all_candidates: List[tuple] = []  # (validation_name, candidate_dict)
-    for error in errors:
-        candidates = _get_candidates_for_validation(row, error["validation"])
-        for c in candidates:
-            all_candidates.append((error["validation"], c))
-
-    field_validation_count: Dict[str, int] = {}
-    seen: Dict[str, set] = {}
-    for vname, c in all_candidates:
-        seen.setdefault(c["field"], set()).add(vname)
-    field_validation_count = {f: len(v) for f, v in seen.items()}
-
-    suggestions: List[Dict[str, Any]] = []
-
-    for error in errors:
-        candidates = _get_candidates_for_validation(row, error["validation"])
-        if not candidates:
-            continue
-
-        scored = []
-        for c in candidates:
-            base_score = digit_change_score(c["current"], c["suggested"])
-            cross_count = field_validation_count.get(c["field"], 1)
-            effective_score = max(0, base_score - (cross_count - 1))
-            scored.append((effective_score, base_score, c, cross_count))
-
-        scored.sort(key=lambda x: x[0])
-        effective, raw, best, cross_count = scored[0]
-
-        if raw <= 2:
-            confidence = "high" if effective <= 1 else "medium"
-            suggestions.append(
-                {
-                    "job_id": row.job_id,
-                    "field": best["field"],
-                    "current_value": best["current"],
-                    "suggested_value": best["suggested"],
-                    "confidence": confidence,
-                    "digit_changes": raw,
-                    "effective_score": effective,
-                    "cross_validation_count": cross_count,
-                    "reasoning": (
-                        f"Likely OCR misread: {best['field']} ${best['current']:,.0f} → ${best['suggested']:,.0f} "
-                        f"({raw} digit change"
-                        + (f", {cross_count} validations agree" if cross_count > 1 else "")
-                        + f") fixes: {best['formula']}"
-                    ),
-                }
-            )
-        else:
-            suggestions.append(
-                {
-                    "job_id": row.job_id,
-                    "field": best["field"],
-                    "current_value": best["current"],
-                    "suggested_value": None,
-                    "confidence": "flag",
-                    "digit_changes": raw,
-                    "effective_score": effective,
-                    "cross_validation_count": cross_count,
-                    "reasoning": (
-                        f"Validation failed on {best['formula']} but fix requires {raw} digit changes — "
-                        f"likely a column misread rather than OCR error. Manual review recommended."
-                    ),
-                }
-            )
-
-    return suggestions
-
-
-# ==========================================
-# 4b. ROOT CAUSE RESOLVER
-# ==========================================
-
-def resolve_root_causes(
-    row: CalculatedWipRow,
-    errors: List[Dict[str, Any]],
-    validations: List[Validation],
-) -> Dict[str, Any]:
-    """
-    For a single row with N failing validations, simulate substituting each candidate
-    field value and measure how many failures resolve. Returns root cause tags per validation.
-    """
-    if not errors:
-        return {"by_validation": {}, "root_causes": []}
-
-    failing_names = {e["validation"] for e in errors}
-
-    # Collect unique (field -> best_suggested_value) across all failing validations
-    all_candidates: Dict[str, float] = {}
-    candidate_sources: Dict[str, List[str]] = {}
-
-    for error in errors:
-        for c in _get_candidates_for_validation(row, error["validation"]):
-            field = c["field"]
-            suggested = c["suggested"]
-            if field not in all_candidates:
-                all_candidates[field] = suggested
-                candidate_sources[field] = [error["validation"]]
-            else:
-                existing_score = digit_change_score(getattr(row, field, 0), all_candidates[field])
-                new_score = digit_change_score(getattr(row, field, 0), suggested)
-                if new_score < existing_score:
-                    all_candidates[field] = suggested
-                candidate_sources[field].append(error["validation"])
-
-    # Simulate each substitution and count resolutions
-    resolution_counts: Dict[str, int] = {}
-    for field, suggested_value in all_candidates.items():
-        sim_row = row.model_copy()
-        setattr(sim_row, field, suggested_value)
-        sim_errors = {e["validation"] for e in run_validations(sim_row, validations)}
-        resolution_counts[field] = len(failing_names - sim_errors)
-
-    if not resolution_counts:
-        return {"by_validation": {}, "root_causes": []}
-
-    max_resolutions = max(resolution_counts.values())
-    root_fields = {f for f, c in resolution_counts.items() if c == max_resolutions and c > 0}
-
-    # Tie-break: when multiple fields resolve equally, prefer estimated/projected fields
-    # over actuals. E.g. if Est Cost == CTD (model grabbed same column for both),
-    # estimated_total_costs is the more likely extraction error than cost_to_date.
-    _field_priority = [
-        "estimated_total_costs", "estimated_gross_profit", "total_contract_price",
-        "revenues_earned", "gross_profit_to_date", "cost_to_complete",
-        "billed_to_date", "cost_to_date",
-    ]
-    if len(root_fields) > 1:
-        for preferred in _field_priority:
-            if preferred in root_fields:
-                root_fields = {preferred}
-                break
-
-    by_validation: Dict[str, Dict] = {}
-    for error in errors:
-        vname = error["validation"]
-        v_candidates = _get_candidates_for_validation(row, vname)
-        root_candidate = next((c for c in v_candidates if c["field"] in root_fields), None)
-        if root_candidate:
-            field = root_candidate["field"]
-            by_validation[vname] = {
-                "is_cascade": False,
-                "root_cause_field": field,
-                "root_cause_value": all_candidates[field],
-                "resolutions": resolution_counts[field],
-            }
-        else:
-            best_field = max(resolution_counts, key=resolution_counts.get)
-            by_validation[vname] = {
-                "is_cascade": True,
-                "root_cause_field": best_field,
-                "root_cause_value": all_candidates.get(best_field),
-                "resolutions": resolution_counts.get(best_field, 0),
-            }
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wipple</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js" onerror="console.error('Wipple: React CDN failed to load')"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" onerror="console.error('Wipple: ReactDOM CDN failed to load')"></script>
+    <script crossorigin src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js" onerror="console.error('Wipple: PropTypes CDN failed to load')"></script>
+    <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js" onerror="console.error('Wipple: Recharts CDN failed to load')"></script>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        /* ========================================
+           THEME VARIABLES
+           ======================================== */
+        :root {
+            --bg: #191919;
+            --surface: #242424;
+            --surface-alt: #2a2a2a;
+            --surface-hover: #2e2e2e;
+            --border: #343434;
+            --border-strong: #444;
+            --text: #e8e8e8;
+            --text-secondary: #909090;
+            --text-muted: #606060;
+            --accent: #4BA0D4;
+            --accent-soft: rgba(75,160,212,0.1);
+            --accent-border: rgba(75,160,212,0.25);
+            --risk-high: #E05252;
+            --risk-high-bg: rgba(224,82,82,0.1);
+            --risk-med: #D4A843;
+            --risk-med-bg: rgba(212,168,67,0.1);
+            --risk-low: #4BA87D;
+            --risk-low-bg: rgba(75,168,125,0.1);
+            --negative: #E05252;
+            --positive: #4BA87D;
+            --chart-bar1: #4BA0D4;
+            --chart-bar2: #7BC4A0;
+            --shadow: 0 1px 3px rgba(0,0,0,0.5);
+            --diff-highlight: rgba(212,168,67,0.12);
+            --match-bg: rgba(75,168,125,0.06);
+            --header-bg: #141414;
+        }
+
+        body.light {
+            --bg: #C8BDA8;
+            --surface: #D8CFBE;
+            --surface-alt: #CFC5B2;
+            --surface-hover: #C2B8A4;
+            --border: #B0A48E;
+            --border-strong: #9E927C;
+            --text: #2C2416;
+            --text-secondary: #5C5346;
+            --text-muted: #8A7F70;
+            --accent: #4A6B3A;
+            --accent-soft: rgba(74,107,58,0.1);
+            --accent-border: rgba(74,107,58,0.3);
+            --risk-high: #A63828;
+            --risk-high-bg: rgba(166,56,40,0.1);
+            --risk-med: #8C6A20;
+            --risk-med-bg: rgba(140,106,32,0.1);
+            --risk-low: #3D7248;
+            --risk-low-bg: rgba(61,114,72,0.1);
+            --negative: #A63828;
+            --positive: #3D7248;
+            --chart-bar1: #4A6B3A;
+            --chart-bar2: #7B9A6A;
+            --shadow: 0 1px 3px rgba(0,0,0,0.1);
+            --diff-highlight: rgba(140,106,32,0.1);
+            --match-bg: rgba(61,114,72,0.06);
+            --header-bg: #CFC5B2;
+        }
+
+        /* ========================================
+           BASE & LAYOUT
+           ======================================== */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            overflow-y: auto;
+            transition: background-color 0.35s, color 0.35s;
+        }
+
+        /* Modal Z-Index Fix: Removes transform constraints from parents when modal is open */
+        body.has-maximized .fade-slide {
+            transform: none !important;
+            animation: none !important;
+        }
+        body.has-maximized .widget-card:not(.maximized) {
+            z-index: 1;
+        }
+
+        /* SCROLLBAR */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        /* ANIMATIONS */
+        @keyframes fadeSlide {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes modalEnter {
+            0% { opacity: 0; transform: scale(0.96) translateY(10px); }
+            100% { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .fade-slide { animation: fadeSlide 0.35s ease forwards; }
+
+        /* Wipple Logo Loading Animation */
+        .wipple-loader-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            padding: 20px 0;
+        }
+        .wipple-loader-text { color: var(--text-secondary); font-size: 13px; }
+        .wipple-loader-subtext { color: var(--text-muted); font-size: 11.5px; margin-top: -8px; }
+        .wipple-loader {
+            position: relative; width: 44px; height: 26px;
+            display: inline-block; vertical-align: middle;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        .wipple-loader img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
+        .wipple-loader .logo-blue { animation: fadeBlue 3s ease-in-out infinite; }
+        .wipple-loader .logo-green { animation: fadeGreen 3s ease-in-out infinite; }
+        .wipple-loader .logo-red { animation: fadeRed 3s ease-in-out infinite; }
+        @keyframes fadeBlue { 0%, 100% { opacity: 1; } 33%, 66% { opacity: 0; } }
+        @keyframes fadeGreen { 0%, 100% { opacity: 0; } 33% { opacity: 1; } 66% { opacity: 0; } }
+        @keyframes fadeRed { 0%, 33% { opacity: 0; } 66% { opacity: 1; } 100% { opacity: 0; } }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(0.92); } }
+
+        /* ========================================
+           HEADER
+           ======================================== */
+        #app-header {
+            background: var(--header-bg);
+            border-bottom: 1px solid var(--border);
+            height: 54px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            position: sticky;
+            top: 0;
+            z-index: 30;
+            transition: background 0.35s, border-color 0.35s;
+        }
+        .header-left { display: flex; align-items: center; gap: 12px; }
+        .header-logo {
+            font-size: 17px;
+            font-weight: 700;
+            color: var(--text);
+            letter-spacing: -0.3px;
+            margin-right: 4px;
+        }
+        body.light .dark-only { display: none !important; }
+        body.light .light-only { display: inline !important; }
+        body:not(.light) .light-only { display: none !important; }
+
+        /* SEGMENTED CONTROLS */
+        .seg-control {
+            display: flex;
+            background: var(--bg);
+            border-radius: 5px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .seg-btn {
+            padding: 4px 12px;
+            font-size: 11px;
+            font-weight: 400;
+            background: transparent;
+            color: var(--text-muted);
+            border: none;
+            cursor: pointer;
+            font-family: inherit;
+            border-right: 1px solid var(--border);
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .seg-btn:last-child { border-right: none; }
+        .seg-btn.active {
+            font-weight: 600;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .seg-btn:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+        .seg-btn:not(:disabled):not(.active):hover {
+            color: var(--text-secondary);
+        }
+
+        /* MODEL DROPDOWN (JSX-style) */
+        .model-dropdown-wrap { position: relative; }
+        .model-dropdown-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .model-dropdown-trigger {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 6px 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            font-family: inherit;
+            min-width: 160px;
+            transition: border-color 0.2s;
+            gap: 10px;
+        }
+        .model-dropdown-trigger:hover { border-color: var(--border-strong); }
+        .model-dropdown-trigger.open { border-color: var(--accent); }
+        .model-dropdown-trigger .dd-name { color: var(--text); font-size: 12px; font-weight: 500; }
+        .model-dropdown-trigger .dd-desc { color: var(--text-muted); font-size: 9px; }
+        .model-dropdown-trigger .dd-arrow {
+            transition: transform 0.2s;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+        .model-dropdown-trigger.open .dd-arrow { transform: rotate(180deg); }
+
+        .model-dropdown-menu {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            margin-top: 4px;
+            z-index: 20;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+            overflow: hidden;
+            display: none;
+        }
+        .model-dropdown-menu.open { display: block; }
+        .model-dropdown-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background 0.1s;
+            border-left: 2px solid transparent;
+        }
+        .model-dropdown-item:hover { background: var(--surface-hover); }
+        .model-dropdown-item.selected {
+            background: var(--accent-soft);
+            border-left-color: var(--accent);
+        }
+        .model-dropdown-item .dd-name { font-size: 12px; font-weight: 500; color: var(--text); }
+        .model-dropdown-item.selected .dd-name { color: var(--accent); }
+        .model-dropdown-item .dd-desc { font-size: 9px; color: var(--text-muted); }
+
+        /* THEME TOGGLE */
+        .theme-toggle {
+            position: relative;
+            width: 48px;
+            height: 26px;
+            border-radius: 13px;
+            background: var(--border);
+            border: none;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .theme-toggle .toggle-knob {
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #e8e8e8;
+            transition: left 0.25s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        body.light .theme-toggle { background: var(--border-strong); }
+        body.light .theme-toggle .toggle-knob { left: 23px; background: #F5EDD8; }
+
+        /* ========================================
+           UPLOAD STAGE
+           ======================================== */
+        #upload-stage {
+            max-width: 520px;
+            margin: 0 auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: calc(100vh - 54px);
+            transition: opacity 0.3s;
+        }
+        #upload-stage.hidden { display: none; }
+
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: 10px;
+            padding: 40px 24px;
+            text-align: center;
+            cursor: pointer;
+            background: transparent;
+            transition: all 0.2s;
+            margin-bottom: 20px;
+        }
+        .drop-zone:hover, .drop-zone.drag-over {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+        }
+        .drop-zone.has-file { padding: 20px 24px; }
+        .drop-zone-icon { color: var(--text-muted); margin-bottom: 10px; transition: color 0.2s; }
+        .drop-zone:hover .drop-zone-icon { color: var(--accent); }
+        .drop-zone-text { color: var(--text); font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+        .drop-zone-hint { color: var(--text-muted); font-size: 12px; }
+        .file-selected-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            justify-content: center;
+        }
+        .file-selected-info .file-name { color: var(--text); font-size: 14px; font-weight: 600; }
+        .file-selected-info .file-meta { color: var(--text-muted); font-size: 11px; }
+
+        .upload-models { margin-bottom: 24px; }
+        .upload-models-grid { display: grid; gap: 12px; }
+        .upload-models-grid.single { grid-template-columns: 1fr; }
+        .upload-models-grid.compare { grid-template-columns: 1fr 1fr; }
+
+        .analyze-btn {
+            display: block;
+            margin: 0 auto;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 11px 40px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: background 0.2s, opacity 0.2s;
+        }
+        .analyze-btn:hover:not(:disabled) { opacity: 0.85; }
+        .analyze-btn:disabled {
+            background: var(--border);
+            color: var(--text-muted);
+            cursor: default;
+            opacity: 0.5;
+        }
+
+        /* ========================================
+           RESULTS STAGE
+           ======================================== */
+        #results-stage { display: none; }
+        #results-stage.active { display: block; }
+
+        .results-single {
+            max-width: 680px;
+            margin: 0 auto;
+            padding: 24px 20px 60px;
+        }
+        .results-single.wide { max-width: 1340px; }
+        .results-single.centered {
+            min-height: calc(100vh - 54px);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .agent-status { color: var(--text-secondary); font-size: 12.5px; padding: 4px 0; }
+        .agent-status.centered-status {
+            text-align: center;
+            font-size: 13.5px;
+            padding: 6px 0;
+        }
+
+        /* ========================================
+           COMPARE LAYOUT
+           ======================================== */
+        .compare-container {
+            display: grid;
+            grid-template-columns: 1fr 1px 1fr;
+            max-width: 1800px;
+            margin: 0 auto;
+            min-height: calc(100vh - 54px);
+        }
+        .compare-divider { background: var(--border); }
+        .compare-panel { display: flex; flex-direction: column; overflow: hidden; }
+        .compare-panel-header {
+            padding: 14px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg);
+            flex-shrink: 0;
+        }
+        .compare-panel-title { font-weight: 600; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+        .compare-panel-model { color: var(--text); font-size: 0.85rem; font-weight: 600; }
+        .compare-panel-content { flex: 1; overflow-y: auto; padding: 24px; }
+
+        /* ========================================
+           WIDGET CARD 
+           ======================================== */
+        .widget-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: var(--shadow);
+            margin-bottom: 10px;
+            position: relative;
+            z-index: 10;
+        }
+        .widget-header {
+            padding: 9px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+        }
+        .widget-header:hover { background: rgba(255,255,255,0.02); }
+        .widget-header-left { display: flex; align-items: baseline; gap: 8px; }
+        .widget-title { color: var(--text); font-weight: 600; font-size: 13px; }
+        .widget-subtitle { color: var(--text-muted); font-size: 11px; }
+        .widget-header-right { display: flex; align-items: center; gap: 6px; }
+        
+        .widget-content { 
+            transition: height 0.3s ease-out; 
+            overflow: hidden; 
+            display: flex; 
+            flex-direction: column;
+        }
+        .widget-content.collapsed { height: 0 !important; }
+
+        .collapse-icon { transition: transform 0.2s; color: var(--text-muted); flex-shrink: 0; }
+        .collapse-icon.collapsed { transform: rotate(-90deg); }
+
+        .btn-widget-action {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 3px;
+            display: flex;
+            color: var(--text-muted);
+            transition: color 0.2s;
+        }
+        .btn-widget-action:hover { color: var(--text); }
+
+        /* FULLSCREEN MODAL - (Direct Body Child ensures it escapes stacking contexts) */
+        .widget-card.maximized {
+            position: fixed;
+            top: 5vh; left: 10vw;
+            width: 80vw; height: 90vh;
+            z-index: 9999 !important;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+            border: 1px solid var(--border-strong);
+            background: var(--surface);
+            transform-origin: center;
+            animation: modalEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .widget-card.maximized .widget-header { flex-shrink: 0; background: var(--surface-alt); }
+        .widget-card.maximized .widget-content { flex: 1; overflow: hidden !important; height: auto !important; max-height: none !important; display: flex; flex-direction: column; }
+
+        #modal-backdrop {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+            z-index: 9990; display: none;
+        }
+        #modal-backdrop.active { display: block; animation: fadeIn 0.25s ease-out forwards; }
+
+        /* ========================================
+           VALIDATION PANEL
+           ======================================== */
+        .val-step { color: var(--text-secondary); font-size: 12.5px; padding: 4px 0; }
+        .val-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 16px;
+        }
+        .val-card-title {
+            padding: 8px 14px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text);
+            font-weight: 600;
+            font-size: 12.5px;
+        }
+        .val-row {
+            padding: 7px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.1s;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        .val-row.pass {
+            border-left: 3px solid var(--risk-low);
+            background: var(--risk-low-bg);
+        }
+        .val-row.fail {
+            border-left: 3px solid var(--risk-high);
+            background: var(--risk-high-bg);
+        }
+        .val-row-left { display: flex; align-items: center; gap: 6px; }
+        .val-row-label { color: var(--text); font-size: 12px; text-transform: capitalize; }
+        .val-row-status { font-weight: 600; font-size: 12px; }
+        .val-row-status.pass { color: var(--risk-low); }
+        .val-row-status.fail { color: var(--risk-high); }
+
+        .val-expand-icon {
+            transition: transform 0.15s;
+            flex-shrink: 0;
+        }
+        .val-expand-icon.open { transform: rotate(90deg); }
+
+        .val-details {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        .val-details.open { max-height: 600px; overflow-y: auto; }
+        .val-details.pass-bg {
+            border-left: 3px solid var(--risk-low);
+            background: var(--risk-low-bg);
+        }
+        .val-details.fail-bg {
+            border-left: 3px solid var(--risk-high);
+            background: var(--risk-high-bg);
+        }
+
+        /* Totals detail grid */
+        .val-totals-header {
+            display: grid;
+            grid-template-columns: 1fr 100px 100px 40px;
+            gap: 4px;
+            padding: 5px 14px 4px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .val-totals-header span {
+            color: var(--text-muted);
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        .val-totals-row {
+            display: grid;
+            grid-template-columns: 1fr 100px 100px 40px;
+            gap: 4px;
+            padding: 4px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+        }
+        .val-totals-row.mismatch { background: var(--risk-high-bg); }
+        .val-totals-row span { font-size: 11px; }
+        .val-totals-row .mono { font-family: ui-monospace, monospace; text-align: right; }
+        .val-totals-row .label-col { color: var(--text); }
+        .val-totals-row.mismatch .label-col { color: var(--risk-high); font-weight: 600; }
+        .val-totals-row .val-col { color: var(--text-secondary); }
+        .val-totals-row.mismatch .val-col { color: var(--risk-high); }
+        .val-delta-msg { padding: 6px 14px; color: var(--risk-high); font-size: 10px; border-top: 1px solid rgba(255,255,255,0.05); }
+
+        /* Formula/structural items */
+        .val-item-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+        }
+        .val-item-label { color: var(--text); font-size: 11px; }
+        .val-item-label.mono { font-family: ui-monospace, monospace; }
+        .val-item-right { display: flex; align-items: center; gap: 8px; }
+        .val-item-value { color: var(--text-secondary); font-size: 10.5px; }
+        .val-check { font-size: 11px; }
+        .val-check.pass { color: var(--risk-low); }
+        .val-check.fail { color: var(--risk-high); font-weight: 700; }
+
+        /* Job issues (formulaic validation corrections) */
+        .job-issue-flat { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 14px; }
+        .job-issue-flat:last-child { border-bottom: none; }
+        .job-issue-header { display: flex; align-items: center; padding: 4px 0; margin-bottom: 8px; }
+        /* Formulaic validation table */
+        .fvt-wrap { width: 100%; }
+        .fvt-wrap.fvt-maximized {
+            position: fixed;
+            top: 5vh; left: 10vw;
+            width: 80vw; height: 90vh;
+            z-index: 9999;
+            background: var(--surface);
+            border: 1px solid var(--border-strong);
+            border-radius: 8px;
+            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            animation: modalEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            overflow: hidden;
+        }
+        .fvt-wrap.fvt-maximized .fvt-toolbar { flex-shrink: 0; background: var(--surface-alt); border-radius: 8px 8px 0 0; }
+        .fvt-wrap.fvt-maximized .fvt-scroll { flex: 1; max-height: none !important; border-radius: 0 0 8px 8px; }
+        .fvt-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+        .fvt-count { font-size: 11px; color: var(--text-muted); }
+        .fvt-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
+        .fvt-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .fvt-th { background: var(--surface-alt); padding: 6px 8px; color: var(--text-muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.3px; position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        .fvt-th-num { text-align: right; }
+        .fvt-th-id { min-width: 80px; }
+        .fvt-th-name { min-width: 120px; }
+        .fvt-td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.03); color: var(--text); white-space: nowrap; }
+        .fvt-td-id { font-weight: 600; font-size: 11.5px; display: flex; align-items: center; gap: 5px; }
+        .fvt-td-name { color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+        .fvt-td:not(.fvt-td-id):not(.fvt-td-name) { text-align: right; font-family: ui-monospace, monospace; }
+        .fvt-neg { color: var(--negative); }
+        .fvt-row:hover td { background: var(--surface-hover); }
+        .fvt-row-error td { }
+        .fvt-row-error:hover td { background: var(--surface-hover); }
+        .fvt-cell-error { color: var(--risk-high) !important; font-weight: 700; background: rgba(224,82,82,0.12) !important; }
+        .fvt-chevron { flex-shrink: 0; color: var(--risk-high); transition: transform 0.15s; }
+        .fvt-expand-row { transition: all 0.2s ease; }
+        .fvt-expand-row td { padding: 0; }
+        .fvt-expand-cell { background: var(--surface-alt); border-bottom: 1px solid var(--border); }
+        .val-details.fvt-details-panel { max-height: 480px !important; background: var(--surface) !important; border-left: none !important; }
+        .val-details.fvt-details-panel.open { max-height: 480px !important; }
+        .fvt-expand-inner { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 10px 14px; }
+        .fvt-expand-col { padding: 0 12px; border-right: 1px solid var(--border); }
+        .fvt-expand-col:last-child { border-right: none; }
+        .fvt-expand-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; margin-bottom: 6px; }
+        .fvt-err-line { font-size: 11px; color: var(--risk-high); padding: 2px 0; }
+        .fvt-fix-line { font-size: 11px; padding: 2px 0; }
+        .fvt-fix-flag { color: var(--risk-med); }
+        .fvt-fix-suggest { color: var(--accent); }
+        .fvt-fix-applied { color: var(--risk-low); }
+
+        .column-error-list { padding: 4px 0; }
+        .column-error-row { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+        .column-error-row:last-child { border-bottom: none; }
+        .column-error-icon { font-size: 12px; color: var(--risk-med); flex-shrink: 0; }
+        .column-error-field-name { font-size: 12px; font-weight: 600; color: var(--text); min-width: 160px; }
+        .column-error-detail { font-size: 11px; color: var(--text-muted); flex: 1; }
+        .job-issue-id { font-weight: 700; color: var(--text); font-size: 0.9rem; min-width: 90px; }
+        .job-issue-summary { color: var(--text-secondary); font-size: 0.8rem; flex: 1; }
+        .error-line { color: var(--risk-high); font-size: 0.8rem; padding: 4px 0 4px 12px; }
+        .correction-line {
+            color: var(--accent);
+            font-size: 0.8rem;
+            padding: 8px 12px;
+            border-left: 2px solid var(--accent);
+            margin: 8px 0;
+            background: var(--accent-soft);
+        }
+        .correction-arrow { font-weight: 600; margin-right: 6px; }
+        .correction-reasoning { margin-top: 6px; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.4; }
+        .confidence-badge {
+            font-size: 0.65rem; padding: 2px 6px; border-radius: 3px;
+            margin-left: 8px; text-transform: uppercase;
+        }
+        .confidence-high { background: var(--risk-low-bg); color: var(--risk-low); }
+        .confidence-medium { background: var(--risk-med-bg); color: var(--risk-med); }
+        .confidence-low { background: rgba(156,163,175,0.2); color: var(--text-secondary); }
+        .confidence-flag { background: var(--risk-med-bg); color: var(--risk-med); }
+
+        /* ========================================
+           DASHBOARD
+           ======================================== */
+        /* Table Maximize Fixes */
+        .table-wrap { max-height: 400px; overflow: auto; }
+        .widget-card.maximized .table-wrap { max-height: 100%; height: 100%; }
+
+        /* Chart Scroll Fixes */
+        .chart-scroll-wrap { display: flex; flex-direction: column; flex: 1; overflow-y: hidden; overflow-x: hidden; }
+        .widget-card.maximized .chart-scroll-wrap { overflow-y: auto; overflow-x: auto; padding-right: 10px; }
+        
+        .chart-box-container { flex: 1; min-height: 100%; display: flex; flex-direction: column; padding: 14px; }
+        .chart-box { flex: 1; width: 100%; min-height: 260px; }
+
+        /* Chat Interface Aesthetics Polish */
+        .chat-container { display: flex; flex-direction: column; height: 100%; background: #121212; border-top: 1px solid var(--border); border-radius: 0 0 8px 8px; overflow: hidden; }
+        body.light .chat-container { background: #EAE3D3; }
+        .chat-history { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+        .chat-msg { padding: 12px 16px; border-radius: 8px; font-size: 13px; line-height: 1.5; max-width: 85%; border: none !important; }
+        .chat-msg.user { background: var(--surface-alt); align-self: flex-end; color: var(--text); }
+        .chat-msg.ai { background: rgba(75, 160, 212, 0.12); align-self: flex-start; color: var(--text); }
+        body.light .chat-msg.ai { background: rgba(74, 107, 58, 0.12); }
+        .chat-msg strong { font-weight: 700; color: var(--accent); }
+        .chat-msg em { font-style: italic; opacity: 0.9; }
+
+        .chat-input-area { display: flex; padding: 12px; border-top: 1px solid var(--border); background: var(--surface); align-items: center; gap: 10px; }
+        .chat-input { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px 14px; border-radius: 6px; font-size: 13px; outline: none; transition: border 0.2s; }
+        .chat-input:focus { border-color: var(--accent); }
+        .chat-input::placeholder { color: #A0A0A0 !important; opacity: 1; font-weight: 500; }
+        body.light .chat-input::placeholder { color: #666666 !important; }
+
+        .chat-send-btn { background: var(--accent); color: #fff; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.2s; }
+        .chat-send-btn:hover { opacity: 0.8; }
+        .chat-send-btn.processing { opacity: 0.5; cursor: not-allowed; background: var(--border-strong); color: var(--text); }
+
+        /* KPI Grid */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        @media (max-width: 900px) {
+            .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        .kpi-box {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px 12px;
+        }
+        .kpi-label {
+            font-size: 9.5px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            margin-bottom: 4px;
+        }
+        .kpi-value { font-size: 18px; font-weight: 700; color: var(--text); }
+        .kpi-value.negative { color: var(--negative); }
+
+        /* Risk Badge */
+        .risk-badge {
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            display: inline-block;
+        }
+        .risk-badge.high { background: var(--risk-high-bg); color: var(--risk-high); }
+        .risk-badge.medium, .risk-badge.moderate { background: var(--risk-med-bg); color: var(--risk-med); }
+        .risk-badge.low { background: var(--risk-low-bg); color: var(--risk-low); }
+        .risk-badge.unknown { background: rgba(128,128,128,0.15); color: var(--text-muted); }
+
+        /* Dashboard 2x2 grid */
+        .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+        @media (max-width: 900px) { .dash-grid { grid-template-columns: 1fr; } }
+
+        /* Risk Table */
+        .risk-table-header {
+            display: grid;
+            grid-template-columns: 100px 1fr 90px 70px;
+            gap: 6px;
+            padding: 6px 14px;
+            background: var(--surface-alt);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 2;
+        }
+        .risk-table-header span {
+            color: var(--text-muted);
+            font-size: 9.5px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .risk-row {
+            display: grid;
+            grid-template-columns: 100px 1fr 90px 70px;
+            gap: 6px;
+            padding: 8px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            transition: background 0.12s;
+            cursor: pointer;
+        }
+        .risk-row:hover { background: var(--surface-hover); }
+        .risk-row .risk-id { color: var(--text); font-weight: 600; font-size: 11.5px; }
+        .risk-row .risk-name { color: var(--text-muted); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .risk-tag {
+            background: rgba(128,128,128,0.1);
+            color: var(--text-secondary);
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 9.5px;
+            display: inline-block;
+            margin: 1px 2px;
+        }
+        .risk-contract { color: var(--text-secondary); font-size: 11.5px; text-align: right; align-self: center; }
+
+        /* Risk detail expand */
+        .risk-details-panel {
+            background: var(--surface-alt);
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out, padding 0.3s ease;
+            padding: 0 16px;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+        .risk-details-panel.expanded { max-height: 500px; padding: 16px; }
+        .risk-detail-item { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .risk-detail-item:last-child { border-bottom: none; }
+        .risk-detail-tag { font-weight: 600; color: var(--text); margin-bottom: 4px; font-size: 0.85rem; }
+        .risk-detail-summary { color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 4px; }
+        .risk-detail-explanation { color: var(--text-muted); font-size: 0.8rem; font-style: italic; }
+
+        .risk-expand-icon { transition: transform 0.2s; margin-left: 6px; color: var(--text-muted); display: inline-block; vertical-align: middle; }
+        .risk-expand-icon.expanded { transform: rotate(180deg); color: var(--text); }
+
+        /* Chart containers */
+        .chart-box { min-height: 280px; }
+        .chart-box-title { color: var(--text-muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
+        .chart-legend { display: flex; gap: 14px; justify-content: flex-end; margin-bottom: 4px; }
+        .chart-legend-item { display: flex; align-items: center; gap: 4px; }
+        .chart-legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+        .chart-legend-label { font-size: 10px; color: var(--text-muted); }
+
+        /* Data Table */
+        .data-table { width: 100%; border-collapse: collapse; }
+        .data-table th {
+            background: var(--surface-alt);
+            padding: 7px 10px;
+            color: var(--text-muted);
+            font-size: 9.5px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            border-bottom: 1px solid var(--border);
+        }
+        .data-table td {
+            padding: 6px 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            font-size: 11.5px;
+            color: var(--text);
+        }
+        .data-table .text-right { text-align: right; }
+        .data-table .text-left { text-align: left; }
+        .data-table .mono { font-family: ui-monospace, monospace; font-weight: 500; white-space: nowrap; }
+        .data-table .truncate { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+        .data-table .negative { color: var(--negative); }
+        .data-table .positive { color: var(--positive); }
+        .data-table .muted { color: var(--text-muted); }
+        .data-table tr:hover td { background: var(--surface-hover); }
+
+        .data-table .totals-row td {
+            font-weight: 700;
+            border-top: 2px solid var(--border);
+            background: var(--surface-alt);
+            padding: 8px 10px;
+        }
+
+        .btn-download {
+            background: transparent;
+            color: var(--accent);
+            font-size: 0.75rem;
+            border: 1px solid var(--accent);
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .btn-download:hover { background: var(--accent-soft); }
+
+        /* Metrics Footer */
+        .metrics-footer {
+            margin-top: 10px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 9px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .metrics-model-label { font-size: 9.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .metrics-model-name { color: var(--accent); font-weight: 600; font-size: 13px; }
+        .metrics-stats { display: flex; gap: 24px; }
+        .metrics-stat { text-align: center; }
+        .metrics-stat-value { color: var(--text); font-weight: 600; font-size: 14px; }
+        .metrics-stat-label { color: var(--text-muted); font-size: 9px; text-transform: uppercase; }
+        .metrics-cost-box {
+            background: var(--risk-low-bg);
+            border: 1px solid rgba(75,168,125,0.3);
+            border-radius: 5px;
+            padding: 5px 12px;
+            text-align: center;
+        }
+        .metrics-cost-value { color: var(--risk-low); font-weight: 700; font-size: 15px; }
+        .metrics-cost-label { color: var(--risk-low); font-size: 8px; text-transform: uppercase; opacity: 0.8; }
+
+        /* ========================================
+           BOND WIDGET STYLES
+           ======================================== */
+        .bond-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
+        .bond-cell { background: var(--bg); padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+        .bond-label { color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .bond-value { color: var(--text); font-weight: 500; font-size: 0.95rem; line-height: 1.4; }
+        .bond-value-sm { color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; }
+        .bond-risk-list { display: flex; flex-direction: column; gap: 0; }
+        .bond-risk-item { padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06); display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: start; }
+        .bond-risk-item:last-child { border-bottom: none; }
+
+        .statute-item { border-bottom: 1px solid rgba(255,255,255,0.06); padding: 16px 0; }
+        .statute-item:last-child { border-bottom: none; }
+        .statute-header { display: flex; justify-content: space-between; align-items: center; cursor: pointer; transition: all 0.2s; padding: 4px 0; }
+        .statute-header:hover { background: rgba(255,255,255,0.02); }
+        .statute-citation-text { color: var(--text); font-weight: 600; font-size: 0.95rem; margin-bottom: 4px; }
+        .statute-name { color: var(--text-secondary); font-size: 0.85rem; }
+        .statute-chevron { color: var(--text-muted); transition: transform 0.3s, color 0.2s; flex-shrink: 0; }
+        .statute-chevron.rotated { transform: rotate(180deg); color: var(--text); }
+        .statute-details-container { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; padding: 0 8px; }
+        .statute-details-container.open { max-height: 600px; padding: 16px 8px 8px 8px; }
+        .statute-section-label { color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
+        .statute-text { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.6; }
+        .statute-verbatim {
+            font-family: 'Courier New', monospace;
+            background: rgba(0,0,0,0.3);
+            padding: 12px; border-radius: 4px;
+            color: var(--text-secondary); font-size: 0.85rem;
+            border-left: 3px solid var(--border-strong);
+            line-height: 1.6; white-space: pre-wrap;
+        }
+        .statute-link { color: var(--accent); font-size: 0.85rem; text-decoration: none; display: inline-block; margin-top: 8px; }
+        .statute-link:hover { text-decoration: underline; }
+
+        .opinion-badge { font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; font-weight: 600; background: var(--risk-low-bg); color: var(--risk-low); text-transform: uppercase; letter-spacing: 0.5px; }
+        .opinion-header-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+        .opinion-field { display: flex; flex-direction: column; gap: 6px; }
+        .opinion-section { background: var(--bg); border-radius: 8px; padding: 16px; border: 1px solid var(--border); }
+        .opinion-subsection { padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .opinion-subsection:last-child { border-bottom: none; padding-bottom: 0; }
+        .opinion-label { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
+        .opinion-text { color: var(--text); font-size: 0.9rem; line-height: 1.6; }
+
+        /* New Analysis bar */
+        .new-analysis-bar {
+            display: none;
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            padding: 0 24px 14px;
+            z-index: 30;
+            text-align: center;
+            background: linear-gradient(180deg, transparent 0%, var(--bg) 50%);
+            padding-top: 44px;
+        }
+        .new-analysis-bar.active { display: block; }
+        .new-analysis-btn {
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            padding: 10px 32px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: background 0.2s;
+        }
+        .new-analysis-btn:hover { background: var(--accent-soft); }
+    </style>
+
+    <!-- Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.firebaseApp = null; window.db = null; window.auth = null; window.userId = null;
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        if (firebaseConfig) {
+            const app = initializeApp(firebaseConfig);
+            window.firebaseApp = app; window.db = getFirestore(app); window.auth = getAuth(app);
+            const initAuth = async () => {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token)
+                        await signInWithCustomToken(window.auth, __initial_auth_token);
+                    else await signInAnonymously(window.auth);
+                    window.userId = window.auth.currentUser.uid;
+                } catch (e) { console.error("Auth Failed:", e); }
+            };
+            initAuth();
+        }
+        window.saveAnalysis = async (data) => {
+            if (!window.db || !window.userId) return;
+            try {
+                const colRef = collection(window.db, 'artifacts', window.appId, 'users', window.userId, 'wip_analyses');
+                await addDoc(colRef, { timestamp: new Date(), data });
+            } catch (e) { console.error("Save failed:", e); }
+        };
+    </script>
+</head>
+<body>
+    <div id="modal-backdrop"></div>
+
+    <!-- ========== HEADER ========== -->
+    <header id="app-header">
+        <div class="header-left">
+            <img src="logo2_bw.png" alt="Wipple" class="header-logo-img dark-only" style="height:44px;" onerror="this.style.display='none'; document.querySelector('.header-logo-fallback').style.display='inline'">
+            <img src="wipple_logo_light.png" alt="Wipple" class="header-logo-img light-only" style="height:44px;display:none;" onerror="this.style.display='none'">
+            <span class="header-logo header-logo-fallback" style="display:none;">wipple</span>
+
+            <div class="seg-control" id="mode-toggle">
+                <button class="seg-btn active" data-mode="single">Single</button>
+                <button class="seg-btn" data-mode="compare">Compare</button>
+            </div>
+
+            <div class="seg-control" id="stage-toggle">
+                <button class="seg-btn active" data-stage="upload">Upload</button>
+                <button class="seg-btn" data-stage="validation" disabled>Validation</button>
+                <button class="seg-btn" data-stage="dashboard" disabled>Dashboard</button>
+            </div>
+        </div>
+
+        <button class="theme-toggle" id="theme-toggle">
+            <div class="toggle-knob">
+                <svg id="theme-icon-dark" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#191919" stroke-width="2.5"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+                <svg id="theme-icon-light" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#8A7F70" stroke-width="2.5" style="display:none"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            </div>
+        </button>
+    </header>
+
+    <!-- ========== UPLOAD STAGE ========== -->
+    <div id="upload-stage">
+        <div class="drop-zone" id="drop-zone">
+            <input type="file" id="file-input" accept="application/pdf,.xlsx,.xls,.csv" style="display:none;">
+            <div id="drop-empty">
+                <div class="drop-zone-icon">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                </div>
+                <div class="drop-zone-text">Drop WIP schedule here</div>
+                <div class="drop-zone-hint">PDF, Excel, or CSV · Click to browse</div>
+            </div>
+            <div id="drop-filled" style="display:none;">
+                <div class="file-selected-info">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+                    <div>
+                        <div class="file-name" id="file-name-display"></div>
+                        <div class="file-meta" id="file-meta-display"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="upload-models" id="upload-models">
+            <div class="upload-models-grid single" id="models-grid">
+                <div>
+                    <div class="model-dropdown-label" id="model-a-label">Model</div>
+                    <div class="model-dropdown-wrap" id="model-a-wrap"></div>
+                </div>
+                <div id="model-b-col" style="display:none;">
+                    <div class="model-dropdown-label">Model B</div>
+                    <div class="model-dropdown-wrap" id="model-b-wrap"></div>
+                </div>
+            </div>
+        </div>
+
+        <div style="text-align:center;">
+            <button id="analyze-btn" class="analyze-btn" disabled>Analyze →</button>
+        </div>
+    </div>
+
+    <!-- ========== RESULTS STAGE ========== -->
+    <div id="results-stage">
+        <!-- Single mode: validation then dashboard -->
+        <div id="results-single" class="results-single">
+            <div id="validation-container"></div>
+            <div id="dashboard-container" style="display:none;"></div>
+        </div>
+
+        <!-- Compare mode -->
+        <div id="compare-view" class="compare-container" style="display:none;">
+            <div class="compare-panel">
+                <div class="compare-panel-header">
+                    <span class="compare-panel-title">Model A</span>
+                    <span class="compare-panel-model" id="compare-model-a-name">-</span>
+                </div>
+                <div class="compare-panel-content" id="compare-panel-a"></div>
+            </div>
+            <div class="compare-divider"></div>
+            <div class="compare-panel">
+                <div class="compare-panel-header">
+                    <span class="compare-panel-title">Model B</span>
+                    <span class="compare-panel-model" id="compare-model-b-name">-</span>
+                </div>
+                <div class="compare-panel-content" id="compare-panel-b"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Analysis bar -->
+    <div class="new-analysis-bar" id="new-analysis-bar">
+        <button class="new-analysis-btn" id="new-analysis-btn">← New Analysis</button>
+    </div>
+
+<script>
+// ==========================================
+// CONFIG & STATE
+// ==========================================
+const API_ENDPOINT = "https://api.wipple.ai/analyze-stream";
+
+const MODELS = [
+    { key: "gemini-3.1-pro",        label: "Gemini 3.1 Pro",        desc: "Most capable" },
+    { key: "gemini-3-flash",         label: "Gemini 3 Flash",         desc: "Fast & cost-effective" },
+    { key: "gemini-3.1-flash-lite",  label: "Gemini 3.1 Flash-Lite",  desc: "Fastest & cheapest" },
+    { key: "claude-opus-4-6",        label: "Claude Opus 4.6",        desc: "Highest accuracy" },
+    { key: "claude-sonnet-4-6",      label: "Claude Sonnet 4.6",      desc: "Balanced performance" },
+    { key: "claude-haiku-4-5",       label: "Claude Haiku 4.5",       desc: "Lightweight" },
+];
+
+const MODEL_NAMES = {};
+MODELS.forEach(m => MODEL_NAMES[m.key] = m.label);
+
+let state = {
+    theme: 'dark',
+    mode: 'single',
+    stage: 'upload',
+    file: null,
+    modelA: 'gemini-3.1-pro',
+    modelB: 'claude-sonnet-4-6',
+    isProcessing: false,
+    validationDone: false,
+    dashboardReady: false,
+    lastTableData: [],
+    lastCalculatedTotals: null,
+    fullAnalysisContext: null,
+};
+
+// DOM refs
+const $ = id => document.getElementById(id);
+const uploadStage = $('upload-stage');
+const resultsStage = $('results-stage');
+const resultsSingle = $('results-single');
+const compareView = $('compare-view');
+const validationContainer = $('validation-container');
+const dashboardContainer = $('dashboard-container');
+const comparePanelA = $('compare-panel-a');
+const comparePanelB = $('compare-panel-b');
+const modalBackdrop = $('modal-backdrop');
+
+// ==========================================
+// HELPERS
+// ==========================================
+function getLoadingHtml(statusText) {
+    const mainText = statusText || 'Analyzing...';
+    return `<div class="wipple-loader-container">
+        <div class="wipple-loader">
+            <img src="wipple-blue.png" alt="" class="logo-blue">
+            <img src="wipple-green.png" alt="" class="logo-green">
+            <img src="wipple-red.png" alt="" class="logo-red">
+        </div>
+        <span class="wipple-loader-text">${mainText}</span>
+        <span class="wipple-loader-subtext">This may take a couple of minutes</span>
+    </div>`;
+}
+
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(0) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+const fmt = (num) => {
+    if (num === undefined || num === null || num === 0) return '—';
+    if (typeof num === 'string' && (num.includes('M') || num.includes('k') || num.includes('$'))) return num;
+    const a = Math.abs(Number(num));
+    const s = a >= 1e6 ? `$${(a/1e6).toFixed(2)}M` : a >= 1e3 ? `$${(a/1e3).toFixed(0)}K` : `$${a}`;
+    return Number(num) < 0 ? `-${s}` : s;
+};
+
+const fmtLegacy = (num) => {
+    if (num === undefined || num === null) return '$0';
+    if (typeof num === 'string' && (num.includes('M') || num.includes('k') || num.includes('$'))) return num;
+    return '$' + Math.round(Number(num)).toLocaleString();
+};
+
+// ==========================================
+// THEME
+// ==========================================
+function setTheme(t) {
+    state.theme = t;
+    if (t === 'light') {
+        document.body.classList.add('light');
+        $('theme-icon-dark').style.display = 'none';
+        $('theme-icon-light').style.display = 'block';
+    } else {
+        document.body.classList.remove('light');
+        $('theme-icon-dark').style.display = 'block';
+        $('theme-icon-light').style.display = 'none';
+    }
+    if (window.mountPendingCharts) window.mountPendingCharts();
+}
+
+$('theme-toggle').addEventListener('click', () => setTheme(state.theme === 'dark' ? 'light' : 'dark'));
+
+// ==========================================
+// MODEL DROPDOWN COMPONENT
+// ==========================================
+function createModelDropdown(wrapId, selectedKey, onChange) {
+    const wrap = $(wrapId);
+    const sel = MODELS.find(m => m.key === selectedKey) || MODELS[0];
+
+    wrap.innerHTML = `
+        <div class="model-dropdown-trigger" id="${wrapId}-trigger">
+            <div>
+                <div class="dd-name">${sel.label}</div>
+                <div class="dd-desc">${sel.desc}</div>
+            </div>
+            <svg class="dd-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="model-dropdown-menu" id="${wrapId}-menu">
+            ${MODELS.map(m => `
+                <div class="model-dropdown-item ${m.key === selectedKey ? 'selected' : ''}" data-key="${m.key}">
+                    <div class="dd-name">${m.label}</div>
+                    <div class="dd-desc">${m.desc}</div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+
+    const trigger = $(`${wrapId}-trigger`);
+    const menu = $(`${wrapId}-menu`);
+
+    trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = menu.classList.contains('open');
+        document.querySelectorAll('.model-dropdown-menu').forEach(m => m.classList.remove('open'));
+        document.querySelectorAll('.model-dropdown-trigger').forEach(t => t.classList.remove('open'));
+        if (!isOpen) {
+            menu.classList.add('open');
+            trigger.classList.add('open');
+        }
+    });
+
+    menu.querySelectorAll('.model-dropdown-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const key = item.dataset.key;
+            const m = MODELS.find(x => x.key === key);
+            trigger.querySelector('.dd-name').textContent = m.label;
+            trigger.querySelector('.dd-desc').textContent = m.desc;
+            menu.querySelectorAll('.model-dropdown-item').forEach(i => i.classList.remove('selected'));
+            item.classList.add('selected');
+            menu.classList.remove('open');
+            trigger.classList.remove('open');
+            onChange(key);
+        });
+    });
+}
+
+document.addEventListener('click', () => {
+    document.querySelectorAll('.model-dropdown-menu').forEach(m => m.classList.remove('open'));
+    document.querySelectorAll('.model-dropdown-trigger').forEach(t => t.classList.remove('open'));
+});
+
+createModelDropdown('model-a-wrap', state.modelA, k => { state.modelA = k; });
+createModelDropdown('model-b-wrap', state.modelB, k => { state.modelB = k; });
+
+// ==========================================
+// MODE & STAGE MANAGEMENT
+// ==========================================
+function setMode(mode) {
+    if (state.isProcessing) return;
+    state.mode = mode;
+
+    document.querySelectorAll('#mode-toggle .seg-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+
+    const grid = $('models-grid');
+    const bCol = $('model-b-col');
+    const aLabel = $('model-a-label');
+
+    if (mode === 'compare') {
+        grid.classList.remove('single'); grid.classList.add('compare');
+        bCol.style.display = '';
+        aLabel.textContent = 'Model A';
+    } else {
+        grid.classList.remove('compare'); grid.classList.add('single');
+        bCol.style.display = 'none';
+        aLabel.textContent = 'Model';
+    }
+
+    updateAnalyzeBtn();
+
+    if (state.stage !== 'upload') {
+        setStage('upload', true);
+    }
+}
+
+function setStage(stage, force) {
+    if (!force && stage === 'validation' && !state.validationDone && !state.isProcessing) return;
+    if (!force && stage === 'dashboard' && !state.dashboardReady) return;
+
+    state.stage = stage;
+
+    document.querySelectorAll('#stage-toggle .seg-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.stage === stage);
+    });
+
+    if (stage === 'upload') {
+        uploadStage.style.display = '';
+        resultsStage.style.opacity = '0';
+        resultsStage.style.pointerEvents = 'none';
+        resultsStage.style.position = 'absolute';
+        resultsStage.style.width = '100%';
+    } else {
+        uploadStage.style.display = 'none';
+        resultsStage.style.opacity = '1';
+        resultsStage.style.pointerEvents = '';
+        resultsStage.style.position = '';
+        resultsStage.style.width = '';
+        resultsStage.classList.add('active');
+    }
+
+    if (stage !== 'upload') {
+        if (state.mode === 'compare') {
+            resultsSingle.style.display = 'none';
+            compareView.style.display = '';
+        } else {
+            resultsSingle.style.display = '';
+            compareView.style.display = 'none';
+        }
+    }
+
+    if (stage === 'validation') {
+        validationContainer.style.display = '';
+        dashboardContainer.style.display = 'none';
+        resultsSingle.classList.remove('wide');
+    } else if (stage === 'dashboard') {
+        validationContainer.style.display = 'none';
+        dashboardContainer.style.display = '';
+        resultsSingle.classList.add('wide');
+    }
+
+    const valBtn = document.querySelector('#stage-toggle [data-stage="validation"]');
+    const dashBtn = document.querySelector('#stage-toggle [data-stage="dashboard"]');
+    valBtn.disabled = !state.validationDone && !state.isProcessing;
+    dashBtn.disabled = !state.dashboardReady;
+}
+
+function resetAll() {
+    state.file = null;
+    state.isProcessing = false;
+    state.validationDone = false;
+    state.dashboardReady = false;
+    state.lastTableData = [];
+    state.lastCalculatedTotals = null;
+    state.fullAnalysisContext = null;
+
+    validationContainer.innerHTML = '';
+    dashboardContainer.innerHTML = '';
+    comparePanelA.innerHTML = '';
+    comparePanelB.innerHTML = '';
+    resultsSingle.classList.remove('centered');
+    $('new-analysis-bar').classList.remove('active');
+
+    resultsStage.style.opacity = '';
+    resultsStage.style.pointerEvents = '';
+    resultsStage.style.position = '';
+    resultsStage.style.width = '';
+    resultsStage.classList.remove('active');
+    resultsStage.style.display = 'none';
+
+    $('drop-empty').style.display = '';
+    $('drop-filled').style.display = 'none';
+    $('drop-zone').classList.remove('has-file');
+    $('file-input').value = '';
+
+    updateAnalyzeBtn();
+    setStage('upload', true);
+}
+
+document.querySelectorAll('#mode-toggle .seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => setMode(btn.dataset.mode));
+});
+
+document.querySelectorAll('#stage-toggle .seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => setStage(btn.dataset.stage));
+});
+
+$('new-analysis-btn').addEventListener('click', resetAll);
+
+// ==========================================
+// FILE HANDLING
+// ==========================================
+function selectFile(file) {
+    if (!file) return;
+    state.file = file;
+    $('file-name-display').textContent = file.name;
+    $('file-meta-display').textContent = formatFileSize(file.size) + ' · Click to change';
+    $('drop-empty').style.display = 'none';
+    $('drop-filled').style.display = '';
+    $('drop-zone').classList.add('has-file');
+    updateAnalyzeBtn();
+}
+
+function updateAnalyzeBtn() {
+    const btn = $('analyze-btn');
+    btn.disabled = !state.file;
+    btn.textContent = state.mode === 'compare' ? 'Compare →' : 'Analyze →';
+}
+
+const dropZone = $('drop-zone');
+const fileInput = $('file-input');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', e => { if (e.target.files.length) selectFile(e.target.files[0]); });
+
+// ==========================================
+// ANALYZE / SSE STREAMING
+// ==========================================
+$('analyze-btn').addEventListener('click', handleAnalyze);
+
+function handleAnalyze() {
+    if (!state.file || state.isProcessing) return;
+    state.isProcessing = true;
+    $('analyze-btn').disabled = true;
+
+    state.validationDone = false;
+    state.dashboardReady = false;
+    setStage('validation', true);
+
+    if (state.mode === 'compare') {
+        handleCompareMode();
+    } else {
+        handleSingleMode();
+    }
+}
+
+function handleSingleMode() {
+    const container = validationContainer;
+    container.innerHTML = '';
+    dashboardContainer.innerHTML = '';
+
+    resultsSingle.classList.add('centered');
+
+    showLoading(container, `Analyzing ${state.file.name}...`);
+
+    const formData = new FormData();
+    formData.append('file', state.file);
+    formData.append('model', state.modelA);
+
+    streamSSE(API_ENDPOINT, formData, {
+        onStatus: (msg) => { showLoading(container, msg); },
+        onRouter: () => {},
+        onResultWip: (payload) => { removeLoading(container); resultsSingle.classList.remove('centered'); handleWipResult(payload, container, dashboardContainer); },
+        onBondStep1: (data) => { removeLoading(container); resultsSingle.classList.remove('centered'); renderBondWidget1(data, container); showLoading(container, 'Researching statutes...'); },
+        onBondStep2: (data) => { removeLoading(container); renderBondWidget2(data, container); showLoading(container, 'Generating opinion...'); },
+        onBondStep3: (data) => { removeLoading(container); renderBondWidget3(data, container); },
+        onBondFinal: (data) => {
+            state.fullAnalysisContext = data;
+            if (data.metrics) appendHtml(container, renderMetricsFooterHtml(data.metrics));
+            if (window.saveAnalysis) window.saveAnalysis(data);
+            finish(container);
+        },
+        onError: (msg) => { removeLoading(container); resultsSingle.classList.remove('centered'); addStatus(container, `Error: ${msg}`); finish(container); },
+        onDone: () => { removeLoading(container); finish(container); },
+    });
+}
+
+function handleCompareMode() {
+    comparePanelA.innerHTML = '';
+    comparePanelB.innerHTML = '';
+
+    $('compare-model-a-name').textContent = MODEL_NAMES[state.modelA] || state.modelA;
+    $('compare-model-b-name').textContent = MODEL_NAMES[state.modelB] || state.modelB;
+
+    showLoading(comparePanelA, 'Starting analysis...');
+    showLoading(comparePanelB, 'Starting analysis...');
+
+    let doneCount = 0;
+    const checkDone = () => { if (++doneCount >= 2) finish(null); };
+
+    const fdA = new FormData(); fdA.append('file', state.file); fdA.append('model', state.modelA);
+    streamSSE(API_ENDPOINT, fdA, buildCompareCallbacks(comparePanelA, checkDone));
+
+    const fdB = new FormData(); fdB.append('file', state.file); fdB.append('model', state.modelB);
+    streamSSE(API_ENDPOINT, fdB, buildCompareCallbacks(comparePanelB, checkDone));
+}
+
+function buildCompareCallbacks(panel, onComplete) {
     return {
-        "by_validation": by_validation,
-        "root_causes": [
-            {
-                "field": field,
-                "suggested_value": all_candidates[field],
-                "resolutions": resolution_counts[field],
-                "nominated_by": candidate_sources[field],
+        onStatus: (msg) => { showLoading(panel, msg); },
+        onRouter: () => {},
+        onResultWip: (payload) => {
+            removeLoading(panel);
+            const data = payload.data;
+            const wd = data.widget_data || {};
+            if (wd.validations) appendHtml(panel, renderValidationHtml(wd.validations, data.clean_table));
+            
+            if ((wd.kpis && wd.kpis.length > 0) || (wd.metrics && wd.metrics.row1_1)) {
+                const chatId = 'chat-' + Math.random().toString(36).substr(2, 6);
+                let dashHtml = renderDashboardLayout(wd, data, data.clean_table, data.calculated_totals, chatId);
+                if (data.metrics) {
+                    dashHtml += renderMetricsFooterHtml(data.metrics);
+                }
+                appendHtml(panel, dashHtml);
+                setupChatInterface(chatId, state.modelA, data.clean_table, data.calculated_totals, {data: data});
+            } else {
+                if (data.metrics) appendHtml(panel, renderMetricsFooterHtml(data.metrics));
             }
-            for field in root_fields
-        ],
+            
+            setupCollapsibles(panel);
+            if (window.mountPendingCharts) window.mountPendingCharts();
+            if (window.saveAnalysis) window.saveAnalysis(data);
+        },
+        onBondStep1: (data) => { removeLoading(panel); renderBondWidget1(data, panel); showLoading(panel, 'Researching statutes...'); },
+        onBondStep2: (data) => { removeLoading(panel); renderBondWidget2(data, panel); showLoading(panel, 'Generating opinion...'); },
+        onBondStep3: (data) => { renderBondWidget3(data, panel); },
+        onBondFinal: (data) => {
+            if (data.metrics) appendHtml(panel, renderMetricsFooterHtml(data.metrics));
+            if (window.saveAnalysis) window.saveAnalysis(data);
+        },
+        onError: (msg) => { removeLoading(panel); addStatus(panel, `Error: ${msg}`); },
+        onDone: onComplete,
+    };
+}
+
+function finish(container) {
+    state.isProcessing = false;
+    state.validationDone = true;
+    $('new-analysis-bar').classList.add('active');
+    const valBtn = document.querySelector('#stage-toggle [data-stage="validation"]');
+    if (valBtn) valBtn.disabled = false;
+}
+
+// ==========================================
+// ROBUST SSE STREAM HANDLER
+// ==========================================
+function streamSSE(url, formData, callbacks) {
+    fetch(url, { method: 'POST', body: formData })
+    .then(response => {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function read() {
+            reader.read().then(({ done, value }) => {
+                if (done) { if (callbacks.onDone) callbacks.onDone(); return; }
+                buffer += decoder.decode(value, { stream: true });
+                const chunks = buffer.split('\n\n');
+                
+                buffer = chunks.pop();
+
+                chunks.forEach(chunk => {
+                    if (!chunk.startsWith('event: ')) return;
+                    
+                    const typeMatch = chunk.match(/^event:\s*(.*)/);
+                    const type = typeMatch ? typeMatch[1].trim() : '';
+                    
+                    const dataIdx = chunk.indexOf('\ndata:');
+                    if (dataIdx === -1) return;
+                    
+                    const dataStr = chunk.substring(dataIdx + 6).trim();
+
+                    try {
+                        switch (type) {
+                            case 'status': callbacks.onStatus?.(dataStr); break;
+                            case 'router': callbacks.onRouter?.(); break;
+                            case 'error': callbacks.onError?.(dataStr); break;
+                            case 'result_wip': callbacks.onResultWip?.(JSON.parse(dataStr)); break;
+                            case 'result': callbacks.onResultWip?.({ data: JSON.parse(dataStr) }); break;
+                            case 'bond_step_1': callbacks.onBondStep1?.(JSON.parse(dataStr)); break;
+                            case 'bond_step_2': callbacks.onBondStep2?.(JSON.parse(dataStr)); break;
+                            case 'bond_step_3': callbacks.onBondStep3?.(JSON.parse(dataStr)); break;
+                            case 'result_bond_final': callbacks.onBondFinal?.(JSON.parse(dataStr)); break;
+                        }
+                    } catch (e) {
+                        console.error("SSE JSON Parse Error for event:", type, e);
+                        callbacks.onError?.("Failed to process data from server.");
+                    }
+                });
+                read();
+            }).catch(err => { 
+                console.error("Stream reading error:", err);
+                callbacks.onError?.("Lost connection to server."); 
+            });
+        }
+        read();
+    })
+    .catch(err => { 
+        console.error("Fetch init error:", err);
+        callbacks.onError?.(err.message); 
+    });
+}
+
+// ==========================================
+// DOM HELPERS
+// ==========================================
+function addStatus(container, text) {
+    const div = document.createElement('div');
+    div.className = 'agent-status';
+    div.textContent = text;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+function appendHtml(container, html) {
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+let loadingEls = new WeakMap();
+function showLoading(container, statusText) {
+    if (loadingEls.has(container)) {
+        const existing = loadingEls.get(container);
+        if (statusText) {
+            const textEl = existing.querySelector('.wipple-loader-text');
+            if (textEl) textEl.textContent = statusText;
+        }
+        return;
+    }
+    const div = document.createElement('div');
+    div.className = 'agent-status centered-status';
+    div.innerHTML = getLoadingHtml(statusText);
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    loadingEls.set(container, div);
+}
+function removeLoading(container) {
+    const el = loadingEls.get(container);
+    if (el) { el.remove(); loadingEls.delete(container); }
+}
+
+// ==========================================
+// CHAT FUNCTIONALITY & TYPEWRITER
+// ==========================================
+function typeWriter(element, text, speed = 25) {
+    let formatted = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                        .replace(/\n/g, '<br>');
+
+    let tokens = formatted.split(/(<[^>]+>|\s+)/);
+    element.innerHTML = '';
+    let i = 0;
+
+    let interval = setInterval(() => {
+        if(i >= tokens.length) {
+            clearInterval(interval);
+            if (element.parentElement) {
+                element.parentElement.scrollTop = element.parentElement.scrollHeight;
+            }
+            return;
+        }
+        element.innerHTML += tokens[i];
+        if (element.parentElement) {
+            element.parentElement.scrollTop = element.parentElement.scrollHeight;
+        }
+        i++;
+    }, speed);
+}
+
+function setupChatInterface(chatId, modelKey, tableData, totals, fullContext) {
+    const input = document.getElementById(chatId + '-input');
+    const sendBtn = document.getElementById(chatId + '-btn');
+    const history = document.getElementById(chatId + '-history');
+    if (!input || !sendBtn || !history) return;
+
+    const sendMessage = async () => {
+        const msg = input.value.trim();
+        if (!msg) return;
+
+        history.innerHTML += `<div class="chat-msg user">${msg}</div>`;
+        input.value = '';
+        input.disabled = true;
+        sendBtn.disabled = true;
+        sendBtn.classList.add('processing');
+        sendBtn.textContent = 'Processing...';
+        
+        const loadingId = 'msg-' + Date.now();
+        history.innerHTML += `<div class="chat-msg ai" id="${loadingId}">...</div>`;
+        history.scrollTop = history.scrollHeight;
+
+        try {
+            const topJobsStr = (tableData || []).slice(0, 15).map(r => 
+                `${r.job_id}: Contract ${fmtLegacy(r.total_contract_price)}, GP ${fmtLegacy(r.estimated_gross_profit)}, UB ${fmtLegacy(r.under_billings)}, OB ${fmtLegacy(r.over_billings)}`
+            ).join(' | ');
+
+            const condensedContext = `
+            Totals: Contract=${fmtLegacy(totals?.total_contract_price)}, GP=${fmtLegacy(totals?.estimated_gross_profit)}, UB=${fmtLegacy(totals?.under_billings)}, OB=${fmtLegacy(totals?.over_billings)}
+            Top 15 Jobs: ${topJobsStr}
+            Portfolio Risks: ${JSON.stringify(fullContext?.data?.surety_risk_context || {})}
+            `.trim();
+
+            const chatEndpoint = API_ENDPOINT.replace('/analyze-stream', '/chat');
+            const response = await fetch(chatEndpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: msg,
+                    context: condensedContext,
+                    doc_type: 'WIP',
+                    model: modelKey
+                })
+            });
+
+            const data = await response.json();
+            const reply = data.reply || "I'm sorry, I couldn't generate a response.";
+            
+            typeWriter(document.getElementById(loadingId), reply);
+
+        } catch (e) {
+            document.getElementById(loadingId).innerHTML = "Error connecting to chat service.";
+        } finally {
+            input.disabled = false;
+            sendBtn.disabled = false;
+            sendBtn.classList.remove('processing');
+            sendBtn.textContent = 'Send';
+            input.focus();
+            history.scrollTop = history.scrollHeight;
+        }
+    };
+
+    sendBtn.addEventListener('click', sendMessage);
+    input.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+}
+
+// ==========================================
+// CORE WIDGET RENDERERS
+// ==========================================
+function renderValidationHtml(vals, tableRows) {
+    if (!vals) return '';
+
+    const genId = () => 'v-' + Math.random().toString(36).substr(2, 8);
+
+    // Human-readable validation names
+    const VAL_LABELS = {
+        contract_cost_gp:         'Contract − Est Cost ≠ Est GP',
+        cost_to_complete_check:   'Est Cost − CTD ≠ CTC',
+        earned_revenue_from_gp:   'CTD + GP to Date ≠ Earned Rev',
+        earned_revenue_from_poc:  'Earned Rev ≠ Contract × POC',
+        underbilling_overbilling: 'UB/OB mismatch',
+        remaining_gp_check:       'GP to Date exceeds Est GP',
+        gp_percentage_bounds:     'GP% out of normal range',
+    };
+
+    // Which table columns each field key maps to
+    const FIELD_COLS = ['total_contract_price','estimated_total_costs','estimated_gross_profit',
+                        'revenues_earned','cost_to_date','gross_profit_to_date',
+                        'billed_to_date','cost_to_complete'];
+    const COL_LABELS = ['Contract','Est Cost','Est GP','Earned Rev','CTD','GP to Date','Billed','CTC'];
+
+    function renderColumnErrors(columnErrors) {
+        return `<div class="column-error-list">${columnErrors.map(ce => {
+            const field = ce.field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const rowsResolved = ce.rows_resolved || ce.rows_corrected;
+            const totalRows = ce.total_rows || ce.rows_corrected;
+            return `<div class="column-error-row">
+                <span class="column-error-icon">⚠</span>
+                <span class="column-error-field-name">${field}</span>
+                <span class="column-error-detail">corrected &middot; ${rowsResolved}/${totalRows} rows resolved</span>
+                <span class="confidence-badge confidence-high">Auto-Corrected</span>
+            </div>`;
+        }).join('')}</div>`;
     }
 
+    function renderFormulaicTable(tableRows, jobIssues) {
+        if (!tableRows || !tableRows.length) return '';
 
-def detect_portfolio_column_errors(
-    rows: List[CalculatedWipRow],
-    all_root_cause_results: List[Dict[str, Any]],
-    total_error_count: int,
-    validations: List[Validation],
-    threshold: float = 0.90,
-    min_error_rows: int = 5,
-) -> List[Dict[str, Any]]:
-    """
-    Aggregate root cause data across all rows. A column error is declared when a
-    single field substitution resolves >= threshold% of the ROWS that have errors
-    (not total error count), and at least min_error_rows rows have errors.
+        // Build lookup: jobId -> issue data
+        const issueMap = {};
+        (jobIssues || []).forEach(j => { issueMap[j.jobId] = j; });
 
-    Using row-based thresholding prevents a single bad job on a clean document from
-    triggering a portfolio-wide column correction. Digit-score is intentionally not
-    considered here — column errors involve grabbing the wrong column entirely, so
-    values have no digit relationship to the correct ones.
+        // Collect all implicated root_cause_fields across all errors for a job
+        function getRedFields(jobId) {
+            const issue = issueMap[jobId];
+            if (!issue) return new Set();
+            const fields = new Set();
+            (issue.errors || []).forEach(e => {
+                if (e.root_cause_field) fields.add(e.root_cause_field);
+            });
+            (issue.corrections || []).forEach(c => {
+                if (c.field && !c.field.includes('↔')) fields.add(c.field);
+            });
+            return fields;
+        }
 
-    Returns a list of detected column errors (usually 0 or 1).
-    """
-    if total_error_count == 0:
-        return []
+        const tableId = 'fvt-' + Math.random().toString(36).substr(2,6);
 
-    # How many distinct rows have at least one error?
-    rows_with_errors: set = {rc["job_id"] for rc in all_root_cause_results if rc.get("root_causes")}
-    if len(rows_with_errors) < min_error_rows:
-        return []
+        // Build rows HTML
+        function buildRows(errOnly) {
+            return tableRows.map(r => {
+                const issue = issueMap[r.job_id];
+                const hasIssue = !!issue;
+                if (errOnly && !hasIssue) return '';
 
-    total_rows = len(rows)
+                const redFields = getRedFields(r.job_id);
+                const rowCls = hasIssue ? 'fvt-row fvt-row-error' : 'fvt-row';
+                const detId = tableId + '-' + r.job_id.replace(/[^a-zA-Z0-9]/g,'_');
 
-    # For each field, count how many error-rows are fully resolved by substituting it
-    field_rows_resolved: Dict[str, set] = {}   # field -> set of job_ids fully resolved
-    field_values: Dict[str, Dict[str, float]] = {}  # field -> {job_id -> suggested_value}
+                const cells = FIELD_COLS.map((f, i) => {
+                    const val = r[f];
+                    const isRed = redFields.has(f);
+                    const formatted = val != null && val !== 0 ? fmtLegacy(val) : '—';
+                    const neg = val < 0 ? ' fvt-neg' : '';
+                    return `<td class="fvt-td${isRed ? ' fvt-cell-error' : ''}${neg}">${formatted}</td>`;
+                }).join('');
 
-    for rc in all_root_cause_results:
-        job_id = rc["job_id"]
-        job_error_count = len([e for e in rc.get("by_validation", {}).values()])
-        for cause in rc.get("root_causes", []):
-            field = cause["field"]
-            # A row is "resolved" by this field if it fixes ALL of that row's errors
-            if cause["resolutions"] >= job_error_count and job_error_count > 0:
-                field_rows_resolved.setdefault(field, set()).add(job_id)
-            field_values.setdefault(field, {})[job_id] = cause["suggested_value"]
+                const chevron = hasIssue
+                    ? `<svg class="fvt-chevron" id="${detId}-ico" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>`
+                    : '';
 
-    column_errors = []
-    for field, resolved_job_ids in field_rows_resolved.items():
-        # Threshold over total rows — a true column error affects every job
-        row_resolution_rate = len(resolved_job_ids) / total_rows
-        if row_resolution_rate >= threshold:
-            # Apply correction to all affected rows
-            rows_corrected = 0
-            for r in rows:
-                job_suggested = field_values.get(field, {}).get(r.job_id)
-                if job_suggested is not None:
-                    setattr(r, field, job_suggested)
-                    rows_corrected += 1
+                const clickAttr = hasIssue ? `onclick="toggleFvt('${detId}')"` : '';
 
-            column_errors.append({
-                "field": field,
-                "row_resolution_rate": row_resolution_rate,
-                "rows_resolved": len(resolved_job_ids),
-                "total_rows": total_rows,
-                "rows_with_errors": len(rows_with_errors),
-                "rows_corrected": rows_corrected,
-            })
+                // Expand panel
+                let expandHtml = '';
+                if (hasIssue) {
+                    const errLines = (issue.errors || []).map(e =>
+                        `<div class="fvt-err-line">✗ ${VAL_LABELS[e.validation] || e.validation}</div>`
+                    ).join('');
 
-    return column_errors
+                    const fixLines = (issue.corrections || []).map(c => {
+                        if (c.confidence === 'flag') {
+                            const fieldLabel = c.field.replace(/_/g,' ').replace(/\b\w/g, x=>x.toUpperCase());
+                            return `<div class="fvt-fix-line fvt-fix-flag">⚠ ${fieldLabel}: ${c.current} — likely wrong column</div>`;
+                        } else if (c.applied) {
+                            const fieldLabel = c.field.replace(/_/g,' ').replace(/\b\w/g, x=>x.toUpperCase());
+                            return `<div class="fvt-fix-line fvt-fix-applied">✓ ${fieldLabel}: ${c.current} → ${c.suggested} <span class="confidence-badge confidence-high">Applied</span></div>`;
+                        } else {
+                            const fieldLabel = c.field.replace(/_/g,' ').replace(/\b\w/g, x=>x.toUpperCase());
+                            return `<div class="fvt-fix-line fvt-fix-suggest">→ ${fieldLabel}: ${c.current} → ${c.suggested}</div>`;
+                        }
+                    }).join('');
 
-
-# ==========================================
-# 4c. COLUMN SWAP DETECTION (Tier 1)
-# ==========================================
-
-def detect_column_swaps(rows: List[CalculatedWipRow]) -> List[Dict[str, Any]]:
-    """Detect likely Cost to Date <-> Cost to Complete column swaps."""
-    swaps: List[Dict[str, Any]] = []
-    for r in rows:
-        if r.estimated_total_costs <= 0 or r.total_contract_price <= 0:
-            continue
-        if r.cost_to_date <= 0 and r.cost_to_complete <= 0:
-            continue
-
-        revenue_poc = r.revenues_earned / r.total_contract_price
-        cost_poc = r.cost_to_date / r.estimated_total_costs
-
-        if (revenue_poc > 0.5 and cost_poc < 0.5
-                and r.cost_to_complete > r.cost_to_date
-                and r.cost_to_complete > 0):
-
-            swapped_poc = r.cost_to_complete / r.estimated_total_costs
-            if abs(swapped_poc - revenue_poc) < abs(cost_poc - revenue_poc):
-                swaps.append({
-                    "job_id": r.job_id,
-                    "type": "column_swap",
-                    "fields": ["cost_to_date", "cost_to_complete"],
-                    "original_ctd": r.cost_to_date,
-                    "original_ctc": r.cost_to_complete,
-                    "confidence": "high",
-                    "reasoning": (
-                        f"Revenue POC ({revenue_poc:.0%}) vs Cost POC ({cost_poc:.0%}) mismatch — "
-                        f"swapping CTD/CTC aligns to {swapped_poc:.0%}"
-                    ),
-                })
-
-    return swaps
-
-
-def apply_corrections(
-    rows: List[CalculatedWipRow],
-    column_swaps: List[Dict[str, Any]],
-    digit_corrections: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Apply high-confidence corrections in-place and return a log."""
-    correction_log: List[Dict[str, Any]] = []
-
-    swap_jobs = {s["job_id"] for s in column_swaps}
-
-    digit_fixes: Dict[str, List[Dict]] = {}
-    for d in digit_corrections:
-        if d.get("confidence") == "high" and d.get("suggested_value") is not None:
-            digit_fixes.setdefault(d["job_id"], []).append(d)
-
-    for r in rows:
-        if r.job_id in swap_jobs:
-            old_ctd, old_ctc = r.cost_to_date, r.cost_to_complete
-            r.cost_to_date = old_ctc
-            r.cost_to_complete = old_ctd
-            correction_log.append({
-                "job_id": r.job_id,
-                "type": "column_swap",
-                "action": f"Swapped CTD (${old_ctd:,.0f}) ↔ CTC (${old_ctc:,.0f})",
-                "confidence": "high",
-            })
-
-        if r.job_id in digit_fixes:
-            for fix in digit_fixes[r.job_id]:
-                field = fix["field"]
-                old_val = getattr(r, field, None)
-                if old_val is not None:
-                    setattr(r, field, fix["suggested_value"])
-                    correction_log.append({
-                        "job_id": r.job_id,
-                        "type": "digit_fix",
-                        "field": field,
-                        "action": f"Changed {field} from ${old_val:,.0f} to ${fix['suggested_value']:,.0f}",
-                        "confidence": fix["confidence"],
-                        "reasoning": fix["reasoning"],
-                    })
-
-    return correction_log
-
-# ==========================================
-# 5. SURETY RISK ANALYSIS
-# ==========================================
-
-def build_surety_risk_context(rows: List[CalculatedWipRow], calc: WipTotals) -> Dict[str, Any]:
-    loss_jobs = [r for r in rows if r.estimated_gross_profit < 0]
-    total_loss_exposure = sum(abs(r.estimated_gross_profit) for r in loss_jobs)
-
-    severe_ub_jobs = [
-        r for r in rows
-        if ((r.under_billings_calc > r.total_contract_price * 0.10 and r.under_billings_calc > 25000) or (r.under_billings_calc > 100000))
-    ]
-    total_ub_exposure = sum(r.under_billings_calc for r in severe_ub_jobs)
-
-    fade_jobs = []
-    for r in rows:
-        if r.estimated_total_costs > 0 and r.estimated_gross_profit > 0:
-            poc = r.cost_to_date / r.estimated_total_costs
-            expected_gp_to_date = r.estimated_gross_profit * poc
-            if expected_gp_to_date > 1000 and r.gross_profit_to_date < expected_gp_to_date * 0.7:
-                fade_jobs.append(
-                    {
-                        "job_id": r.job_id,
-                        "job_name": r.job_name,
-                        "expected_gp": expected_gp_to_date,
-                        "actual_gp": r.gross_profit_to_date,
-                        "fade_pct": 1 - (r.gross_profit_to_date / expected_gp_to_date) if expected_gp_to_date else 0,
-                        "contract": r.total_contract_price,
-                    }
-                )
-
-    concentration_jobs = [
-        r for r in rows
-        if calc.total_contract_price > 0 and r.total_contract_price > calc.total_contract_price * 0.25
-    ]
-
-    total_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
-    thin_margin_jobs = [r for r in rows if r.total_contract_price > 0 and r.estimated_gross_profit < r.total_contract_price * 0.05]
-    uegp_at_risk = sum(
-        r.estimated_gross_profit - r.gross_profit_to_date
-        for r in thin_margin_jobs
-        if r.estimated_gross_profit > r.gross_profit_to_date
-    )
-
-    severe_ob_jobs = [
-        r for r in rows
-        if ((r.over_billings_calc > r.total_contract_price * 0.15 and r.over_billings_calc > 25000) or (r.over_billings_calc > 100000))
-    ]
-
-    early_stage_jobs = []
-    for r in rows:
-        if r.estimated_total_costs > 0 and r.total_contract_price > 500000:
-            poc = r.cost_to_date / r.estimated_total_costs
-            remaining = r.estimated_total_costs - r.cost_to_date
-            if poc < 0.25 and remaining > 100000:
-                early_stage_jobs.append({
-                    "id": r.job_id, "name": r.job_name,
-                    "contract": r.total_contract_price,
-                    "pct_complete": poc,
-                    "remaining_cost": remaining,
-                })
-
-    billing_lag_jobs = []
-    for r in rows:
-        if r.cost_to_date > 50000 and r.billed_to_date > 0:
-            ratio = r.billed_to_date / r.cost_to_date
-            if ratio < 0.80:
-                billing_lag_jobs.append({
-                    "id": r.job_id, "name": r.job_name,
-                    "cost_to_date": r.cost_to_date,
-                    "billed_to_date": r.billed_to_date,
-                    "billing_ratio": ratio,
-                    "cash_gap": r.cost_to_date - r.billed_to_date,
-                })
-
-    aggregate_poc = calc.cost_to_date / calc.estimated_total_costs if calc.estimated_total_costs else 0
-    total_remaining_cost = calc.estimated_total_costs - calc.cost_to_date
-    jobs_over_90 = sum(1 for r in rows if r.estimated_total_costs > 0 and r.cost_to_date / r.estimated_total_costs > 0.90)
-    jobs_under_25 = sum(1 for r in rows if r.estimated_total_costs > 0 and r.cost_to_date / r.estimated_total_costs < 0.25)
-
-    ub_ob_mismatch_jobs = [r for r in rows if r.ub_ob_discrepancy_abs > 100]
-
-    return {
-        "portfolio": {
-            "total_jobs": len(rows),
-            "total_contract_value": calc.total_contract_price,
-            "aggregate_poc": aggregate_poc,
-            "net_billing_position": calc.under_billings - calc.over_billings,
-            "total_uegp": total_uegp,
-            "total_gp_margin": calc.estimated_gross_profit / calc.total_contract_price if calc.total_contract_price else 0,
-            "total_remaining_cost": total_remaining_cost,
-            "jobs_over_90_pct": jobs_over_90,
-            "jobs_under_25_pct": jobs_under_25,
-        },
-        "cash_risk": {
-            "severe_ub_count": len(severe_ub_jobs),
-            "severe_ub_jobs": [
-                {"id": r.job_id, "name": r.job_name, "ub_amount": r.under_billings_calc, "contract": r.total_contract_price}
-                for r in severe_ub_jobs
-            ],
-            "total_ub_exposure": total_ub_exposure,
-            "billing_lag_count": len(billing_lag_jobs),
-            "billing_lag_jobs": billing_lag_jobs[:5],
-            "total_billing_gap": sum(j["cash_gap"] for j in billing_lag_jobs),
-        },
-        "loss_risk": {
-            "loss_job_count": len(loss_jobs),
-            "loss_jobs": [
-                {"id": r.job_id, "name": r.job_name, "loss_amount": abs(r.estimated_gross_profit), "contract": r.total_contract_price}
-                for r in loss_jobs
-            ],
-            "total_loss_exposure": total_loss_exposure,
-        },
-        "margin_risk": {
-            "fade_job_count": len(fade_jobs),
-            "fade_jobs": fade_jobs[:5],
-            "uegp_at_risk": uegp_at_risk,
-            "uegp_at_risk_pct": uegp_at_risk / total_uegp if total_uegp > 0 else 0,
-        },
-        "concentration_risk": {
-            "concentrated_jobs": [
-                {
-                    "id": r.job_id,
-                    "name": r.job_name,
-                    "contract": r.total_contract_price,
-                    "pct_of_portfolio": r.total_contract_price / calc.total_contract_price if calc.total_contract_price else 0,
+                    expandHtml = `<tr id="${detId}" class="fvt-expand-row" style="display:none;"><td colspan="${FIELD_COLS.length + 2}" class="fvt-expand-cell"><div class="fvt-expand-inner"><div class="fvt-expand-col"><div class="fvt-expand-label">Failing Checks</div>${errLines}</div><div class="fvt-expand-col"><div class="fvt-expand-label">Suggested Fixes</div>${fixLines || '<div class="fvt-err-line" style="color:var(--text-muted)">No fixes available</div>'}</div></div></td></tr>`;
                 }
-                for r in concentration_jobs
-            ]
-        },
-        "exposure_risk": {
-            "early_stage_count": len(early_stage_jobs),
-            "early_stage_jobs": early_stage_jobs[:5],
-            "total_early_stage_remaining": sum(j["remaining_cost"] for j in early_stage_jobs),
-        },
-        "overbilling_note": {
-            "severe_ob_count": len(severe_ob_jobs),
-            "total_ob": sum(r.over_billings_calc for r in severe_ob_jobs),
-        },
-        "extraction_signals": {
-            "ub_ob_mismatch_count": len(ub_ob_mismatch_jobs),
-            "ub_ob_mismatch_jobs": [
-                {"id": r.job_id, "name": r.job_name, "discrepancy_abs": r.ub_ob_discrepancy_abs}
-                for r in ub_ob_mismatch_jobs[:10]
-            ],
-        },
+
+                return `<tr class="${rowCls}" ${clickAttr} style="cursor:${hasIssue ? 'pointer' : 'default'}">
+                    <td class="fvt-td fvt-td-id">${r.job_id}${chevron}</td>
+                    <td class="fvt-td fvt-td-name">${(r.job_name || '').substring(0,20)}</td>
+                    ${cells}
+                </tr>${expandHtml}`;
+            }).join('');
+        }
+
+        const errorCount = Object.keys(issueMap).length;
+
+        return `<div class="fvt-wrap" id="fvt-wrap-${tableId}">
+            <div class="fvt-toolbar">
+                <span class="fvt-count">${errorCount} job${errorCount !== 1 ? 's' : ''} with issues</span>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <div class="seg-control">
+                        <button class="seg-btn active" id="${tableId}-all" onclick="fvtFilter('${tableId}', false)">All Jobs</button>
+                        <button class="seg-btn" id="${tableId}-err" onclick="fvtFilter('${tableId}', true)">Errors Only</button>
+                    </div>
+                    <button onclick="fvtMaximize('${tableId}')" class="btn-widget-action" title="Expand table" style="padding:4px 6px;border:1px solid var(--border);border-radius:4px;">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="fvt-scroll" id="fvt-scroll-${tableId}">
+                <table class="fvt-table" id="${tableId}">
+                    <thead><tr>
+                        <th class="fvt-th fvt-th-id">Job</th>
+                        <th class="fvt-th fvt-th-name">Name</th>
+                        ${COL_LABELS.map(l => `<th class="fvt-th fvt-th-num">${l}</th>`).join('')}
+                    </tr></thead>
+                    <tbody id="${tableId}-body">${buildRows(false)}</tbody>
+                </table>
+            </div>
+        </div>`;
     }
 
-def compute_portfolio_risk_tier(risk_context: Dict[str, Any]) -> str:
-    score = 0
+    window.toggleFvt = (id) => {
+        const row = document.getElementById(id);
+        const ico = document.getElementById(id + '-ico');
+        if (!row) return;
+        const hidden = row.style.display === 'none';
+        row.style.display = hidden ? '' : 'none';
+        if (ico) ico.style.transform = hidden ? 'rotate(90deg)' : '';
+    };
 
-    if risk_context["cash_risk"]["total_ub_exposure"] > 500000:
-        score += 4
-    elif risk_context["cash_risk"]["total_ub_exposure"] > 100000:
-        score += 2
+    window.fvtMaximize = (tableId) => {
+        const wrap = document.getElementById('fvt-wrap-' + tableId);
+        const scroll = document.getElementById('fvt-scroll-' + tableId);
+        if (!wrap || !scroll) return;
+        const backdrop = document.getElementById('modal-backdrop');
+        const isMax = wrap.classList.contains('fvt-maximized');
 
-    if risk_context["cash_risk"]["billing_lag_count"] >= 3:
-        score += 2
-    elif risk_context["cash_risk"]["billing_lag_count"] >= 1:
-        score += 1
-
-    if risk_context["loss_risk"]["loss_job_count"] >= 3:
-        score += 3
-    elif risk_context["loss_risk"]["loss_job_count"] >= 1:
-        score += 2
-
-    if risk_context["margin_risk"]["uegp_at_risk_pct"] > 0.3:
-        score += 2
-    elif risk_context["margin_risk"]["uegp_at_risk_pct"] > 0.15:
-        score += 1
-
-    if len(risk_context["concentration_risk"]["concentrated_jobs"]) > 0:
-        score += 1
-
-    if risk_context["exposure_risk"]["early_stage_count"] >= 2:
-        score += 2
-    elif risk_context["exposure_risk"]["early_stage_count"] >= 1:
-        score += 1
-
-    if score >= 6:
-        return "HIGH"
-    elif score >= 3:
-        return "MODERATE"
-    else:
-        return "LOW"
-
-def build_risk_rows(rows: List[CalculatedWipRow], calc: WipTotals) -> List[Dict[str, Any]]:
-    risks: List[Dict[str, Any]] = []
-
-    for r in rows:
-        job_risk_tags = []
-        risk_details = []
-        risk_score = 0
-
-        ub = r.under_billings_calc
-        ob = r.over_billings_calc
-
-        if r.estimated_gross_profit < 0:
-            job_risk_tags.append("Loss Job")
-            risk_score += 50 + abs(r.estimated_gross_profit) / 1000
-            risk_details.append(
-                {
-                    "tag": "Loss Job",
-                    "summary": f"Estimated GP: -${abs(r.estimated_gross_profit):,.0f}",
-                    "detail": "This job is projected to lose money. Every dollar of loss reduces the contractor's capacity to pay obligations.",
-                }
-            )
-
-        is_severe_ub = ((ub > r.total_contract_price * 0.10 and ub > 25000) or (ub > 100000))
-        if is_severe_ub:
-            job_risk_tags.append("Severe Underbilling")
-            risk_score += 40 + ub / 10000
-            ub_pct = (ub / r.total_contract_price * 100) if r.total_contract_price else 0
-            risk_details.append(
-                {
-                    "tag": "Severe Underbilling",
-                    "summary": f"${ub:,.0f} underbilled ({ub_pct:.0f}% of contract)",
-                    "detail": "Work completed but cash not collected. If default occurs, this represents money that may never be recovered.",
-                }
-            )
-
-        if r.estimated_total_costs > 0 and r.estimated_gross_profit > 0:
-            poc = r.cost_to_date / r.estimated_total_costs
-            expected_gp = r.estimated_gross_profit * poc
-            if expected_gp > 1000 and r.gross_profit_to_date < expected_gp * 0.7:
-                fade_pct = 1 - (r.gross_profit_to_date / expected_gp)
-                job_risk_tags.append(f"GP Fade ({fade_pct:.0%})")
-                risk_score += 20 + fade_pct * 30
-                risk_details.append(
-                    {
-                        "tag": f"GP Fade ({fade_pct:.0%})",
-                        "summary": f"Expected GP: ${expected_gp:,.0f} | Actual: ${r.gross_profit_to_date:,.0f}",
-                        "detail": "Profit is lagging behind where it should be at this completion percentage. May indicate cost overruns or estimating problems.",
-                    }
-                )
-
-        if r.total_contract_price > 0 and 0 < r.estimated_gross_profit < r.total_contract_price * 0.05:
-            margin_pct = (r.estimated_gross_profit / r.total_contract_price * 100)
-            job_risk_tags.append("Thin Margin")
-            risk_score += 10
-            risk_details.append(
-                {
-                    "tag": "Thin Margin",
-                    "summary": f"GP margin only {margin_pct:.1f}% of contract value",
-                    "detail": "Very little buffer for cost increases or unforeseen issues. Small problems could push this job into loss territory.",
-                }
-            )
-
-        is_severe_ob = ((ob > r.total_contract_price * 0.15 and ob > 25000) or (ob > 100000))
-        if is_severe_ob:
-            job_risk_tags.append("Heavy Overbilling")
-            risk_score += 5
-            ob_pct = (ob / r.total_contract_price * 100) if r.total_contract_price else 0
-            risk_details.append(
-                {
-                    "tag": "Heavy Overbilling",
-                    "summary": f"${ob:,.0f} overbilled ({ob_pct:.0f}% of contract)",
-                    "detail": "Cash collected ahead of work performed. Good for recovery position, but can mask underlying problems.",
-                }
-            )
-
-        if calc.total_contract_price > 0 and r.total_contract_price > calc.total_contract_price * 0.25:
-            concentration_pct = (r.total_contract_price / calc.total_contract_price * 100)
-            job_risk_tags.append("Concentration Risk")
-            risk_score += 15
-            risk_details.append(
-                {
-                    "tag": "Concentration Risk",
-                    "summary": f"Represents {concentration_pct:.0f}% of total portfolio value",
-                    "detail": "A single large job going bad could significantly impact the contractor's overall financial position.",
-                }
-            )
-
-        if r.estimated_total_costs > 0:
-            poc = r.cost_to_date / r.estimated_total_costs
-            remaining_cost = r.estimated_total_costs - r.cost_to_date
-            if poc < 0.25 and r.total_contract_price > 500000 and remaining_cost > 100000:
-                job_risk_tags.append("Early Stage Exposure")
-                risk_score += 12 + remaining_cost / 100000
-                risk_details.append(
-                    {
-                        "tag": "Early Stage Exposure",
-                        "summary": f"Only {poc:.0%} complete, ${remaining_cost:,.0f} in costs remaining",
-                        "detail": "Large job in early stages means maximum remaining exposure. Most of the risk is still ahead — cost overruns, disputes, and schedule delays are most likely to emerge as work ramps up.",
-                    }
-                )
-
-        if r.total_contract_price > 0 and r.estimated_total_costs > 0:
-            cost_to_contract = r.estimated_total_costs / r.total_contract_price
-            if cost_to_contract > 0.97 and r.estimated_gross_profit >= 0:
-                margin_pct = (r.estimated_gross_profit / r.total_contract_price * 100)
-                job_risk_tags.append("Cost Overrun Signal")
-                risk_score += 18
-                risk_details.append(
-                    {
-                        "tag": "Cost Overrun Signal",
-                        "summary": f"Costs at {cost_to_contract:.0%} of contract, only {margin_pct:.1f}% margin remaining",
-                        "detail": "Estimated costs have nearly consumed the entire contract value. Any additional cost growth flips this to a loss job. Check for pending change orders that might restore margin.",
-                    }
-                )
-
-        if r.cost_to_date > 50000 and r.billed_to_date > 0:
-            billing_ratio = r.billed_to_date / r.cost_to_date
-            if billing_ratio < 0.80:
-                cash_gap = r.cost_to_date - r.billed_to_date
-                job_risk_tags.append("Billing Lag")
-                risk_score += 8 + cash_gap / 50000
-                risk_details.append(
-                    {
-                        "tag": "Billing Lag",
-                        "summary": f"Billed only {billing_ratio:.0%} of costs incurred (${cash_gap:,.0f} gap)",
-                        "detail": "Cash collections are significantly behind costs spent. This creates cash flow pressure — the contractor is funding this job out of pocket or from other jobs' cash. Sustained billing lag across multiple jobs signals liquidity stress.",
-                    }
-                )
-
-        if r.estimated_total_costs > 0:
-            poc_check = r.cost_to_date / r.estimated_total_costs
-            if poc_check > 0.95 and r.cost_to_complete > r.total_contract_price * 0.05 and r.cost_to_complete > 25000:
-                job_risk_tags.append("Stale CTC")
-                risk_score += 5
-                risk_details.append(
-                    {
-                        "tag": "Stale CTC",
-                        "summary": f"{poc_check:.0%} complete but ${r.cost_to_complete:,.0f} CTC remaining",
-                        "detail": "Job appears nearly complete by percentage but still carries meaningful cost to complete. May indicate punch list issues, retainage disputes, or stale estimates that haven't been updated.",
-                    }
-                )
-
-        if job_risk_tags:
-            if risk_score >= 50:
-                risk_tier = "HIGH"
-            elif risk_score >= 20:
-                risk_tier = "MEDIUM"
-            else:
-                risk_tier = "LOW"
-
-            poc = r.cost_to_date / r.estimated_total_costs if r.estimated_total_costs else 0
-
-            risks.append(
-                {
-                    "jobId": r.job_id,
-                    "jobName": r.job_name,
-                    "riskTags": ", ".join(job_risk_tags),
-                    "riskTier": risk_tier,
-                    "riskScore": risk_score,
-                    "riskDetails": risk_details,
-                    "percentComplete": f"{poc:.1%}",
-                    "contractValue": r.total_contract_price,
-                    "underBillings": ub,
-                    "overBillings": ob,
-                    "underBillingsExtracted": r.under_billings,
-                    "overBillingsExtracted": r.over_billings,
-                    "ubObDiscrepancyAbs": r.ub_ob_discrepancy_abs,
-                }
-            )
-
-    risks.sort(key=lambda x: x["riskScore"], reverse=True)
-    return risks
-
-# ==========================================
-# 6. EXTRACTOR NODE
-# ==========================================
-
-def extractor_node(state: WipState):
-    print(f"\n--- EXTRACTING DATA FROM: {state.file_path} ---")
-    print(f"--- USING MODEL: {state.model_name} ---")
-
-    tracker = MetricsTracker(model_name=state.model_name)
-    client = get_client()
-    diagnostics: Dict[str, Any] = {"model": state.model_name, "stages": []}
-
-    def _diag(stage: str, status: str, detail: str = ""):
-        diagnostics["stages"].append({"stage": stage, "status": status, "detail": detail})
-
-    try:
-        with open(state.file_path, "rb") as f:
-            file_bytes = f.read()
-    except FileNotFoundError:
-        _diag("file_read", "FAIL", f"File not found: {state.file_path}")
-        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
-    except Exception as e:
-        _diag("file_read", "FAIL", str(e))
-        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
-
-    _diag("file_read", "OK", f"{len(file_bytes)} bytes")
-
-    prompt = """
-    Extract the WIP Schedule table.
-    1. Extract every job row with all financial columns, Job Name, and Job ID.
-    2. Extract the "TOTALS" row from the bottom of the report.
-
-    CRITICAL COLUMN IDENTIFICATION:
-
-    1. COST TO DATE (cost_to_date): Money ALREADY SPENT on the job.
-       - Column headers: "Cost to Date", "Costs to Date", "Costs Incurred", "Actual Costs"
-       - This is cumulative costs incurred so far
-       - Usually a LARGER number than Cost to Complete for jobs in progress
-
-    2. COST TO COMPLETE (cost_to_complete): Money STILL NEEDED to finish the job.
-       - Column headers: "Cost to Complete", "CTC", "Estimated Cost to Complete", "Remaining Costs"
-       - This is how much more needs to be spent
-       - Formula: Estimated Total Costs - Cost to Date = Cost to Complete
-       - For completed jobs (100% done), this should be 0 or near 0
-
-    3. ESTIMATED TOTAL COSTS (estimated_total_costs): The full projected cost budget for the job from start to finish.
-       - Column headers: "Estimated Cost", "Total Est Cost", "Est Total Costs", "Revised Est Cost",
-         "Total Projected Costs", "Total Projected Cost", "Projected Total Cost"
-       - This is the contractor's total cost forecast: what has already been spent plus what remains.
-       - Formula: Cost to Date + Cost to Complete = Estimated Total Costs
-
-    VALIDATION: For each row, verify: Cost to Date + Cost to Complete = Estimated Total Costs
-
-    UNDER vs OVER BILLINGS:
-    - UNDER BILLINGS (UB): Earned Revenue > Billed to Date (work done but not yet billed)
-    - OVER BILLINGS (OB): Billed to Date > Earned Revenue (billed ahead of work)
-
-    Return JSON:
-    {
-        "rows": [
-            {
-                "job_id": "string",
-                "job_name": "string",
-                "total_contract_price": number,
-                "estimated_total_costs": number,
-                "estimated_gross_profit": number,
-                "revenues_earned": number,
-                "cost_to_date": number,
-                "gross_profit_to_date": number,
-                "billed_to_date": number,
-                "cost_to_complete": number,
-                "under_billings": number,
-                "over_billings": number
+        if (isMax) {
+            wrap.classList.remove('fvt-maximized');
+            backdrop.classList.remove('active');
+            document.body.classList.remove('has-maximized');
+            scroll.style.maxHeight = '420px';
+            // restore in-flow position
+            const placeholder = document.getElementById('fvt-placeholder-' + tableId);
+            if (placeholder && placeholder.parentNode) {
+                placeholder.parentNode.insertBefore(wrap, placeholder);
+                placeholder.remove();
             }
-        ],
-        "totals": {
-            "total_contract_price": number,
-            ... (same fields as rows)
+        } else {
+            // drop a placeholder breadcrumb then teleport to body root
+            const placeholder = document.createElement('div');
+            placeholder.id = 'fvt-placeholder-' + tableId;
+            placeholder.style.display = 'none';
+            wrap.parentNode.insertBefore(placeholder, wrap);
+            document.body.appendChild(wrap);
+
+            wrap.classList.add('fvt-maximized');
+            scroll.style.maxHeight = 'calc(90vh - 100px)';
+            backdrop.classList.add('active');
+            document.body.classList.add('has-maximized');
+        }
+    };
+
+    window.fvtFilter = (tableId, errOnly) => {
+        // Toggle button states
+        document.getElementById(tableId + '-all').classList.toggle('active', !errOnly);
+        document.getElementById(tableId + '-err').classList.toggle('active', errOnly);
+        // Rebuild table body
+        const tbody = document.getElementById(tableId + '-body');
+        if (!tbody) return;
+        // Re-render by toggling row visibility (error rows always visible, clean rows hidden when errOnly)
+        Array.from(tbody.querySelectorAll('tr.fvt-row')).forEach(tr => {
+            if (errOnly && !tr.classList.contains('fvt-row-error')) {
+                tr.style.display = 'none';
+            } else {
+                tr.style.display = '';
+            }
+        });
+    };
+
+    function renderDetails(key, obj) {
+        const id = genId();
+        const bgCls = obj.passed ? 'pass-bg' : 'fail-bg';
+
+        if (key === 'formulaic' && obj.columnErrors?.length) {
+            return `<div id="${id}" class="val-details ${bgCls}">${renderColumnErrors(obj.columnErrors)}</div>`;
+        }
+
+        if (key === 'formulaic' && (obj.jobIssues?.length || obj.columnErrors?.length)) {
+            return `<div id="${id}" class="val-details ${bgCls} fvt-details-panel">${renderFormulaicTable(tableRows, obj.jobIssues)}</div>`;
+        }
+
+        if (!obj.details?.length) return '';
+        const d0 = obj.details[0];
+
+        if (d0.extracted !== undefined) {
+            const header = `<div class="val-totals-header"><span>Column</span><span style="text-align:right">Extracted</span><span style="text-align:right">Calculated</span><span></span></div>`;
+            const rows = obj.details.map(d => {
+                const cls = d.match ? '' : 'mismatch';
+                const ico = d.match ? '<span class="val-check pass">✓</span>' : '<span class="val-check fail">✗</span>';
+                return `<div class="val-totals-row ${cls}"><span class="label-col">${d.label}</span><span class="val-col mono">${d.extracted}</span><span class="val-col mono">${d.calculated}</span><span style="text-align:right">${ico}</span></div>`;
+            }).join('');
+            const deltas = obj.details.filter(d => !d.match && d.delta).map(d => `<div class="val-delta-msg"><strong>${d.label}:</strong> off by ${d.delta}</div>`).join('');
+            return `<div id="${id}" class="val-details ${bgCls}">${header}${rows}${deltas}</div>`;
+        }
+
+        if (d0.value !== undefined && d0.match !== undefined) {
+            const isMono = d0.label && (d0.label.includes('=') || d0.label.includes('−'));
+            const items = obj.details.map(d => {
+                const ico = d.match ? '<span class="val-check pass">✓</span>' : '<span class="val-check fail">✗</span>';
+                return `<div class="val-item-row"><span class="val-item-label ${isMono ? 'mono' : ''}">${d.label}</span><div class="val-item-right"><span class="val-item-value">${d.value}</span>${ico}</div></div>`;
+            }).join('');
+            return `<div id="${id}" class="val-details ${bgCls}">${items}</div>`;
+        }
+
+        const legacy = obj.details.map(d => `<div class="val-item-row"><span class="val-item-label"><strong>${d.id}:</strong> ${d.msg}</span></div>`).join('');
+        return `<div id="${id}" class="val-details ${bgCls}">${legacy}</div>`;
+    }
+
+    function renderRow(label, obj, key) {
+        const hasDetails = (obj.details?.length > 0) || (key === 'formulaic' && (obj.jobIssues?.length > 0 || obj.columnErrors?.length > 0));
+        const rowId = genId();
+        const passCls = obj.passed ? 'pass' : 'fail';
+
+        const chevron = hasDetails
+            ? `<svg class="val-expand-icon" id="${rowId}-ico" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="${obj.passed ? 'var(--risk-low)' : 'var(--risk-high)'}" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>`
+            : '';
+
+        const detailsHtml = hasDetails ? renderDetails(key, obj).replace(/id="v-[^"]*"/, `id="${rowId}-det"`) : '';
+        const onClick = hasDetails ? `onclick="toggleValDetails('${rowId}')"` : '';
+
+        return `
+            <div class="val-row ${passCls}" ${onClick} style="cursor:${hasDetails ? 'pointer' : 'default'}">
+                <div class="val-row-left">${chevron}<span class="val-row-label">${label}</span></div>
+                <span class="val-row-status ${passCls}">${obj.passed ? '✓' : '✗'} ${obj.message}</span>
+            </div>
+            ${detailsHtml}
+        `;
+    }
+
+    return `
+        <div class="val-card fade-slide">
+            <div class="val-card-title">Data Integrity Check</div>
+            ${renderRow('Structural', vals.structural, 'structural')}
+            ${renderRow('Formulaic', vals.formulaic, 'formulaic')}
+            ${renderRow('Totals', vals.totals, 'totals')}
+        </div>
+    `;
+}
+
+window.toggleValDetails = (id) => {
+    const det = document.getElementById(id + '-det');
+    const ico = document.getElementById(id + '-ico');
+    if (!det) return;
+    const isOpen = det.classList.contains('open');
+    if (isOpen) {
+        det.classList.remove('open');
+        det.style.maxHeight = '0';
+    } else {
+        det.classList.add('open');
+        // fvt panel needs larger max-height than default 600px
+        det.style.maxHeight = det.classList.contains('fvt-details-panel') ? '520px' : '600px';
+    }
+    if (ico) ico.classList.toggle('open');
+};
+
+function renderBondWidget1(data, container) {
+    const p = data.parties || {};
+    const r = data.risks || {};
+
+    const html = `
+    <div class="widget-card">
+        <div class="widget-header"><div class="widget-header-left"><span class="widget-title">Bond Analysis & Risk Terms</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+        <div class="widget-content">
+            <div style="margin-bottom:24px;padding:20px 20px 0;">
+                <h4 style="color:var(--text);font-size:1.125rem;font-weight:700;margin-bottom:12px;">Parties Involved</h4>
+                <div class="bond-grid">
+                    <div class="bond-cell"><div class="bond-label">Principal</div><div class="bond-value">${p.principal_name || 'N/A'}</div></div>
+                    <div class="bond-cell"><div class="bond-label">Obligee</div><div class="bond-value">${p.obligee_name || 'N/A'}</div></div>
+                    <div class="bond-cell"><div class="bond-label">Surety</div><div class="bond-value">${p.surety_name || 'Not Specified'}</div></div>
+                    <div class="bond-cell"><div class="bond-label">Penal Sum</div><div class="bond-value">${p.penal_sum || 'N/A'}</div></div>
+                </div>
+            </div>
+            <div style="padding:0 20px 20px;">
+                <h4 style="color:var(--text);font-size:1.125rem;font-weight:700;margin-bottom:12px;">Key Risk Clauses</h4>
+                <div class="bond-risk-list">
+                    <div class="bond-risk-item"><div class="bond-label">Security Required</div><div class="bond-value-sm">${r.security_required || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Type</div><div class="bond-value-sm">${r.bond_type || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Forms Provided</div><div class="bond-value-sm">${r.forms_provided || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Adjustable Amount</div><div class="bond-value-sm">${r.adjustable_amount || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Cancellation Clause</div><div class="bond-value-sm">${r.cancellation_clause || 'N/A'}</div></div>
+                    <div class="bond-risk-item"><div class="bond-label">Automatic Renewal</div><div class="bond-value-sm">${r.automatic_renewal || 'N/A'}</div></div>
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    appendHtml(container, html);
+    setupCollapsibles(container);
+}
+
+function renderBondWidget2(statutes, container) {
+    if (!statutes?.length) return;
+    const items = statutes.map((s, i) => {
+        const sid = 'stat-' + Date.now() + '-' + i;
+        return `
+            <div class="statute-item">
+                <div class="statute-header" onclick="toggleStatute('${sid}')">
+                    <div><div class="statute-citation-text">${s.citation || 'N/A'}</div><div class="statute-name">${s.statute_name || ''}</div></div>
+                    <svg id="${sid}-chev" class="statute-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                </div>
+                <div id="${sid}" class="statute-details-container">
+                    <div style="margin-bottom:16px;"><div class="statute-section-label">Summary</div><div class="statute-text">${s.summary || ''}</div></div>
+                    ${s.verbatim_text ? `<div style="margin-bottom:12px;"><div class="statute-section-label">Verbatim Text</div><div class="statute-verbatim">${s.verbatim_text}</div></div>` : ''}
+                    ${s.source_url ? `<a href="${s.source_url}" target="_blank" class="statute-link">View source →</a>` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    const html = `
+    <div class="widget-card">
+        <div class="widget-header"><div class="widget-header-left"><span class="widget-title">Statutory Research</span><span class="widget-subtitle">${statutes.length} statutes</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+        <div class="widget-content"><div style="padding:16px;">${items}</div></div>
+    </div>`;
+
+    appendHtml(container, html);
+    setupCollapsibles(container);
+}
+
+window.toggleStatute = (id) => {
+    const el = document.getElementById(id);
+    const chev = document.getElementById(id + '-chev');
+    if (el) el.classList.toggle('open');
+    if (chev) chev.classList.toggle('rotated');
+};
+
+function renderBondWidget3(op, container) {
+    const html = `
+    <div class="widget-card">
+        <div class="widget-header"><div class="widget-header-left"><span class="widget-title">Underwriting Opinion</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+        <div class="widget-content">
+            <div style="padding:20px;">
+                <div class="opinion-header-grid">
+                    <div class="opinion-field"><div class="bond-label">Risk State</div><div class="bond-value">${op.risk_state || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">Obligee</div><div class="bond-value">${op.obligee || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">Bond Description</div><div class="bond-value">${op.bond_description || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">SFAA No. / Descriptor</div><div class="bond-value">${op.sfaa_descriptor || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">Penalty</div><div class="bond-value">${op.penalty || ''}</div></div>
+                    <div class="opinion-field"><div class="bond-label">Statutory References</div><div class="bond-value-sm">${(op.statutory_references || []).join(', ')}</div></div>
+                </div>
+                <div style="margin-top:24px;">
+                    <h4 style="color:var(--text);font-size:1.125rem;font-weight:700;margin-bottom:16px;">Legal Opinion</h4>
+                    <div class="opinion-section">
+                        <div class="opinion-subsection"><div class="opinion-label">Who Must Post Bond</div><div class="opinion-text">${op.who_must_post || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Statutory Definitions</div><div class="opinion-text">${op.statutory_definitions || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Exemptions</div><div class="opinion-text">${op.exemptions || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Bond Guarantees</div><div class="opinion-text">${op.bond_guarantees || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Licensing/Bonding Deadlines</div><div class="opinion-text">${op.deadlines_cycles || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Past Claims Experience</div><div class="opinion-text">${op.claims_history || ''}</div></div>
+                        <div class="opinion-subsection"><div class="opinion-label">Alternative Instruments</div><div class="opinion-text">${op.alternative_instruments || ''}</div></div>
+                    </div>
+                </div>
+                <div style="margin-top:24px;">
+                    <h4 style="color:var(--text);font-size:1.125rem;font-weight:700;margin-bottom:12px;">Cancellation Clause</h4>
+                    <div style="margin-bottom:12px;"><div class="statute-section-label">Summary</div><div class="statute-text">${op.cancellation_summary || ''}</div></div>
+                    ${op.cancellation_verbatim ? `<div><div class="statute-section-label">Verbatim Text</div><div class="statute-verbatim">${op.cancellation_verbatim}</div></div>` : ''}
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    appendHtml(container, html);
+    setupCollapsibles(container);
+}
+
+// ==========================================
+// WIP RESULT HANDLER & DASHBOARD RENDERER
+// ==========================================
+function handleWipResult(payload, valContainer, dashContainer) {
+    const data = payload.data || payload;
+    const wd = data.widget_data || {};
+
+    state.lastTableData = data.clean_table || [];
+    state.lastCalculatedTotals = data.calculated_totals;
+    state.fullAnalysisContext = payload;
+
+    // 1. Validation widget in validation container
+    if (wd.validations) {
+        valContainer.innerHTML = '';
+        appendHtml(valContainer, renderValidationHtml(wd.validations, data.clean_table));
+    }
+
+    // 2. "Open Dashboard" button
+    const openBtn = document.createElement('div');
+    openBtn.style.cssText = 'text-align:center; margin-top:28px; animation: fadeSlide 0.4s forwards;';
+    openBtn.innerHTML = `<button class="new-analysis-btn" id="open-dashboard-btn">Open Dashboard →</button>`;
+    valContainer.appendChild(openBtn);
+
+    // 3. Build dashboard content
+    dashContainer.innerHTML = '';
+    const chatId = 'chat-' + Math.random().toString(36).substr(2, 6);
+    
+    // Pass everything to unified layout builder
+    let dashHtml = renderDashboardLayout(wd, data, data.clean_table, data.calculated_totals, chatId);
+    
+    // Explicitly append the metrics footer if it exists
+    if (data.metrics) {
+        dashHtml += renderMetricsFooterHtml(data.metrics);
+    }
+    
+    dashContainer.innerHTML = dashHtml;
+    
+    setupChatInterface(chatId, state.modelA, data.clean_table, data.calculated_totals, payload);
+    setupCollapsibles();
+    if (window.mountPendingCharts) window.mountPendingCharts();
+
+    setTimeout(() => {
+        const btn = document.getElementById('open-dashboard-btn');
+        if (btn) btn.addEventListener('click', () => { state.dashboardReady = true; setStage('dashboard'); });
+    }, 100);
+}
+
+function renderDashboardLayout(wd, data, tableRows, totals, chatId) {
+    const riskTier = wd.riskTier || 'LOW';
+    const tierCls = riskTier === 'HIGH' ? 'high' : riskTier === 'MODERATE' ? 'moderate' : 'low';
+
+    // KPIs
+    let kpiHtml = '';
+    if (wd.kpis && wd.kpis.length) {
+        kpiHtml = wd.kpis.map(k => {
+            const neg = k.negative || (k.value && (k.value.includes('Under') || k.value.startsWith('-')));
+            return `<div class="kpi-box"><div class="kpi-label">${k.label}</div><div class="kpi-value ${neg ? 'negative' : ''}">${k.value}</div></div>`;
+        }).join('');
+    } else if (wd.metrics && wd.metrics.row1_1) {
+        const m = wd.metrics;
+        const items = [m.row1_1, m.row1_2, m.row1_3, m.row2_1, m.row2_2, m.row2_3];
+        kpiHtml = items.map(k => {
+            const neg = k.value && (k.value.includes('Under') || k.value.startsWith('-'));
+            return `<div class="kpi-box"><div class="kpi-label">${k.label}</div><div class="kpi-value ${neg ? 'negative' : ''}">${k.value}</div></div>`;
+        }).join('');
+    }
+
+    // 1. Narrative Widget
+    const narrativeWidget = `
+        <div class="widget-card fade-slide">
+            <div class="widget-header"><div class="widget-header-left"><span class="widget-title" style="color:var(--accent);text-transform:uppercase;letter-spacing:0.8px;">Portfolio Overview</span><span class="risk-badge ${tierCls}">Risk: ${riskTier}</span></div><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div class="widget-content"><div style="padding:14px 18px; border-left:3px solid var(--accent); background:var(--accent-soft);"><p style="color:var(--text);font-size:12.5px;line-height:1.6;">${wd.summary?.text || 'Analysis complete.'}</p></div></div>
+        </div>
+    `;
+
+    // 2. Table Widget
+    const tableId = 'tbl-' + Math.random().toString(36).substr(2, 8);
+    const trs = (tableRows||[]).map(r => `<tr><td class="text-left mono">${r.job_id}</td><td class="text-left truncate" title="${r.job_name||''}">${r.job_name||'—'}</td><td class="text-right">${fmtLegacy(r.total_contract_price)}</td><td class="text-right">${fmtLegacy(r.estimated_total_costs)}</td><td class="text-right ${r.estimated_gross_profit < 0 ? 'negative' : ''}">${fmtLegacy(r.estimated_gross_profit)}</td><td class="text-right">${fmtLegacy(r.billed_to_date)}</td><td class="text-right">${fmtLegacy(r.cost_to_date)}</td><td class="text-right ${r.under_billings > 0 ? 'negative' : 'muted'}">${r.under_billings > 0 ? fmtLegacy(r.under_billings) : '—'}</td><td class="text-right ${r.over_billings > 0 ? 'positive' : 'muted'}">${r.over_billings > 0 ? fmtLegacy(r.over_billings) : '—'}</td><td class="text-right">${fmtLegacy(r.cost_to_complete)}</td></tr>`).join('');
+    
+    let totalsRow = '';
+    if (totals) {
+        totalsRow = `<tr class="totals-row"><td class="text-left"></td><td class="text-left" style="font-weight:700;">TOTALS</td><td class="text-right">${fmtLegacy(totals.total_contract_price)}</td><td class="text-right">${fmtLegacy(totals.estimated_total_costs)}</td><td class="text-right ${(totals.estimated_gross_profit||0) < 0 ? 'negative' : ''}">${fmtLegacy(totals.estimated_gross_profit)}</td><td class="text-right">${fmtLegacy(totals.billed_to_date)}</td><td class="text-right">${fmtLegacy(totals.cost_to_date)}</td><td class="text-right negative">${fmtLegacy(totals.under_billings)}</td><td class="text-right positive">${fmtLegacy(totals.over_billings)}</td><td class="text-right">${fmtLegacy(totals.cost_to_complete)}</td></tr>`;
+    }
+
+    const tableWidget = `
+        <div class="widget-card fade-slide" id="card-${tableId}">
+            <div class="widget-header" style="padding-right:8px;"><div class="widget-header-left"><span class="widget-title">Validated WIP (${(tableRows||[]).length} rows)</span></div><div class="widget-header-right"><button onclick="toggleMaximize('${tableId}',event)" class="btn-widget-action"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button><button onclick="downloadCSV(event)" class="btn-download">Download CSV</button><svg class="collapse-icon collapsed" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div></div>
+            <div class="widget-content collapsed" style="height:0;"><div class="table-wrap"><table class="data-table"><thead><tr><th class="text-left">ID</th><th class="text-left">Name</th><th class="text-right">Contract</th><th class="text-right">Est Cost</th><th class="text-right">Est GP</th><th class="text-right">Billed</th><th class="text-right">CTD</th><th class="text-right">UB</th><th class="text-right">OB</th><th class="text-right">CTC</th></tr></thead><tbody>${trs}${totalsRow}</tbody></table></div></div>
+        </div>
+    `;
+
+    // 3. Grid Widgets (Risks, Billing, Margin, Chat) - explicitly placed in CSS grid order 
+    const highCount = (wd.riskRowsAll || []).filter(r => r.riskTier === 'HIGH').length;
+    let riskRowsHtml = '';
+    if (wd.riskRowsAll?.length) {
+        riskRowsHtml = wd.riskRowsAll.map((r, i) => {
+            const rid = `rk-${Date.now()}-${i}`;
+            const tierCls2 = r.riskTier === 'HIGH' ? 'high' : r.riskTier === 'MEDIUM' ? 'medium' : 'low';
+            const tags = (r.riskTags || '').split(', ').filter(Boolean).map(t => `<span class="risk-tag">${t}</span>`).join('');
+            const contract = r.contractValue ? fmt(r.contractValue) : '';
+
+            let detailsHtml = '';
+            if (r.riskDetails?.length) {
+                detailsHtml = r.riskDetails.map(d => `<div class="risk-detail-item"><div class="risk-detail-tag">${d.tag}</div><div class="risk-detail-summary">${d.summary}</div><div class="risk-detail-explanation">${d.detail}</div></div>`).join('');
+                detailsHtml += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);color:var(--text-muted);font-size:0.8rem;"><strong>Completion:</strong> ${r.percentComplete}</div>`;
+            }
+
+            return `<div class="risk-row" onclick="toggleRisk('${rid}')"><div><div class="risk-id">${r.jobId}<svg class="risk-expand-icon" id="${rid}-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div><div class="risk-name">${r.jobName || ''}</div></div><div style="display:flex;gap:3px;flex-wrap:wrap;align-items:center;">${tags}</div><div class="risk-contract">${contract}</div><div style="align-self:center;"><span class="risk-badge ${tierCls2}">${r.riskTier}</span></div></div><div id="${rid}" class="risk-details-panel">${detailsHtml}</div>`;
+        }).join('');
+    } else {
+        riskRowsHtml = '<div style="padding:16px;color:var(--text-muted);text-align:center;">No significant risks identified</div>';
+    }
+
+    const risksWidget = `<div class="widget-card" id="card-risks"><div class="widget-header"><div class="widget-header-left"><span class="widget-title">Key Risks</span><span class="widget-subtitle">${highCount} high · ${(wd.riskRowsAll||[]).length} total</span></div><div class="widget-header-right"><button onclick="toggleMaximize('risks',event)" class="btn-widget-action"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div></div><div class="widget-content" style="height:340px;"><div class="table-wrap"><div class="risk-table-header"><span>Job</span><span>Risk Types</span><span style="text-align:right">Contract</span><span>Risk Tier</span></div>${riskRowsHtml}</div></div></div>`;
+    
+    const chatWidget = `<div class="widget-card" id="card-${chatId}"><div class="widget-header"><div class="widget-header-left"><span class="widget-title">Contextual AI Assistant</span></div><div class="widget-header-right"><button onclick="toggleMaximize('${chatId}',event)" class="btn-widget-action"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div></div><div class="widget-content" style="height:340px;"><div class="chat-container"><div class="chat-history" id="${chatId}-history"><div class="chat-msg ai">I have reviewed this schedule. Ask me anything about the margins, billing positions, or specific jobs.</div></div><div class="chat-input-area"><input type="text" class="chat-input" id="${chatId}-input" placeholder="Ask about this WIP..."><button class="chat-send-btn" id="${chatId}-btn">Send</button></div></div></div></div>`;
+
+    // Chart Data Setup
+    const chId = 'ch-' + Math.random().toString(36).substr(2, 6);
+    const table = tableRows || state.lastTableData || [];
+    let billingWidget = '';
+    let marginWidget = '';
+
+    if (table.length > 0) {
+        const billingData = table.filter(r => (r.under_billings > 0 || r.over_billings > 0)).map(r => ({ name: (r.job_name||r.job_id||'').substring(0, 14), value: r.over_billings > 0 ? Math.round(r.over_billings/1000) : -Math.round(r.under_billings/1000) })).sort((a,b) => a.value - b.value);
+        const marginData = table.filter(r => r.total_contract_price > 100000 && r.estimated_total_costs > 0 && r.cost_to_date > 0).map(r => { const estGPpct = r.total_contract_price > 0 ? (r.estimated_gross_profit / r.total_contract_price * 100) : 0; const actualGPtd = r.gross_profit_to_date || (r.revenues_earned - r.cost_to_date) || 0; const actualGPpct = r.cost_to_date > 0 ? (actualGPtd / (r.cost_to_date + actualGPtd) * 100) : 0; return { name: (r.job_name||r.job_id||'').substring(0, 14), estimated: +estGPpct.toFixed(1), actual: +actualGPpct.toFixed(1) }; }).sort((a,b) => (a.actual-a.estimated)-(b.actual-b.estimated));
+        
+        if (billingData.length > 0 || marginData.length > 0) {
+            // Register globally so React can re-render to Full View on Maximize
+            window.__chartRegistry = window.__chartRegistry || {};
+            window.__chartRegistry[chId] = { billing: billingData, margin: marginData };
+
+            billingWidget = `<div class="widget-card" id="card-${chId}-bill"><div class="widget-header"><div class="widget-header-left"><span class="widget-title">Billing Position</span></div><div class="widget-header-right"><button onclick="toggleMaximize('${chId}-bill',event)" class="btn-widget-action"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div></div><div class="widget-content" style="height:340px;"><div class="chart-scroll-wrap"><div class="chart-box-container"><div class="chart-box" id="${chId}-billing"></div></div></div></div></div>`;
+            marginWidget = `<div class="widget-card" id="card-${chId}-marg"><div class="widget-header"><div class="widget-header-left"><span class="widget-title">Margin Analysis</span></div><div class="widget-header-right"><button onclick="toggleMaximize('${chId}-marg',event)" class="btn-widget-action"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button><svg class="collapse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div></div><div class="widget-content" style="height:340px;"><div class="chart-scroll-wrap"><div class="chart-box-container"><div class="chart-legend"><div class="chart-legend-item"><div class="chart-legend-dot" style="background:var(--chart-bar1);opacity:0.25"></div><span class="chart-legend-label">Estimated</span></div><div class="chart-legend-item"><div class="chart-legend-dot" style="background:var(--positive);opacity:0.7"></div><span class="chart-legend-label">Actual</span></div></div><div class="chart-box" id="${chId}-margin"></div></div></div></div></div>`;
         }
     }
-    RULES:
-    - (100) in parens is negative -100.
-    - Empty fields are 0.
-    - Double-check Cost to Date vs Cost to Complete - they are different columns!
-    """
 
-    raw_text = ""
-    try:
-        response = client.generate_content(
-            prompt=prompt,
-            model_name=state.model_name,
-            pdf_bytes=file_bytes,
-            response_mime_type="application/json",
-            tracker=tracker,
-            system_prompt="You are a financial document extraction engine specialized in construction Work-In-Progress schedules. Extract structured data and return it as a single JSON object. CRITICAL: Return ONLY the raw JSON object. No markdown code fences. No explanatory text before or after. No commentary.",
-        )
-        raw_text = response.text or ""
-        _diag("llm_call", "OK", f"{len(raw_text)} chars returned")
-    except Exception as e:
-        _diag("llm_call", "FAIL", str(e))
-        diagnostics["raw_response_preview"] = ""
-        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
+    return `
+        <div class="fade-slide">
+            ${narrativeWidget}
+            <div class="kpi-grid">${kpiHtml}</div>
+            ${tableWidget}
+            <div class="dash-grid">
+                ${risksWidget}
+                ${billingWidget}
+                ${marginWidget}
+                ${chatWidget}
+            </div>
+        </div>
+    `;
+}
 
-    diagnostics["raw_response_preview"] = raw_text[:500] if raw_text else "(empty)"
-    parsed = None
-    try:
-        parsed = parse_json_safely(raw_text)
-        if parsed is None:
-            _diag("json_parse", "FAIL", "parse_json_safely returned None")
-        else:
-            _diag("json_parse", "OK", f"Type: {type(parsed).__name__}, "
-                  + (f"Keys: {list(parsed.keys())}" if isinstance(parsed, dict) else f"Length: {len(parsed)}"))
-    except Exception as e:
-        _diag("json_parse", "FAIL", str(e))
+// ==========================================
+// COLLAPSIBLE / MAXIMIZE LOGIC (FIXED DOM RELOCATION)
+// ==========================================
+window.toggleRisk = (id) => {
+    const el = document.getElementById(id);
+    const ico = document.getElementById(id + '-ico');
+    if (el) el.classList.toggle('expanded');
+    if (ico) ico.classList.toggle('expanded');
+};
 
-    data = None
-    _row_field_keys = {"job_id", "total_contract_price", "cost_to_date"}
+function setupCollapsibles() {
+    document.querySelectorAll('.widget-card').forEach(card => {
+        const header = card.querySelector('.widget-header'); const content = card.querySelector('.widget-content'); const icon = card.querySelector('.collapse-icon');
+        if (!header || !content || header.dataset.bound) return; header.dataset.bound = '1';
+        header.addEventListener('click', (e) => {
+            if (e.target.closest('button')) return;
+            if (content.classList.contains('collapsed')) { content.classList.remove('collapsed'); content.style.height = content.scrollHeight + 'px'; if (icon) icon.classList.remove('collapsed'); setTimeout(() => {if(!content.classList.contains('collapsed')) content.style.height = 'auto'}, 300); }
+            else { content.style.height = content.scrollHeight + 'px'; content.offsetHeight; content.classList.add('collapsed'); content.style.height = '0px'; if (icon) icon.classList.add('collapsed'); }
+        });
+    });
+}
 
-    if isinstance(parsed, dict):
-        data = parsed
-    elif isinstance(parsed, list) and len(parsed) > 0:
-        if isinstance(parsed[0], dict):
-            data = {"rows": parsed}
-            _diag("json_normalize", "OK", f"Wrapped top-level array ({len(parsed)} dicts) into rows")
-        else:
-            _diag("json_parse", "FAIL", f"Top-level list but items are {type(parsed[0]).__name__}, not dicts")
+window.toggleMaximize = (id, e) => {
+    if(e) e.stopPropagation();
+    const card = document.getElementById('card-' + id);
+    if (!card) return;
+    
+    const isMax = card.classList.contains('maximized');
+    const backdrop = document.getElementById('modal-backdrop');
 
-    if data is None:
-        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
+    if (isMax) {
+        // Restore to normal flow
+        card.classList.remove('maximized');
+        backdrop.classList.remove('active');
+        document.body.classList.remove('has-maximized');
+        
+        // Find the placeholder and put it back
+        const placeholder = document.getElementById('placeholder-' + id);
+        if (placeholder && placeholder.parentNode) {
+            placeholder.parentNode.insertBefore(card, placeholder);
+            placeholder.remove();
+        }
+    } else {
+        // Maximize & Relocate outside of all CSS constraints
+        const placeholder = document.createElement('div');
+        placeholder.id = 'placeholder-' + id;
+        placeholder.style.display = 'none';
+        card.parentNode.insertBefore(placeholder, card); // Leave a breadcrumb
+        
+        document.body.appendChild(card); // Teleport to the body root
+        
+        card.classList.add('maximized');
+        backdrop.classList.add('active');
+        document.body.classList.add('has-maximized');
+        
+        const content = card.querySelector('.widget-content');
+        if (content) { content.classList.remove('collapsed'); content.style.height = 'auto'; }
+    }
+    
+    // Always trigger chart resize when swapping modes
+    if (window.mountPendingCharts) setTimeout(window.mountPendingCharts, 50);
+};
 
-    raw_rows = []
-    totals_data = data.get("totals")
+document.getElementById('modal-backdrop').addEventListener('click', () => { 
+    document.querySelectorAll('.widget-card.maximized').forEach(card => {
+        const id = card.id.replace('card-', '');
+        window.toggleMaximize(id);
+    });
+    document.querySelectorAll('.fvt-wrap.fvt-maximized').forEach(wrap => {
+        const id = wrap.id.replace('fvt-wrap-', '');
+        window.fvtMaximize(id);
+    });
+});
 
-    candidate = data.get("rows")
-    if isinstance(candidate, list) and len(candidate) > 0:
-        raw_rows = candidate
-        _diag("row_locate", "OK", f"Found {len(raw_rows)} rows under 'rows' key")
+// ==========================================
+// CSV DOWNLOAD
+// ==========================================
+window.downloadCSV = (e) => {
+    e.stopPropagation();
+    if (!state.lastTableData?.length) return;
+    const headers = ["job_id","job_name","total_contract_price","estimated_total_costs","estimated_gross_profit","billed_to_date","cost_to_date","under_billings","over_billings","cost_to_complete"];
+    const csvRows = [headers.join(',')];
+    state.lastTableData.forEach(row => {
+        csvRows.push(headers.map(h => `"${('' + (row[h] || '')).replace(/"/g, '""')}"`).join(','));
+    });
+    if (state.lastCalculatedTotals) {
+        csvRows.push(headers.map(h => {
+            if (h === 'job_id') return '"TOTALS"';
+            if (h === 'job_name') return '""';
+            return `"${state.lastCalculatedTotals[h] || 0}"`;
+        }).join(','));
+    }
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'wip_extract.csv'; a.click();
+};
 
-    if not raw_rows:
-        for alt_key in ("data", "jobs", "wip_rows", "schedule", "wip_schedule", "job_rows", "wip_data", "extracted_data"):
-            candidate = data.get(alt_key)
-            if isinstance(candidate, list) and len(candidate) > 0:
-                raw_rows = candidate
-                _diag("row_locate", "OK", f"Found {len(raw_rows)} rows under '{alt_key}' key")
-                break
+function renderMetricsFooterHtml(metrics) {
+    if (!metrics?.model_name && !metrics?.model_display_name) return '';
+    const time = metrics.total_time_seconds || 0;
+    const tokens = metrics.tokens || {};
+    const cost = metrics.cost_usd || 0;
+    const calls = metrics.api_calls || 0;
 
-    if not raw_rows:
-        for key, val in data.items():
-            if key == "totals":
-                continue
-            if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
-                if _row_field_keys.issubset(set(val[0].keys())):
-                    raw_rows = val
-                    _diag("row_locate", "OK", f"Found {len(raw_rows)} row-like dicts under '{key}' key")
-                    break
+    let timeStr;
+    if (time < 60) timeStr = `${time.toFixed(1)}s`;
+    else { const m = Math.floor(time / 60); const s = Math.round(time % 60); timeStr = s > 0 ? `${m}m ${s}s` : `${m}m`; }
 
-    if not raw_rows and _row_field_keys.issubset(set(data.keys())):
-        first_val = data.get("job_id")
-        non_meta_data = {k: v for k, v in data.items() if k != "totals"}
+    const tokensStr = (tokens.total || 0).toLocaleString();
+    const costStr = cost < 0.01 ? `$${(cost * 100).toFixed(2)}c` : `$${cost.toFixed(4)}`;
 
-        if isinstance(first_val, list):
-            num_rows = len(first_val)
-            raw_rows = [
-                {k: (v[i] if isinstance(v, list) and i < len(v) else v) for k, v in non_meta_data.items()}
-                for i in range(num_rows)
-            ]
-            _diag("row_locate", "OK", f"Converted columnar format ({num_rows} rows)")
-        else:
-            raw_rows = [non_meta_data]
-            _diag("row_locate", "OK", "Wrapped single flat object as 1 row")
+    return `
+        <div class="metrics-footer">
+            <div>
+                <div class="metrics-model-label">Analyzed with</div>
+                <div class="metrics-model-name">${metrics.model_display_name || metrics.model_name}</div>
+            </div>
+            <div class="metrics-stats">
+                <div class="metrics-stat"><div class="metrics-stat-value">${timeStr}</div><div class="metrics-stat-label">Time</div></div>
+                <div class="metrics-stat"><div class="metrics-stat-value">${tokensStr}</div><div class="metrics-stat-label">Tokens</div></div>
+                <div class="metrics-stat"><div class="metrics-stat-value">${calls}</div><div class="metrics-stat-label">Calls</div></div>
+            </div>
+            <div class="metrics-cost-box">
+                <div class="metrics-cost-value">${costStr}</div>
+                <div class="metrics-cost-label">Cost</div>
+            </div>
+        </div>
+    `;
+}
+</script>
 
-    if not raw_rows:
-        for key, val in data.items():
-            if key == "totals":
-                continue
-            if isinstance(val, dict):
-                nested_rows = val.get("rows")
-                if isinstance(nested_rows, list) and len(nested_rows) > 0:
-                    raw_rows = nested_rows
-                    totals_data = totals_data or val.get("totals")
-                    _diag("row_locate", "OK", f"Found {len(raw_rows)} rows nested under '{key}.rows'")
-                    break
+<!-- ========== RECHARTS ========== -->
+<script>
+window.mountPendingCharts = function() {};
 
-    if not raw_rows:
-        key_sample = {k: type(v).__name__ + (f"[{len(v)}]" if isinstance(v, (list, dict)) else "") for k, v in list(data.items())[:15]}
-        _diag("row_parse", "FAIL", f"Could not locate rows in any known structure. Key types: {key_sample}")
-        return {"processed_data": [], "totals_row": None, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
+(function initCharts() {
+    if (typeof React === 'undefined' || typeof ReactDOM === 'undefined' || typeof Recharts === 'undefined' || typeof PropTypes === 'undefined') {
+        if (!window.__chartRetries) window.__chartRetries = 0;
+        if (window.__chartRetries++ < 50) setTimeout(initCharts, 100);
+        return;
+    }
 
-    rows: List[CalculatedWipRow] = []
-    row_errors: List[Dict[str, Any]] = []
-    for i, r in enumerate(raw_rows):
-        try:
-            rows.append(CalculatedWipRow(**r))
-        except Exception as e:
-            row_errors.append({"row_index": i, "error": str(e), "raw_keys": list(r.keys()) if isinstance(r, dict) else str(type(r))})
+    var h = React.createElement; var RC = Recharts;
+    var BarChart = RC.BarChart, Bar = RC.Bar, XAxis = RC.XAxis, YAxis = RC.YAxis, Tooltip = RC.Tooltip, ResponsiveContainer = RC.ResponsiveContainer, Cell = RC.Cell, CartesianGrid = RC.CartesianGrid, ReferenceLine = RC.ReferenceLine;
 
-    if row_errors:
-        _diag("row_parse", "PARTIAL" if rows else "FAIL",
-               f"{len(rows)}/{len(raw_rows)} rows parsed, {len(row_errors)} failed")
-        diagnostics["row_parse_errors"] = row_errors[:10]
-    else:
-        _diag("row_parse", "OK", f"{len(rows)} rows parsed")
+    var getColors = function() { var s = getComputedStyle(document.body); return { border: s.getPropertyValue('--border').trim(), text: s.getPropertyValue('--text').trim(), muted: s.getPropertyValue('--text-muted').trim(), surface: s.getPropertyValue('--surface').trim(), pos: s.getPropertyValue('--positive').trim(), neg: s.getPropertyValue('--negative').trim(), bar1: s.getPropertyValue('--chart-bar1').trim(), hover: s.getPropertyValue('--surface-hover').trim() }; };
 
-    totals = None
-    if totals_data:
-        try:
-            totals = WipTotals(**totals_data)
-            _diag("totals_parse", "OK", "")
-        except Exception as e:
-            _diag("totals_parse", "FAIL", str(e))
-    else:
-        _diag("totals_parse", "SKIP", "No totals in response")
+    function BillingChart(props) {
+        var c = getColors();
+        if (!props.data || !props.data.length) return h('div', {style:{color:c.muted, padding:20, textAlign:'center'}}, 'No data');
+        
+        // Pass flexible sizing into the responsive container so it perfectly fits the DOM node
+        return h('div', { style: { width: '100%', height: props.height } },
+            h(ResponsiveContainer, { width: '100%', height: '100%', minHeight: 260 },
+                h(BarChart, { data: props.data, layout: 'vertical', margin: { top: 10, right: 20, bottom: 10, left: 10 } },
+                    h(CartesianGrid, { horizontal: false, stroke: c.border, strokeDasharray: '3 3' }),
+                    h(XAxis, { type: 'number', tick: { fill: c.muted, fontSize: 10 }, tickFormatter: function(v){return (v<0?'-':'')+'$'+Math.abs(v/1000).toFixed(1)+'M'} }),
+                    h(YAxis, { type: 'category', dataKey: 'name', tick: { fill: c.muted, fontSize: 10 }, width: 85, axisLine: false, tickLine: false }),
+                    h(ReferenceLine, { x: 0, stroke: c.borderStrong }),
+                    h(Tooltip, { cursor: {fill: c.hover}, contentStyle: {background: c.surface, border: '1px solid '+c.border, color: c.text, fontSize: 11, borderRadius: 5}, formatter: function(v){return ['$' + Math.abs(v).toLocaleString() + 'k ' + (v < 0 ? 'under' : 'over') + 'billed', '']} }),
+                    h(Bar, { dataKey: 'value', radius: 3, maxBarSize: props.isMaximized ? 24 : 14 }, props.data.map(function(d,i) { return h(Cell, { key: i, fill: d.value < 0 ? c.neg : c.pos }); }))
+                )
+            )
+        );
+    }
 
-    return {"processed_data": rows, "totals_row": totals, "metrics_data": tracker.get_metrics(), "extraction_diagnostics": diagnostics}
+    function MarginChart(props) {
+        var c = getColors();
+        if (!props.data || !props.data.length) return h('div', {style:{color:c.muted, padding:20, textAlign:'center'}}, 'No data');
+        
+        return h('div', { style: { width: props.width, height: props.height } },
+            h(ResponsiveContainer, { width: '100%', height: '100%', minHeight: 260 },
+                h(BarChart, { data: props.data, margin: { top: 10, right: 20, bottom: 20, left: 0 } },
+                    h(CartesianGrid, { vertical: false, stroke: c.border, strokeDasharray: '3 3' }),
+                    h(XAxis, { dataKey: 'name', tick: { fill: c.muted, fontSize: 10 }, angle: -15, textAnchor: 'end', axisLine: false, tickLine: false }),
+                    h(YAxis, { tick: { fill: c.muted, fontSize: 10 }, tickFormatter: function(v){return v+'%'}, axisLine: false, tickLine: false }),
+                    h(ReferenceLine, { y: 0, stroke: c.borderStrong }),
+                    h(Tooltip, { cursor: {fill: c.hover}, contentStyle: {background: c.surface, border: '1px solid '+c.border, color: c.text, fontSize: 11, borderRadius: 5}, formatter: function(v,n){return [v+'%', n==='estimated'?'Estimated GP%':'Actual GP%']} }),
+                    h(Bar, { dataKey: 'estimated', fill: c.bar1, opacity: 0.3, radius: [3,3,0,0], maxBarSize: 22 }),
+                    h(Bar, { dataKey: 'actual', radius: [3,3,0,0], maxBarSize: 22 }, props.data.map(function(d,i) { return h(Cell, { key: i, fill: d.actual < 0 ? c.neg : c.pos }); }))
+                )
+            )
+        );
+    }
 
-# ==========================================
-# 7. ANALYST NODE
-# ==========================================
+    window.mountPendingCharts = function() {
+        if (!window.__chartRegistry) return;
+        Object.keys(window.__chartRegistry).forEach(function(id) {
+            var charts = window.__chartRegistry[id];
+            var bCard = document.getElementById('card-' + id + '-bill');
+            var mCard = document.getElementById('card-' + id + '-marg');
+            
+            var isBillMax = bCard && bCard.classList.contains('maximized');
+            var isMargMax = mCard && mCard.classList.contains('maximized');
 
-def analyst_node(state: WipState):
-    print("--- RUNNING VALIDATIONS & ANALYSIS ---")
+            var bEl = document.getElementById(id + '-billing');
+            var mEl = document.getElementById(id + '-margin');
 
-    try:
-        rows = state.processed_data
-        extracted_totals = state.totals_row
-
-        if not rows:
-            diag = state.extraction_diagnostics or {}
-            stages = diag.get("stages", [])
-
-            failure_chain = []
-            last_ok_stage = "none"
-            failed_stage = "unknown"
-            for s in stages:
-                if s["status"] == "OK":
-                    last_ok_stage = s["stage"]
-                else:
-                    failure_chain.append(f"{s['stage']}: {s['detail']}")
-                    if failed_stage == "unknown":
-                        failed_stage = s["stage"]
-
-            raw_preview = diag.get("raw_response_preview", "(not captured)")
-            row_parse_errors = diag.get("row_parse_errors", [])
-
-            if failed_stage == "file_read":
-                struct_msg = f"File Read Failed: {failure_chain[0] if failure_chain else 'unknown error'}"
-            elif failed_stage == "llm_call":
-                struct_msg = f"Model Call Failed: {failure_chain[0] if failure_chain else 'API error'}"
-            elif failed_stage == "json_parse":
-                preview = raw_preview[:200].replace('\n', ' ').strip()
-                struct_msg = f"JSON Parse Failed — model returned: \"{preview}...\""
-            elif failed_stage in ("row_locate", "row_parse"):
-                last_detail = failure_chain[-1] if failure_chain else "unknown structure"
-                struct_msg = f"Data structure issue: {last_detail}"
-            else:
-                struct_msg = f"Extraction failed at: {failed_stage}"
-
-            if row_parse_errors:
-                formulaic_msg = f"{len(row_parse_errors)} rows failed to parse: {row_parse_errors[0].get('error', '')[:100]}"
-                formulaic_details = [{"id": f"row_{e['row_index']}", "msg": e["error"][:120]} for e in row_parse_errors[:5]]
-            else:
-                formulaic_msg = f"No data to validate (extraction failed at {failed_stage} stage)"
-                formulaic_details = []
-
-            return {
-                "final_json": {"error": "No data extracted", "extraction_diagnostics": diag},
-                "validation_errors": [],
-                "correction_suggestions": [],
-                "correction_log": [],
-                "surety_risk_context": {},
-                "risk_rows": [],
-                "widget_data": {
-                    "validations": {
-                        "structural": {
-                            "passed": False,
-                            "message": struct_msg,
-                            "details": [{"id": "DIAG", "msg": c} for c in failure_chain],
-                        },
-                        "formulaic": {
-                            "passed": False,
-                            "message": formulaic_msg,
-                            "details": formulaic_details,
-                            "jobIssues": [],
-                        },
-                        "totals": {"passed": False, "message": "No data to validate", "details": []},
-                    },
-                    "extraction_failure": {
-                        "summary": " → ".join(failure_chain) if failure_chain else "Unknown failure",
-                        "failed_stage": failed_stage,
-                        "last_ok_stage": last_ok_stage,
-                        "stages": stages,
-                        "raw_preview": raw_preview[:500],
-                        "row_parse_errors": row_parse_errors[:5],
-                    },
-                    "metrics": {
-                        "row1_1": {"label": "Contract Value", "value": "—"},
-                        "row1_2": {"label": "UEGP", "value": "—"},
-                        "row1_3": {"label": "CTC", "value": "—"},
-                        "row2_1": {"label": "Earned Rev", "value": "—"},
-                        "row2_2": {"label": "GP %", "value": "—"},
-                        "row2_3": {"label": "Net UB / OB", "value": "—"},
-                    },
-                    "riskTier": "UNKNOWN",
-                    "riskRowsAll": [],
-                },
+            // Force dynamic bounds when expanded to allow scrolling, otherwise locked to normal size
+            if (bEl && charts.billing) {
+                var bData = isBillMax ? charts.billing : charts.billing.slice(0, 15);
+                var dynHeight = isBillMax ? Math.max(bEl.parentElement.clientHeight, bData.length * 40) + 'px' : '280px';
+                bEl.style.height = dynHeight;
+                
+                if (!bEl._reactRoot) bEl._reactRoot = ReactDOM.createRoot(bEl);
+                bEl._reactRoot.render(h(BillingChart, { data: bData, height: '100%', isMaximized: isBillMax }));
             }
-
-        validations = build_validations()
-
-        for r in rows:
-            variance = r.revenues_earned - r.billed_to_date
-            if variance > 0:
-                r.under_billings_calc = variance
-                r.over_billings_calc = 0.0
-            else:
-                r.under_billings_calc = 0.0
-                r.over_billings_calc = abs(variance)
-
-        pre_correction_errors: List[Dict[str, Any]] = []
-        all_correction_suggestions: List[Dict[str, Any]] = []
-        all_root_cause_results: List[Dict[str, Any]] = []
-
-        for r in rows:
-            row_errors = run_validations(r, validations)
-            pre_correction_errors.extend(row_errors)
-            if row_errors:
-                root_cause_result = resolve_root_causes(r, row_errors, validations)
-                all_root_cause_results.append({"job_id": r.job_id, **root_cause_result})
-                for err in row_errors:
-                    vname = err["validation"]
-                    rc_info = root_cause_result["by_validation"].get(vname, {})
-                    err["is_cascade"] = rc_info.get("is_cascade", False)
-                    err["root_cause_field"] = rc_info.get("root_cause_field")
-                    err["root_cause_value"] = rc_info.get("root_cause_value")
-                    err["root_resolutions"] = rc_info.get("resolutions", 0)
-                suggestions = suggest_corrections(r, row_errors)
-                all_correction_suggestions.extend(suggestions)
-
-        # Portfolio-level column error detection — must run before column swaps
-        # so corrections are applied before the swap check re-reads row values
-        portfolio_column_errors = detect_portfolio_column_errors(
-            rows, all_root_cause_results, len(pre_correction_errors), validations
-        )
-
-        column_swaps = detect_column_swaps(rows)
-        correction_log = apply_corrections(rows, column_swaps, all_correction_suggestions)
-
-        for r in rows:
-            variance = r.revenues_earned - r.billed_to_date
-            if variance > 0:
-                r.under_billings_calc = variance
-                r.over_billings_calc = 0.0
-            else:
-                r.under_billings_calc = 0.0
-                r.over_billings_calc = abs(variance)
-
-        post_correction_errors: List[Dict[str, Any]] = []
-        for r in rows:
-            row_errors = run_validations(r, validations)
-            post_correction_errors.extend(row_errors)
-
-        all_validation_errors = post_correction_errors
-
-        calc = WipTotals()
-        for r in rows:
-            calc.total_contract_price += r.total_contract_price
-            calc.estimated_total_costs += r.estimated_total_costs
-            calc.estimated_gross_profit += r.estimated_gross_profit
-            calc.revenues_earned += r.revenues_earned
-            calc.cost_to_date += r.cost_to_date
-            calc.gross_profit_to_date += r.gross_profit_to_date
-            calc.billed_to_date += r.billed_to_date
-            calc.cost_to_complete += r.cost_to_complete
-            calc.under_billings += r.under_billings_calc
-            calc.over_billings += r.over_billings_calc
-            calc.uegp += r.uegp
-
-        _totals_fields = [
-            ("total_contract_price", "Contract Value"),
-            ("estimated_total_costs", "Est Total Costs"),
-            ("estimated_gross_profit", "Est Gross Profit"),
-            ("revenues_earned", "Revenues Earned"),
-            ("cost_to_date", "Cost to Date"),
-            ("gross_profit_to_date", "GP to Date"),
-            ("billed_to_date", "Billed to Date"),
-            ("cost_to_complete", "Cost to Complete"),
-        ]
-
-        totals_pass = False
-        totals_msg = "No Totals Row"
-        totals_details: List[Dict[str, Any]] = []
-        totals_detail_rows: List[Dict[str, Any]] = []
-
-        if extracted_totals:
-            mismatches = []
-            for field_name, display_name in _totals_fields:
-                calc_val = getattr(calc, field_name, 0.0)
-                ext_val = getattr(extracted_totals, field_name, 0.0)
-                diff = abs(calc_val - ext_val)
-                match = diff < 1000.0
-
-                detail_row = {
-                    "label": display_name,
-                    "extracted": f"${ext_val:,.0f}",
-                    "calculated": f"${calc_val:,.0f}",
-                    "match": match,
-                }
-                if not match:
-                    signed_diff = calc_val - ext_val
-                    detail_row["delta"] = f"{'+'if signed_diff > 0 else '−'}${abs(signed_diff):,.0f}"
-                    mismatches.append((field_name, display_name, calc_val, ext_val, diff))
-
-                totals_detail_rows.append(detail_row)
-
-            if not mismatches:
-                totals_pass = True
-                totals_msg = f"All {len(_totals_fields)} columns match"
-            else:
-                passed_count = len(_totals_fields) - len(mismatches)
-                totals_msg = f"{len(mismatches)} column{'s' if len(mismatches) != 1 else ''} off"
-                for fname, dname, cv, ev, diff in mismatches:
-                    totals_details.append({
-                        "id": "TOTALS",
-                        "field": fname,
-                        "msg": f"{dname}: Calc ${cv:,.0f} vs Report ${ev:,.0f} (diff ${diff:,.0f})",
-                    })
-
-        surety_risk_context = build_surety_risk_context(rows, calc)
-        surety_risk_context["risk_tier"] = compute_portfolio_risk_tier(surety_risk_context)
-        risk_rows = build_risk_rows(rows, calc)
-
-        t_uegp = calc.estimated_gross_profit - calc.gross_profit_to_date
-        gp_percent = (calc.gross_profit_to_date / calc.revenues_earned * 100) if calc.revenues_earned else 0
-        net_ub_ob = calc.under_billings - calc.over_billings
-        net_ub_ob_label = f"Under ${net_ub_ob/1000:.0f}k" if net_ub_ob >= 0 else f"Over ${abs(net_ub_ob)/1000:.0f}k"
-
-        struct_pass = len(rows) > 0 and all(r.job_id for r in rows)
-        struct_msg = "Structure Valid" if struct_pass else "Missing IDs/Data"
-
-        missing_ids = sum(1 for r in rows if not r.job_id)
-        struct_detail_rows = [
-            {"label": "Column headers detected", "value": f"10 of 10" if struct_pass else "Incomplete", "match": struct_pass},
-            {"label": "Row count", "value": f"{len(rows)} data rows", "match": len(rows) > 0},
-            {"label": "Total row detected", "value": "Present" if extracted_totals else "Missing", "match": extracted_totals is not None},
-            {"label": "Missing job IDs", "value": f"{missing_ids} found" if missing_ids else "0 found", "match": missing_ids == 0},
-        ]
-
-        validation_type_labels = {
-            "contract_cost_gp": "Contract − Est Cost = Est GP",
-            "cost_to_complete_check": "Est Cost = CTD + CTC",
-            "earned_revenue_from_gp": "CTD + GP to Date = Earned Rev",
-            "underbilling_overbilling": "UB/OB matches billing variance",
-            "earned_revenue_from_poc": "Earned Rev ≈ Contract × POC",
-            "remaining_gp_check": "GP to Date ≤ Est GP",
-            "gp_percentage_bounds": "GP% within normal range",
-        }
-
-        formula_detail_rows = []
-        for v in validations:
-            pass_count = 0
-            fail_count = 0
-            for r in rows:
-                row_dict = r.model_dump()
-                required_present = all(row_dict.get(field) is not None for field in v.requires)
-                has_nonzero = any(row_dict.get(field, 0) != 0 for field in v.requires)
-                if not required_present or not has_nonzero:
-                    continue
-                error_msg = v.check(r)
-                if error_msg:
-                    fail_count += 1
-                else:
-                    pass_count += 1
-
-            total_checked = pass_count + fail_count
-            if total_checked == 0:
-                continue
-
-            label = validation_type_labels.get(v.name, v.name)
-            if fail_count == 0:
-                value_str = f"{pass_count}/{total_checked} rows pass"
-            elif fail_count <= 2:
-                value_str = f"{pass_count}/{total_checked} rows pass ({fail_count} {'rounding ≤$1' if fail_count == 1 and v.tolerance_value <= 100 else 'issue' + ('s' if fail_count > 1 else '')})"
-            else:
-                value_str = f"{fail_count}/{total_checked} rows failed"
-
-            formula_detail_rows.append({
-                "label": label,
-                "value": value_str,
-                "match": fail_count == 0,
-            })
-
-        errors_by_job: Dict[str, List[Dict[str, Any]]] = {}
-        for e in all_validation_errors:
-            errors_by_job.setdefault(e["job_id"], []).append(e)
-
-        formula_pass = len(all_validation_errors) == 0
-        if portfolio_column_errors:
-            ce = portfolio_column_errors[0]
-            field_label = ce["field"].replace("_", " ").title()
-            formula_msg = (
-                f"Column Error: {field_label} — corrected across {ce['rows_corrected']} rows "
-                f"({ce['rows_resolved']}/{ce['total_rows']} rows resolved)"
-            )
-        elif formula_pass and correction_log:
-            formula_msg = f"Column Math Validated (after {len(correction_log)} auto-corrections)"
-        elif formula_pass:
-            formula_msg = "Column Math Validated"
-        else:
-            formula_msg = f"Column Math Issues ({len(errors_by_job)} rows)"
-
-        jobs_with_issues: Dict[str, Dict[str, Any]] = {}
-        for e in all_validation_errors:
-            job_id = e["job_id"]
-            jobs_with_issues.setdefault(job_id, {"errors": [], "corrections": []})
-            jobs_with_issues[job_id]["errors"].append(
-                {
-                    "validation": e["validation"],
-                    "message": e["message"],
-                    "category": e["category"],
-                    "root_cause_field": e.get("root_cause_field"),
-                    "is_cascade": e.get("is_cascade", False),
-                }
-            )
-
-        for s in all_correction_suggestions:
-            job_id = s["job_id"]
-            jobs_with_issues.setdefault(job_id, {"errors": [], "corrections": []})
-            applied = any(
-                cl["job_id"] == job_id and cl.get("field") == s.get("field")
-                for cl in correction_log if cl["type"] == "digit_fix"
-            )
-            suggested_display = f"${s['suggested_value']:,.0f}" if s.get('suggested_value') is not None else "Manual review needed"
-            jobs_with_issues[job_id]["corrections"].append(
-                {
-                    "field": s["field"],
-                    "current": f"${s['current_value']:,.0f}",
-                    "suggested": suggested_display,
-                    "confidence": s["confidence"],
-                    "cross_validation_count": s.get("cross_validation_count", 1),
-                    "applied": applied,
-                    "reasoning": s["reasoning"],
-                }
-            )
-
-        for swap in column_swaps:
-            job_id = swap["job_id"]
-            jobs_with_issues.setdefault(job_id, {"errors": [], "corrections": []})
-            jobs_with_issues[job_id]["corrections"].append(
-                {
-                    "field": "cost_to_date ↔ cost_to_complete",
-                    "current": f"CTD ${swap['original_ctd']:,.0f} / CTC ${swap['original_ctc']:,.0f}",
-                    "suggested": f"CTD ${swap['original_ctc']:,.0f} / CTC ${swap['original_ctd']:,.0f}",
-                    "confidence": "high",
-                    "cross_validation_count": 0,
-                    "applied": True,
-                    "reasoning": swap["reasoning"],
-                }
-            )
-
-        corrections_display = [{"jobId": job_id, **data} for job_id, data in jobs_with_issues.items()]
-
-        def _build_chart_data(rows: List[CalculatedWipRow], calc: WipTotals) -> Dict[str, Any]:
-            billing_rows = []
-            for r in rows:
-                net = r.over_billings_calc - r.under_billings_calc
-                if abs(net) > 1000:
-                    short_name = (r.job_name or r.job_id)[:18]
-                    billing_rows.append({"name": short_name, "value": round(net / 1000)})
-            billing_rows.sort(key=lambda x: x["value"])
-            billing_chart = billing_rows 
-
-            risk_tier_lookup = {rr["jobId"]: rr["riskTier"] for rr in risk_rows}
-            exposure_rows = []
-            for r in rows:
-                remaining = r.cost_to_complete
-                if remaining > 10000:
-                    tier = risk_tier_lookup.get(r.job_id, "NONE")
-                    short_name = (r.job_name or r.job_id)[:18]
-                    exposure_rows.append({
-                        "name": short_name,
-                        "completed": round(r.cost_to_date / 1000),
-                        "remaining": round(remaining / 1000),
-                        "tier": tier if tier != "NONE" else "LOW",
-                    })
-            exposure_rows.sort(key=lambda x: x["remaining"], reverse=True)
-            exposure_chart = exposure_rows
-
-            margin_rows = []
-            for r in rows:
-                if r.total_contract_price > 100000 and r.estimated_total_costs > 0:
-                    est_gp_pct = round((r.estimated_gross_profit / r.total_contract_price) * 100, 1)
-                    poc = r.cost_to_date / r.estimated_total_costs
-                    if poc > 0.05:
-                        actual_gp_pct = round((r.gross_profit_to_date / r.revenues_earned) * 100, 1) if r.revenues_earned else 0
-                        short_name = (r.job_name or r.job_id)[:18]
-                        margin_rows.append({
-                            "name": short_name,
-                            "estimated": est_gp_pct,
-                            "actual": actual_gp_pct,
-                        })
-            margin_rows.sort(key=lambda x: x["estimated"] - x["actual"], reverse=True)
-            margin_chart = margin_rows
-
-            return {
-                "billing": billing_chart,
-                "exposure": exposure_chart,
-                "margin": margin_chart,
+            if (mEl && charts.margin) {
+                var mData = isMargMax ? charts.margin : charts.margin.slice(0, 15);
+                var dynWidth = isMargMax ? Math.max(mEl.parentElement.clientWidth, mData.length * 60) + 'px' : '100%';
+                var marginHeight = isMargMax ? '100%' : '280px';
+                mEl.style.width = dynWidth;
+                mEl.style.height = marginHeight;
+                
+                if (!mEl._reactRoot) mEl._reactRoot = ReactDOM.createRoot(mEl);
+                mEl._reactRoot.render(h(MarginChart, { data: mData, width: '100%', height: '100%', isMaximized: isMargMax }));
             }
-
-        charts = _build_chart_data(rows, calc)
-
-        kpis = [
-            {"label": "Contract Value", "value": f"${calc.total_contract_price/1e6:.1f}M"},
-            {"label": "UEGP", "value": f"${t_uegp/1e6:.1f}M"},
-            {"label": "CTC", "value": f"${calc.cost_to_complete/1e6:.1f}M"},
-            {"label": "Earned Rev", "value": f"${calc.revenues_earned/1e6:.1f}M"},
-            {"label": "GP %", "value": f"{gp_percent:.1f}%"},
-            {"label": "Net Position", "value": net_ub_ob_label, "negative": net_ub_ob >= 0},
-        ]
-
-        widget_data = {
-            "validations": {
-                "structural": {
-                    "passed": struct_pass,
-                    "message": struct_msg,
-                    "details": struct_detail_rows,
-                },
-                "formulaic": {
-                    "passed": formula_pass,
-                    "message": formula_msg,
-                    "details": formula_detail_rows,
-                    "jobIssues": [] if portfolio_column_errors else corrections_display,
-                    "columnErrors": portfolio_column_errors,
-                },
-                "totals": {
-                    "passed": totals_pass,
-                    "message": totals_msg,
-                    "details": totals_detail_rows if totals_detail_rows else totals_details,
-                },
-            },
-            "kpis": kpis,
-            "charts": charts,
-            "corrections_applied": correction_log,
-            "riskTier": surety_risk_context["risk_tier"],
-            "riskRowsAll": risk_rows,
-            "metrics": {
-                "row1_1": {"label": "Contract Value", "value": f"${calc.total_contract_price/1000000:.2f}M"},
-                "row1_2": {"label": "UEGP", "value": f"${t_uegp/1000000:.2f}M"},
-                "row1_3": {"label": "CTC", "value": f"${calc.cost_to_complete/1000000:.2f}M"},
-                "row2_1": {"label": "Earned Rev", "value": f"${calc.revenues_earned/1000000:.2f}M"},
-                "row2_2": {"label": "GP %", "value": f"{gp_percent:.1f}%"},
-                "row2_3": {"label": "Net UB / OB", "value": net_ub_ob_label},
-            },
-        }
-
-        return {
-            "calculated_totals": calc,
-            "validation_errors": all_validation_errors,
-            "correction_suggestions": all_correction_suggestions,
-            "correction_log": correction_log,
-            "surety_risk_context": surety_risk_context,
-            "risk_rows": risk_rows,
-            "widget_data": widget_data,
-        }
-
-    except Exception as e:
-        print(f"ANALYST NODE ERROR: {e}")
-        print(traceback.format_exc())
-        return {
-            "calculated_totals": WipTotals(),
-            "validation_errors": [],
-            "correction_suggestions": [],
-            "correction_log": [],
-            "surety_risk_context": {"risk_tier": "UNKNOWN", "error": str(e)},
-            "risk_rows": [],
-            "widget_data": {
-                "validations": {
-                    "structural": {"passed": False, "message": f"Error: {str(e)}", "details": []},
-                    "formulaic": {"passed": False, "message": "Error during analysis", "details": [], "jobIssues": []},
-                    "totals": {"passed": False, "message": "Error during analysis", "details": []},
-                },
-                "metrics": {
-                    "row1_1": {"label": "Contract Value", "value": "$0.00M"},
-                    "row1_2": {"label": "UEGP", "value": "$0.00M"},
-                    "row1_3": {"label": "CTC", "value": "$0.00M"},
-                    "row2_1": {"label": "Earned Rev", "value": "$0.00M"},
-                    "row2_2": {"label": "GP %", "value": "0.0%"},
-                    "row2_3": {"label": "Net UB / OB", "value": "Error"},
-                },
-                "riskTier": "UNKNOWN",
-                "riskRowsAll": [],
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-            },
-            "final_json": {"error": str(e), "traceback": traceback.format_exc()},
-        }
-
-# ==========================================
-# 8. NARRATIVE NODE
-# ==========================================
-
-SURETY_NARRATIVE_PROMPT = """You are a surety underwriting analyst. Write a 2-4 sentence executive abstract of this WIP schedule for the chief underwriter.
-
-PERSPECTIVE: We bonded this contractor. Evaluate everything through: "What does this mean for our recovery if they default?"
-
-PRIORITY: (1) Underbilling exposure = work done, cash not collected = direct recovery risk. (2) Loss jobs / GP fade = eroding net worth. (3) Concentration risk. (4) Overbilling is less concerning (cash collected ahead of work).
-
-DATA QUALITY: {correction_context}
-
-RULES:
-- Exactly 2-4 sentences. No more.
-- Lead with the single most important insight.
-- Connect dots between signals — don't just restate numbers the dashboard already shows.
-- End with what to watch or ask for at next review.
-- No bullets, no headers, no bold, no preamble.
-
-RISK DATA:
-{risk_context}
-
-SUMMARY:"""
-
-
-def narrative_node(state: WipState):
-    print("--- GENERATING NARRATIVE ---")
-    print(f"--- USING MODEL: {state.model_name} ---")
-
-    tracker = MetricsTracker.from_dict(state.metrics_data, state.model_name)
-    client = get_client()
-
-    try:
-        risk_context = state.surety_risk_context
-
-        if not risk_context:
-            widget_data = dict(state.widget_data or {})
-            widget_data["summary"] = {"text": "Unable to generate narrative: no risk context available."}
-            return {"narrative": widget_data["summary"]["text"], "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
-
-        if "error" in risk_context:
-            widget_data = dict(state.widget_data or {})
-            widget_data["summary"] = {"text": f"Analysis error: {risk_context.get('error')}"}
-            return {"narrative": widget_data["summary"]["text"], "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
-
-        correction_log = state.correction_log or []
-        correction_suggestions = state.correction_suggestions or []
-        validation_errors = state.validation_errors or []
-
-        if not correction_log and not validation_errors:
-            correction_context = "All extraction checks passed. Data quality is high confidence."
-        else:
-            parts = []
-            if correction_log:
-                parts.append(f"{len(correction_log)} auto-corrections were applied (column swaps or digit fixes).")
-            if validation_errors:
-                parts.append(f"{len(validation_errors)} validation issues remain post-correction.")
-            if correction_suggestions:
-                low_conf = [s for s in correction_suggestions if s.get("confidence") != "high"]
-                if low_conf:
-                    parts.append(f"{len(low_conf)} suggested fixes were not applied (low confidence).")
-            correction_context = " ".join(parts) + " Factor data quality into your confidence level."
-
-        prompt = SURETY_NARRATIVE_PROMPT.format(
-            risk_context=json.dumps(risk_context, indent=2),
-            correction_context=correction_context,
-        )
-
-        response = client.generate_content(
-            prompt=prompt,
-            model_name=state.model_name,
-            temperature=0.3,
-            max_tokens=500,
-            tracker=tracker,
-            system_prompt="You are a surety underwriting analyst. Write exactly 2-4 sentences of prose. No bullets, no headers. Be specific and insightful.",
-        )
-
-        narrative = response.text.strip()
-
-        if response.finish_reason:
-            print(f"    Narrative finish_reason: {response.finish_reason}")
-            print(f"    Narrative length: {len(narrative)} chars, ~{response.output_tokens} tokens")
-
-        widget_data = dict(state.widget_data or {})
-        widget_data["summary"] = {"text": narrative}
-
-        return {"narrative": narrative, "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
-
-    except Exception as e:
-        print(f"NARRATIVE NODE ERROR: {e}")
-        print(traceback.format_exc())
-
-        fallback = "Error generating narrative summary."
-        try:
-            rc = state.surety_risk_context or {}
-            portfolio = rc.get("portfolio", {})
-            total_value = portfolio.get("total_contract_value", 0) or 0
-            fallback = (
-                f"Portfolio contains {portfolio.get('total_jobs', 0)} jobs with "
-                f"${total_value/1000000:.1f}M total contract value. "
-                f"Risk tier: {rc.get('risk_tier', 'Unknown')}."
-            )
-        except Exception as _e:
-            logger.debug("Narrative fallback construction failed: %s", _e, exc_info=True)
-
-        widget_data = dict(state.widget_data or {})
-        widget_data["summary"] = {"text": fallback}
-        widget_data["narrative_error"] = str(e)
-        return {"narrative": fallback, "widget_data": widget_data, "metrics_data": tracker.get_metrics()}
-
-# ==========================================
-# 9. OUTPUT NODE
-# ==========================================
-
-def output_node(state: WipState):
-    print("--- BUILDING FINAL OUTPUT ---")
-
-    try:
-        payload = {
-            "clean_table": [r.model_dump(exclude={"under_billings_calc", "over_billings_calc"}) for r in state.processed_data] if state.processed_data else [],
-            "calculated_totals": state.calculated_totals.model_dump() if state.calculated_totals else {},
-            "validation_errors": state.validation_errors or [],
-            "correction_suggestions": state.correction_suggestions or [],
-            "corrections_applied": state.correction_log or [],
-            "surety_risk_context": state.surety_risk_context or {},
-            "widget_data": state.widget_data or {},
-            "metrics": state.metrics_data or {},
-        }
-
-        if state.final_json and "error" in state.final_json:
-            payload["error"] = state.final_json.get("error")
-            if "traceback" in state.final_json:
-                payload["traceback"] = state.final_json.get("traceback")
-
-        return {"final_json": payload}
-
-    except Exception as e:
-        print(f"OUTPUT NODE ERROR: {e}")
-        print(traceback.format_exc())
-        return {
-            "final_json": {
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "clean_table": [],
-                "calculated_totals": {},
-                "validation_errors": [],
-                "correction_suggestions": [],
-                "surety_risk_context": {},
-                "widget_data": {"error": str(e)},
-                "metrics": state.metrics_data or {},
-            }
-        }
-
-# ==========================================
-# 10. WORKFLOW
-# ==========================================
-
-workflow = StateGraph(WipState)
-workflow.add_node("extract", extractor_node)
-workflow.add_node("analyze", analyst_node)
-workflow.add_node("narrative", narrative_node)
-workflow.add_node("output", output_node)
-
-workflow.set_entry_point("extract")
-workflow.add_edge("extract", "analyze")
-workflow.add_edge("analyze", "narrative")
-workflow.add_edge("narrative", "output")
-workflow.add_edge("output", END)
-
-app = workflow.compile()
+        });
+    };
+    window.mountPendingCharts();
+})();
+</script>
+</body>
+</html>
