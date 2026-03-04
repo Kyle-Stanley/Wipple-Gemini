@@ -98,6 +98,20 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
 # Default model (may not be available if env keys are missing)
 DEFAULT_MODEL = "gemini-3.1-pro"
 
+# Optimal Mix: Flash-Lite primary, Pro fallback
+OPTIMAL_MIX_KEY = "optimal-mix"
+OPTIMAL_MIX_PRIMARY = "gemini-3.1-flash-lite"
+OPTIMAL_MIX_FALLBACK = "gemini-3.1-pro"
+
+SUPPORTED_MODELS[OPTIMAL_MIX_KEY] = ModelConfig(
+    model_id="optimal-mix",
+    provider=ModelProvider.GOOGLE,
+    display_name="Optimal Mix",
+    # Blended pricing: assume ~80% Flash-Lite hits, ~20% Pro fallback
+    input_price_per_million=0.25 * 0.80 + 2.0 * 0.20,
+    output_price_per_million=1.50 * 0.80 + 12.0 * 0.20,
+)
+
 
 @dataclass
 class ModelResponse:
