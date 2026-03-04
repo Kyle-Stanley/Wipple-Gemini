@@ -526,32 +526,49 @@ def detect_portfolio_column_errors(
     total_error_count: int,
     validations: List[Validation],
     threshold: float = 0.90,
+    min_error_rows: int = 5,
 ) -> List[Dict[str, Any]]:
     """
-    Aggregate root cause data across all rows. If a single field substitution would
-    resolve >= threshold% of all validation errors portfolio-wide, classify it as a
-    column-level extraction error and apply the correction to all affected rows.
+    Aggregate root cause data across all rows. A column error is declared when a
+    single field substitution resolves >= threshold% of the ROWS that have errors
+    (not total error count), and at least min_error_rows rows have errors.
+
+    Using row-based thresholding prevents a single bad job on a clean document from
+    triggering a portfolio-wide column correction. Digit-score is intentionally not
+    considered here — column errors involve grabbing the wrong column entirely, so
+    values have no digit relationship to the correct ones.
 
     Returns a list of detected column errors (usually 0 or 1).
     """
     if total_error_count == 0:
         return []
 
-    # Tally how many total errors each field substitution resolves across all rows
-    field_resolutions: Dict[str, int] = {}
+    # How many distinct rows have at least one error?
+    rows_with_errors: set = {rc["job_id"] for rc in all_root_cause_results if rc.get("root_causes")}
+    if len(rows_with_errors) < min_error_rows:
+        return []
+
+    total_rows = len(rows)
+
+    # For each field, count how many error-rows are fully resolved by substituting it
+    field_rows_resolved: Dict[str, set] = {}   # field -> set of job_ids fully resolved
     field_values: Dict[str, Dict[str, float]] = {}  # field -> {job_id -> suggested_value}
 
     for rc in all_root_cause_results:
         job_id = rc["job_id"]
+        job_error_count = len([e for e in rc.get("by_validation", {}).values()])
         for cause in rc.get("root_causes", []):
             field = cause["field"]
-            field_resolutions[field] = field_resolutions.get(field, 0) + cause["resolutions"]
+            # A row is "resolved" by this field if it fixes ALL of that row's errors
+            if cause["resolutions"] >= job_error_count and job_error_count > 0:
+                field_rows_resolved.setdefault(field, set()).add(job_id)
             field_values.setdefault(field, {})[job_id] = cause["suggested_value"]
 
     column_errors = []
-    for field, total_resolved in field_resolutions.items():
-        resolution_rate = total_resolved / total_error_count
-        if resolution_rate >= threshold:
+    for field, resolved_job_ids in field_rows_resolved.items():
+        # Threshold over total rows — a true column error affects every job
+        row_resolution_rate = len(resolved_job_ids) / total_rows
+        if row_resolution_rate >= threshold:
             # Apply correction to all affected rows
             rows_corrected = 0
             for r in rows:
@@ -562,9 +579,10 @@ def detect_portfolio_column_errors(
 
             column_errors.append({
                 "field": field,
-                "resolution_rate": resolution_rate,
-                "errors_resolved": total_resolved,
-                "total_errors": total_error_count,
+                "row_resolution_rate": row_resolution_rate,
+                "rows_resolved": len(resolved_job_ids),
+                "total_rows": total_rows,
+                "rows_with_errors": len(rows_with_errors),
                 "rows_corrected": rows_corrected,
             })
 
@@ -1513,7 +1531,7 @@ def analyst_node(state: WipState):
             field_label = ce["field"].replace("_", " ").title()
             formula_msg = (
                 f"Column Error: {field_label} — corrected across {ce['rows_corrected']} rows "
-                f"({int(ce['resolution_rate'] * 100)}% of issues resolved)"
+                f"({ce['rows_resolved']}/{ce['total_rows']} rows resolved)"
             )
         elif formula_pass and correction_log:
             formula_msg = f"Column Math Validated (after {len(correction_log)} auto-corrections)"
