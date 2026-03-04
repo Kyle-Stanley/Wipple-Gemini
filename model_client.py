@@ -65,13 +65,6 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         input_price_per_million=3.0,
         output_price_per_million=15.0,
     ),
-    "claude-sonnet-4-5": ModelConfig(
-        model_id=_env_override("MODEL_ID_CLAUDE_SONNET_4_5", "claude-sonnet-4-5-20250929"),
-        provider=ModelProvider.ANTHROPIC,
-        display_name="Claude Sonnet 4.5",
-        input_price_per_million=3.0,
-        output_price_per_million=15.0,
-    ),
     "claude-haiku-4-5": ModelConfig(
         model_id=_env_override("MODEL_ID_CLAUDE_HAIKU_4_5", "claude-haiku-4-5-20251001"),
         provider=ModelProvider.ANTHROPIC,
@@ -86,19 +79,19 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         input_price_per_million=2.0,
         output_price_per_million=12.0,
     ),
-    "gemini-3-pro": ModelConfig(
-        model_id=_env_override("MODEL_ID_GEMINI_3_PRO", "gemini-3-pro-preview"),
-        provider=ModelProvider.GOOGLE,
-        display_name="Gemini 3 Pro",
-        input_price_per_million=1.25,
-        output_price_per_million=10.0,
-    ),
     "gemini-3-flash": ModelConfig(
         model_id=_env_override("MODEL_ID_GEMINI_3_FLASH", "gemini-3-flash-preview"),
         provider=ModelProvider.GOOGLE,
         display_name="Gemini 3 Flash",
         input_price_per_million=0.50,
         output_price_per_million=3.00,
+    ),
+    "gemini-3.1-flash-lite": ModelConfig(
+        model_id=_env_override("MODEL_ID_GEMINI_3_1_FLASH_LITE", "gemini-3.1-flash-lite-preview"),
+        provider=ModelProvider.GOOGLE,
+        display_name="Gemini 3.1 Flash-Lite",
+        input_price_per_million=0.25,
+        output_price_per_million=1.50,
     ),
 }
 
