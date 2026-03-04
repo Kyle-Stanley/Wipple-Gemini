@@ -484,6 +484,20 @@ def resolve_root_causes(
     max_resolutions = max(resolution_counts.values())
     root_fields = {f for f, c in resolution_counts.items() if c == max_resolutions and c > 0}
 
+    # Tie-break: when multiple fields resolve equally, prefer estimated/projected fields
+    # over actuals. E.g. if Est Cost == CTD (model grabbed same column for both),
+    # estimated_total_costs is the more likely extraction error than cost_to_date.
+    _field_priority = [
+        "estimated_total_costs", "estimated_gross_profit", "total_contract_price",
+        "revenues_earned", "gross_profit_to_date", "cost_to_complete",
+        "billed_to_date", "cost_to_date",
+    ]
+    if len(root_fields) > 1:
+        for preferred in _field_priority:
+            if preferred in root_fields:
+                root_fields = {preferred}
+                break
+
     by_validation: Dict[str, Dict] = {}
     for error in errors:
         vname = error["validation"]
