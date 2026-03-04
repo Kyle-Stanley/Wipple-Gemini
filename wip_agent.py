@@ -435,7 +435,119 @@ def suggest_corrections(row: CalculatedWipRow, errors: List[Dict[str, Any]]) -> 
 
 
 # ==========================================
-# 4b. COLUMN SWAP DETECTION (Tier 1)
+# 4b. ROOT CAUSE RESOLVER
+# ==========================================
+
+def resolve_root_causes(
+    row: CalculatedWipRow,
+    errors: List[Dict[str, Any]],
+    validations: List[Validation],
+) -> Dict[str, Any]:
+    """
+    For each failing validation, determine whether it's a root cause or a cascade
+    by simulating candidate field substitutions and measuring how many failures resolve.
+
+    Returns a dict keyed by validation name:
+        {
+            "contract_cost_gp": {
+                "is_cascade": True,
+                "root_cause_field": "estimated_total_costs",
+                "root_cause_value": 67676191.0,
+                "resolutions": 3,   # how many errors this substitution fixes
+            },
+            ...
+        }
+    Also returns a top-level "root_causes" list of the unique fields identified as roots.
+    """
+    if not errors:
+        return {"by_validation": {}, "root_causes": []}
+
+    failing_names = {e["validation"] for e in errors}
+
+    # Collect all unique (field, suggested_value) candidates across all failing validations
+    all_candidates: Dict[str, float] = {}  # field -> suggested_value (last writer wins if same field)
+    candidate_sources: Dict[str, List[str]] = {}  # field -> [validation_names that nominated it]
+
+    for error in errors:
+        for c in _get_candidates_for_validation(row, error["validation"]):
+            field = c["field"]
+            suggested = c["suggested"]
+            # If same field nominated by multiple validations, prefer the value
+            # with the lowest digit_change_score (closest to what was extracted)
+            if field not in all_candidates:
+                all_candidates[field] = suggested
+                candidate_sources[field] = [error["validation"]]
+            else:
+                existing_score = digit_change_score(getattr(row, field, 0), all_candidates[field])
+                new_score = digit_change_score(getattr(row, field, 0), suggested)
+                if new_score < existing_score:
+                    all_candidates[field] = suggested
+                candidate_sources[field].append(error["validation"])
+
+    # Simulate each substitution and count how many original failures resolve
+    resolution_counts: Dict[str, int] = {}
+    for field, suggested_value in all_candidates.items():
+        sim_row = row.model_copy()
+        setattr(sim_row, field, suggested_value)
+        sim_errors = {e["validation"] for e in run_validations(sim_row, validations)}
+        resolved = failing_names - sim_errors
+        resolution_counts[field] = len(resolved)
+
+    if not resolution_counts:
+        return {"by_validation": {}, "root_causes": []}
+
+    # Fields that resolve the most failures are root causes
+    max_resolutions = max(resolution_counts.values())
+    root_fields = {
+        field for field, count in resolution_counts.items()
+        if count == max_resolutions and count > 0
+    }
+
+    # Tag each failing validation
+    by_validation: Dict[str, Dict] = {}
+    for error in errors:
+        vname = error["validation"]
+        # Find which candidate field for this validation is a root cause
+        v_candidates = _get_candidates_for_validation(row, vname)
+        root_candidate = next(
+            (c for c in v_candidates if c["field"] in root_fields),
+            None
+        )
+        if root_candidate:
+            field = root_candidate["field"]
+            by_validation[vname] = {
+                "is_cascade": False,
+                "root_cause_field": field,
+                "root_cause_value": all_candidates[field],
+                "resolutions": resolution_counts[field],
+            }
+        else:
+            # This validation's candidates don't overlap with the root field —
+            # it may be an independent error or a deeper cascade
+            best_field = max(resolution_counts, key=resolution_counts.get)
+            by_validation[vname] = {
+                "is_cascade": True,
+                "root_cause_field": best_field,
+                "root_cause_value": all_candidates.get(best_field),
+                "resolutions": resolution_counts.get(best_field, 0),
+            }
+
+    return {
+        "by_validation": by_validation,
+        "root_causes": [
+            {
+                "field": field,
+                "suggested_value": all_candidates[field],
+                "resolutions": resolution_counts[field],
+                "nominated_by": candidate_sources[field],
+            }
+            for field in root_fields
+        ],
+    }
+
+
+# ==========================================
+# 4c. COLUMN SWAP DETECTION (Tier 1)
 # ==========================================
 
 def detect_column_swaps(rows: List[CalculatedWipRow]) -> List[Dict[str, Any]]:
@@ -920,8 +1032,10 @@ def extractor_node(state: WipState):
        - Formula: Estimated Total Costs - Cost to Date = Cost to Complete
        - For completed jobs (100% done), this should be 0 or near 0
 
-    3. ESTIMATED TOTAL COSTS (estimated_total_costs): Total expected cost when job is done.
-       - Column headers: "Estimated Cost", "Total Est Cost", "Est Total Costs"
+    3. ESTIMATED TOTAL COSTS (estimated_total_costs): The full projected cost budget for the job from start to finish.
+       - Column headers: "Estimated Cost", "Total Est Cost", "Est Total Costs", "Revised Est Cost",
+         "Total Projected Costs", "Total Projected Cost", "Projected Total Cost"
+       - This is the contractor's total cost forecast: what has already been spent plus what remains.
        - Formula: Cost to Date + Cost to Complete = Estimated Total Costs
 
     VALIDATION: For each row, verify: Cost to Date + Cost to Complete = Estimated Total Costs
@@ -1193,11 +1307,24 @@ def analyst_node(state: WipState):
 
         pre_correction_errors: List[Dict[str, Any]] = []
         all_correction_suggestions: List[Dict[str, Any]] = []
+        all_root_cause_results: List[Dict[str, Any]] = []
 
         for r in rows:
             row_errors = run_validations(r, validations)
             pre_correction_errors.extend(row_errors)
             if row_errors:
+                root_cause_result = resolve_root_causes(r, row_errors, validations)
+                all_root_cause_results.append({"job_id": r.job_id, **root_cause_result})
+
+                # Tag each error with root cause info before passing to suggest_corrections
+                for err in row_errors:
+                    vname = err["validation"]
+                    rc_info = root_cause_result["by_validation"].get(vname, {})
+                    err["is_cascade"] = rc_info.get("is_cascade", False)
+                    err["root_cause_field"] = rc_info.get("root_cause_field")
+                    err["root_cause_value"] = rc_info.get("root_cause_value")
+                    err["root_resolutions"] = rc_info.get("resolutions", 0)
+
                 suggestions = suggest_corrections(r, row_errors)
                 all_correction_suggestions.extend(suggestions)
 
@@ -1502,6 +1629,7 @@ def analyst_node(state: WipState):
             "calculated_totals": calc,
             "validation_errors": all_validation_errors,
             "correction_suggestions": all_correction_suggestions,
+            "root_cause_results": all_root_cause_results,
             "correction_log": correction_log,
             "surety_risk_context": surety_risk_context,
             "risk_rows": risk_rows,
