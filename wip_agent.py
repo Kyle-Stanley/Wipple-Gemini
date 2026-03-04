@@ -1686,6 +1686,9 @@ def analyst_node(state: WipState):
             errors_by_job.setdefault(e["job_id"], []).append(e)
 
         formula_pass = len(all_validation_errors) == 0
+        # Always generate retry feedback when there are validation errors.
+        # At ~$0.01/run a retry is nearly always worth it — no need for a strict
+        # threshold just to show the button.
         if portfolio_column_errors:
             ce = portfolio_column_errors[0]
             field_label = ce["field"].replace("_", " ").title()
@@ -1694,7 +1697,6 @@ def analyst_node(state: WipState):
                 f"Column Error: {field_label} likely misread "
                 f"({ce['rows_resolved']}/{ce['total_rows']} rows affected) — retry recommended"
             )
-            # Build feedback string for retry
             _feedback_for_retry = (
                 f"{ce['rows_resolved']} of {ce['total_rows']} jobs failed formula validation "
                 f"({_pct}% failure rate). This is a strong indicator of a column mapping error "
@@ -1702,6 +1704,32 @@ def analyst_node(state: WipState):
                 f"to the '{field_label}' column. Double-check that you are reading the correct "
                 f"column and not an adjacent one with a similar name or value."
             )
+        elif all_validation_errors:
+            # Summarize the most commonly implicated fields across all failing jobs
+            field_counts: Dict[str, int] = {}
+            for e in all_validation_errors:
+                f_ = e.get("root_cause_field")
+                if f_ and not e.get("is_cascade"):
+                    field_counts[f_] = field_counts.get(f_, 0) + 1
+
+            failing_job_count = len(errors_by_job)
+            total_job_count = len(rows)
+
+            if field_counts:
+                top_field = max(field_counts, key=field_counts.get)
+                top_label = top_field.replace("_", " ").title()
+                _feedback_for_retry = (
+                    f"{failing_job_count} of {total_job_count} jobs failed formula validation. "
+                    f"The most commonly implicated field is '{top_label}' "
+                    f"({field_counts[top_field]} jobs). "
+                    f"Please re-examine your column mappings carefully, particularly for '{top_label}'."
+                )
+            else:
+                _feedback_for_retry = (
+                    f"{failing_job_count} of {total_job_count} jobs failed formula validation. "
+                    f"Please re-examine your column mappings carefully and verify each field "
+                    f"is mapped to the correct column in the source document."
+                )
         else:
             _feedback_for_retry = ""
 
