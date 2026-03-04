@@ -1920,9 +1920,14 @@ function renderValidationHtml(vals, tableRows) {
 
     window.retryWithFeedback = () => {
         if (!state.file || !state.retryFeedback) return;
-        // Reset result area and re-run with feedback attached
-        $('results').innerHTML = '';
-        $('result-area').style.display = 'none';
+        // Clear validation and dashboard containers, reset to processing state
+        const valCont = $('validation-container');
+        const dashCont = $('dashboard-container');
+        if (valCont) valCont.innerHTML = '';
+        if (dashCont) dashCont.innerHTML = '';
+        state.validationDone = false;
+        state.dashboardReady = false;
+        setStage('validation', true);
         handleAnalyze();
     };
 
@@ -2195,7 +2200,7 @@ function handleWipResult(payload, valContainer, dashContainer) {
     openBtn.style.cssText = 'display:flex; justify-content:center; gap:12px; margin-top:28px; animation: fadeSlide 0.4s forwards;';
     const hasRetryFeedback = !!(state && state.retryFeedback);
     openBtn.innerHTML = `
-        ${hasRetryFeedback ? `<button class="action-nav-btn action-nav-back" id="retry-feedback-btn" onclick="retryWithFeedback()">↺ Retry with Feedback</button>` : ''}
+        ${hasRetryFeedback ? `<button class="action-nav-btn action-nav-back" id="retry-feedback-btn" onclick="retryWithFeedback()">Retry with Feedback</button>` : ''}
         <button class="action-nav-btn action-nav-fwd" id="open-dashboard-btn">Open Dashboard →</button>
     `;
     valContainer.appendChild(openBtn);
