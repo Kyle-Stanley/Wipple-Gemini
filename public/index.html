@@ -606,6 +606,22 @@
         .job-issue-header { display: flex; align-items: center; padding: 4px 0; margin-bottom: 8px; }
         /* Formulaic validation table */
         .fvt-wrap { width: 100%; }
+        .fvt-wrap.fvt-maximized {
+            position: fixed;
+            top: 5vh; left: 10vw;
+            width: 80vw; height: 90vh;
+            z-index: 9999;
+            background: var(--surface);
+            border: 1px solid var(--border-strong);
+            border-radius: 8px;
+            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            animation: modalEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            overflow: hidden;
+        }
+        .fvt-wrap.fvt-maximized .fvt-toolbar { flex-shrink: 0; background: var(--surface-alt); border-radius: 8px 8px 0 0; }
+        .fvt-wrap.fvt-maximized .fvt-scroll { flex: 1; max-height: none !important; border-radius: 0 0 8px 8px; }
         .fvt-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); }
         .fvt-count { font-size: 11px; color: var(--text-muted); }
         .fvt-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
@@ -627,7 +643,7 @@
         .fvt-expand-row { transition: all 0.2s ease; }
         .fvt-expand-row td { padding: 0; }
         .fvt-expand-cell { background: var(--surface-alt); border-bottom: 1px solid var(--border); }
-        .val-details.fvt-details-panel { max-height: 480px !important; }
+        .val-details.fvt-details-panel { max-height: 480px !important; background: var(--surface) !important; border-left: none !important; }
         .val-details.fvt-details-panel.open { max-height: 480px !important; }
         .fvt-expand-inner { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 10px 14px; }
         .fvt-expand-col { padding: 0 12px; border-right: 1px solid var(--border); }
@@ -1882,13 +1898,32 @@ function renderValidationHtml(vals, tableRows) {
         const wrap = document.getElementById('fvt-wrap-' + tableId);
         const scroll = document.getElementById('fvt-scroll-' + tableId);
         if (!wrap || !scroll) return;
+        const backdrop = document.getElementById('modal-backdrop');
         const isMax = wrap.classList.contains('fvt-maximized');
+
         if (isMax) {
             wrap.classList.remove('fvt-maximized');
+            backdrop.classList.remove('active');
+            document.body.classList.remove('has-maximized');
             scroll.style.maxHeight = '420px';
+            // restore in-flow position
+            const placeholder = document.getElementById('fvt-placeholder-' + tableId);
+            if (placeholder && placeholder.parentNode) {
+                placeholder.parentNode.insertBefore(wrap, placeholder);
+                placeholder.remove();
+            }
         } else {
+            // drop a placeholder breadcrumb then teleport to body root
+            const placeholder = document.createElement('div');
+            placeholder.id = 'fvt-placeholder-' + tableId;
+            placeholder.style.display = 'none';
+            wrap.parentNode.insertBefore(placeholder, wrap);
+            document.body.appendChild(wrap);
+
             wrap.classList.add('fvt-maximized');
-            scroll.style.maxHeight = 'calc(80vh - 80px)';
+            scroll.style.maxHeight = 'calc(90vh - 100px)';
+            backdrop.classList.add('active');
+            document.body.classList.add('has-maximized');
         }
     };
 
@@ -2324,7 +2359,11 @@ document.getElementById('modal-backdrop').addEventListener('click', () => {
     document.querySelectorAll('.widget-card.maximized').forEach(card => {
         const id = card.id.replace('card-', '');
         window.toggleMaximize(id);
-    }); 
+    });
+    document.querySelectorAll('.fvt-wrap.fvt-maximized').forEach(wrap => {
+        const id = wrap.id.replace('fvt-wrap-', '');
+        window.fvtMaximize(id);
+    });
 });
 
 // ==========================================
