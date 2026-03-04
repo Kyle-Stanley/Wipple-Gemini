@@ -444,36 +444,22 @@ def resolve_root_causes(
     validations: List[Validation],
 ) -> Dict[str, Any]:
     """
-    For each failing validation, determine whether it's a root cause or a cascade
-    by simulating candidate field substitutions and measuring how many failures resolve.
-
-    Returns a dict keyed by validation name:
-        {
-            "contract_cost_gp": {
-                "is_cascade": True,
-                "root_cause_field": "estimated_total_costs",
-                "root_cause_value": 67676191.0,
-                "resolutions": 3,   # how many errors this substitution fixes
-            },
-            ...
-        }
-    Also returns a top-level "root_causes" list of the unique fields identified as roots.
+    For a single row with N failing validations, simulate substituting each candidate
+    field value and measure how many failures resolve. Returns root cause tags per validation.
     """
     if not errors:
         return {"by_validation": {}, "root_causes": []}
 
     failing_names = {e["validation"] for e in errors}
 
-    # Collect all unique (field, suggested_value) candidates across all failing validations
-    all_candidates: Dict[str, float] = {}  # field -> suggested_value (last writer wins if same field)
-    candidate_sources: Dict[str, List[str]] = {}  # field -> [validation_names that nominated it]
+    # Collect unique (field -> best_suggested_value) across all failing validations
+    all_candidates: Dict[str, float] = {}
+    candidate_sources: Dict[str, List[str]] = {}
 
     for error in errors:
         for c in _get_candidates_for_validation(row, error["validation"]):
             field = c["field"]
             suggested = c["suggested"]
-            # If same field nominated by multiple validations, prefer the value
-            # with the lowest digit_change_score (closest to what was extracted)
             if field not in all_candidates:
                 all_candidates[field] = suggested
                 candidate_sources[field] = [error["validation"]]
@@ -484,35 +470,25 @@ def resolve_root_causes(
                     all_candidates[field] = suggested
                 candidate_sources[field].append(error["validation"])
 
-    # Simulate each substitution and count how many original failures resolve
+    # Simulate each substitution and count resolutions
     resolution_counts: Dict[str, int] = {}
     for field, suggested_value in all_candidates.items():
         sim_row = row.model_copy()
         setattr(sim_row, field, suggested_value)
         sim_errors = {e["validation"] for e in run_validations(sim_row, validations)}
-        resolved = failing_names - sim_errors
-        resolution_counts[field] = len(resolved)
+        resolution_counts[field] = len(failing_names - sim_errors)
 
     if not resolution_counts:
         return {"by_validation": {}, "root_causes": []}
 
-    # Fields that resolve the most failures are root causes
     max_resolutions = max(resolution_counts.values())
-    root_fields = {
-        field for field, count in resolution_counts.items()
-        if count == max_resolutions and count > 0
-    }
+    root_fields = {f for f, c in resolution_counts.items() if c == max_resolutions and c > 0}
 
-    # Tag each failing validation
     by_validation: Dict[str, Dict] = {}
     for error in errors:
         vname = error["validation"]
-        # Find which candidate field for this validation is a root cause
         v_candidates = _get_candidates_for_validation(row, vname)
-        root_candidate = next(
-            (c for c in v_candidates if c["field"] in root_fields),
-            None
-        )
+        root_candidate = next((c for c in v_candidates if c["field"] in root_fields), None)
         if root_candidate:
             field = root_candidate["field"]
             by_validation[vname] = {
@@ -522,8 +498,6 @@ def resolve_root_causes(
                 "resolutions": resolution_counts[field],
             }
         else:
-            # This validation's candidates don't overlap with the root field —
-            # it may be an independent error or a deeper cascade
             best_field = max(resolution_counts, key=resolution_counts.get)
             by_validation[vname] = {
                 "is_cascade": True,
@@ -544,6 +518,57 @@ def resolve_root_causes(
             for field in root_fields
         ],
     }
+
+
+def detect_portfolio_column_errors(
+    rows: List[CalculatedWipRow],
+    all_root_cause_results: List[Dict[str, Any]],
+    total_error_count: int,
+    validations: List[Validation],
+    threshold: float = 0.90,
+) -> List[Dict[str, Any]]:
+    """
+    Aggregate root cause data across all rows. If a single field substitution would
+    resolve >= threshold% of all validation errors portfolio-wide, classify it as a
+    column-level extraction error and apply the correction to all affected rows.
+
+    Returns a list of detected column errors (usually 0 or 1).
+    """
+    if total_error_count == 0:
+        return []
+
+    # Tally how many total errors each field substitution resolves across all rows
+    field_resolutions: Dict[str, int] = {}
+    field_values: Dict[str, Dict[str, float]] = {}  # field -> {job_id -> suggested_value}
+
+    for rc in all_root_cause_results:
+        job_id = rc["job_id"]
+        for cause in rc.get("root_causes", []):
+            field = cause["field"]
+            field_resolutions[field] = field_resolutions.get(field, 0) + cause["resolutions"]
+            field_values.setdefault(field, {})[job_id] = cause["suggested_value"]
+
+    column_errors = []
+    for field, total_resolved in field_resolutions.items():
+        resolution_rate = total_resolved / total_error_count
+        if resolution_rate >= threshold:
+            # Apply correction to all affected rows
+            rows_corrected = 0
+            for r in rows:
+                job_suggested = field_values.get(field, {}).get(r.job_id)
+                if job_suggested is not None:
+                    setattr(r, field, job_suggested)
+                    rows_corrected += 1
+
+            column_errors.append({
+                "field": field,
+                "resolution_rate": resolution_rate,
+                "errors_resolved": total_resolved,
+                "total_errors": total_error_count,
+                "rows_corrected": rows_corrected,
+            })
+
+    return column_errors
 
 
 # ==========================================
@@ -1315,8 +1340,6 @@ def analyst_node(state: WipState):
             if row_errors:
                 root_cause_result = resolve_root_causes(r, row_errors, validations)
                 all_root_cause_results.append({"job_id": r.job_id, **root_cause_result})
-
-                # Tag each error with root cause info before passing to suggest_corrections
                 for err in row_errors:
                     vname = err["validation"]
                     rc_info = root_cause_result["by_validation"].get(vname, {})
@@ -1324,9 +1347,14 @@ def analyst_node(state: WipState):
                     err["root_cause_field"] = rc_info.get("root_cause_field")
                     err["root_cause_value"] = rc_info.get("root_cause_value")
                     err["root_resolutions"] = rc_info.get("resolutions", 0)
-
                 suggestions = suggest_corrections(r, row_errors)
                 all_correction_suggestions.extend(suggestions)
+
+        # Portfolio-level column error detection — must run before column swaps
+        # so corrections are applied before the swap check re-reads row values
+        portfolio_column_errors = detect_portfolio_column_errors(
+            rows, all_root_cause_results, len(pre_correction_errors), validations
+        )
 
         column_swaps = detect_column_swaps(rows)
         correction_log = apply_corrections(rows, column_swaps, all_correction_suggestions)
@@ -1480,7 +1508,14 @@ def analyst_node(state: WipState):
             errors_by_job.setdefault(e["job_id"], []).append(e)
 
         formula_pass = len(all_validation_errors) == 0
-        if formula_pass and correction_log:
+        if portfolio_column_errors:
+            ce = portfolio_column_errors[0]
+            field_label = ce["field"].replace("_", " ").title()
+            formula_msg = (
+                f"Column Error: {field_label} — corrected across {ce['rows_corrected']} rows "
+                f"({int(ce['resolution_rate'] * 100)}% of issues resolved)"
+            )
+        elif formula_pass and correction_log:
             formula_msg = f"Column Math Validated (after {len(correction_log)} auto-corrections)"
         elif formula_pass:
             formula_msg = "Column Math Validated"
@@ -1602,7 +1637,8 @@ def analyst_node(state: WipState):
                     "passed": formula_pass,
                     "message": formula_msg,
                     "details": formula_detail_rows,
-                    "jobIssues": corrections_display,
+                    "jobIssues": [] if portfolio_column_errors else corrections_display,
+                    "columnErrors": portfolio_column_errors,
                 },
                 "totals": {
                     "passed": totals_pass,
@@ -1629,7 +1665,6 @@ def analyst_node(state: WipState):
             "calculated_totals": calc,
             "validation_errors": all_validation_errors,
             "correction_suggestions": all_correction_suggestions,
-            "root_cause_results": all_root_cause_results,
             "correction_log": correction_log,
             "surety_risk_context": surety_risk_context,
             "risk_rows": risk_rows,
