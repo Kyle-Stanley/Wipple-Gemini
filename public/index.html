@@ -1476,7 +1476,7 @@ function handleSingleMode() {
         onBondStep3: (data) => { removeLoading(container); renderBondWidget3(data, container); },
         onBondFinal: (data) => {
             state.fullAnalysisContext = data;
-            if (data.metrics) appendHtml(container, renderMetricsFooterHtml(data.metrics));
+            if (data.metrics) { if (data.actual_model) data.metrics._actual_model = data.actual_model; appendHtml(container, renderMetricsFooterHtml(data.metrics)); }
             if (window.saveAnalysis) window.saveAnalysis(data);
             finish(container);
         },
@@ -1519,12 +1519,12 @@ function buildCompareCallbacks(panel, onComplete) {
                 const chatId = 'chat-' + Math.random().toString(36).substr(2, 6);
                 let dashHtml = renderDashboardLayout(wd, data, data.clean_table, data.calculated_totals, chatId);
                 if (data.metrics) {
-                    dashHtml += renderMetricsFooterHtml(data.metrics);
+                    if (data.actual_model) data.metrics._actual_model = data.actual_model; dashHtml += renderMetricsFooterHtml(data.metrics);
                 }
                 appendHtml(panel, dashHtml);
                 setupChatInterface(chatId, state.modelA, data.clean_table, data.calculated_totals, {data: data});
             } else {
-                if (data.metrics) appendHtml(panel, renderMetricsFooterHtml(data.metrics));
+                if (data.metrics) { if (data.actual_model) data.metrics._actual_model = data.actual_model; appendHtml(panel, renderMetricsFooterHtml(data.metrics)); }
             }
             
             setupCollapsibles(panel);
@@ -1535,7 +1535,7 @@ function buildCompareCallbacks(panel, onComplete) {
         onBondStep2: (data) => { removeLoading(panel); renderBondWidget2(data, panel); showLoading(panel, 'Generating opinion...'); },
         onBondStep3: (data) => { renderBondWidget3(data, panel); },
         onBondFinal: (data) => {
-            if (data.metrics) appendHtml(panel, renderMetricsFooterHtml(data.metrics));
+            if (data.metrics) { if (data.actual_model) data.metrics._actual_model = data.actual_model; appendHtml(panel, renderMetricsFooterHtml(data.metrics)); }
             if (window.saveAnalysis) window.saveAnalysis(data);
         },
         onError: (msg) => { removeLoading(panel); addStatus(panel, `Error: ${msg}`); },
@@ -2203,7 +2203,7 @@ function handleWipResult(payload, valContainer, dashContainer) {
     
     // Explicitly append the metrics footer if it exists
     if (data.metrics) {
-        dashHtml += renderMetricsFooterHtml(data.metrics);
+        if (data.actual_model) data.metrics._actual_model = data.actual_model; dashHtml += renderMetricsFooterHtml(data.metrics);
     }
     
     dashContainer.innerHTML = dashHtml;
@@ -2438,7 +2438,7 @@ function renderMetricsFooterHtml(metrics) {
         <div class="metrics-footer">
             <div>
                 <div class="metrics-model-label">Analyzed with</div>
-                <div class="metrics-model-name">${metrics.model_display_name || metrics.model_name}${data.actual_model && data.actual_model !== metrics.model_name ? ` <span style="font-size:10px;color:var(--text-muted);font-weight:400;">via ${data.actual_model}</span>` : ''}</div>
+                <div class="metrics-model-name">${metrics.model_display_name || metrics.model_name}${metrics._actual_model && metrics._actual_model !== metrics.model_name ? ` <span style="font-size:10px;color:var(--text-muted);font-weight:400;">via ${metrics._actual_model}</span>` : ''}</div>
             </div>
             <div class="metrics-stats">
                 <div class="metrics-stat"><div class="metrics-stat-value">${timeStr}</div><div class="metrics-stat-label">Time</div></div>
