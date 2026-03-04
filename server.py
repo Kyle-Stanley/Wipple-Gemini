@@ -459,7 +459,7 @@ async def run_bond_stream(inputs: dict):
 # Main generator
 # -----------------------
 
-async def processing_generator(temp_filename: str, model_name: str):
+async def processing_generator(temp_filename: str, model_name: str, feedback: str = ""):
     try:
         model_config = SUPPORTED_MODELS.get(model_name)
         model_display = model_config.display_name if model_config else model_name
@@ -470,7 +470,7 @@ async def processing_generator(temp_filename: str, model_name: str):
         # Router offloaded to a thread (LLM call is blocking)
         doc_type = await anyio.to_thread.run_sync(detect_document_type_sync, temp_filename, model_name)
 
-        inputs = {"file_path": temp_filename, "model_name": model_name}
+        inputs = {"file_path": temp_filename, "model_name": model_name, "extraction_feedback": feedback}
 
         if doc_type == "WIP":
             yield format_sse("status", f"Processing WIP schedule with {model_display}...")
@@ -536,11 +536,12 @@ def chat_endpoint(req: ChatRequest):
 async def analyze_stream(
     file: UploadFile = File(...),
     model: str = Form(default=""),
+    feedback: str = Form(default=""),
 ):
     request_id = uuid.uuid4().hex[:12]
     model_name = normalize_model_or_default(model)
 
-    logger.info("RECEIVING FILE name=%s model=%s request_id=%s", file.filename, model_name, request_id)
+    logger.info("RECEIVING FILE name=%s model=%s request_id=%s feedback=%s", file.filename, model_name, request_id, bool(feedback))
 
     # Basic content-type check (not authoritative but helpful)
     if file.content_type and "pdf" not in file.content_type.lower():
@@ -549,7 +550,7 @@ async def analyze_stream(
     temp_path = await save_upload_pdf_to_temp(file, request_id)
 
     return StreamingResponse(
-        processing_generator(temp_path, model_name),
+        processing_generator(temp_path, model_name, feedback=feedback),
         media_type="text/event-stream",
     )
 
@@ -560,7 +561,7 @@ async def analyze_wip_stream_legacy(
     model: str = Form(default=""),
 ):
     # Legacy endpoint uses same unified pipeline now
-    return await analyze_stream(file=file, model=model)
+    return await analyze_stream(file=file, model=model, feedback="")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
