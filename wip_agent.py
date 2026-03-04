@@ -617,21 +617,15 @@ def detect_portfolio_column_errors(
         # Threshold over total rows — a true column error affects every job
         row_resolution_rate = len(resolved_job_ids) / total_rows
         if row_resolution_rate >= threshold:
-            # Apply correction to all affected rows
-            rows_corrected = 0
-            for r in rows:
-                job_suggested = field_values.get(field, {}).get(r.job_id)
-                if job_suggested is not None:
-                    setattr(r, field, job_suggested)
-                    rows_corrected += 1
-
+            # Do NOT auto-correct — flag for retry with feedback instead.
+            # The user should be given the opportunity to retry before any
+            # values are overwritten.
             column_errors.append({
                 "field": field,
                 "row_resolution_rate": row_resolution_rate,
                 "rows_resolved": len(resolved_job_ids),
                 "total_rows": total_rows,
                 "rows_with_errors": len(rows_with_errors),
-                "rows_corrected": rows_corrected,
             })
 
     return column_errors
@@ -1675,13 +1669,12 @@ def analyst_node(state: WipState):
         if portfolio_column_errors:
             ce = portfolio_column_errors[0]
             field_label = ce["field"].replace("_", " ").title()
-            formula_msg = (
-                f"Column Error: {field_label} — corrected across {ce['rows_corrected']} rows "
-                f"({ce['rows_resolved']}/{ce['total_rows']} rows resolved)"
-            )
-            # Build feedback string for retry — surfaced in the API response so the
-            # frontend can pass it back on a retry request
             _pct = int(ce["row_resolution_rate"] * 100)
+            formula_msg = (
+                f"Column Error: {field_label} likely misread "
+                f"({ce['rows_resolved']}/{ce['total_rows']} rows affected) — retry recommended"
+            )
+            # Build feedback string for retry
             _feedback_for_retry = (
                 f"{ce['rows_resolved']} of {ce['total_rows']} jobs failed formula validation "
                 f"({_pct}% failure rate). This is a strong indicator of a column mapping error "
@@ -1820,7 +1813,7 @@ def analyst_node(state: WipState):
                     "passed": formula_pass,
                     "message": formula_msg,
                     "details": formula_detail_rows,
-                    "jobIssues": [] if portfolio_column_errors else corrections_display,
+                    "jobIssues": corrections_display,
                     "columnErrors": portfolio_column_errors,
                     "retryFeedback": _feedback_for_retry,
                 },
